@@ -15,6 +15,16 @@ func WithCodexToolArgumentNormalization(ctx context.Context, enabled bool) conte
 	return context.WithValue(ctx, codexToolArgumentNormalizationKey{}, enabled)
 }
 
+// NormalizeCodexToolArgumentsForClient applies the request-scoped Codex policy
+// to a Responses payload. Native transports that bypass Registry use this same
+// boundary; without explicit opt-in the original payload is returned.
+func NormalizeCodexToolArgumentsForClient(ctx context.Context, body []byte, stream bool) []byte {
+	if !codexToolArgumentNormalizationEnabled(ctx) {
+		return body
+	}
+	return CanonicalizeCodexToolArguments(body, stream)
+}
+
 func codexToolArgumentNormalizationEnabled(ctx context.Context) bool {
 	if ctx == nil {
 		return false
