@@ -187,6 +187,45 @@ func TestHostRoutingResetCooldownRejectsInvalidJSON(t *testing.T) {
 	}
 }
 
+func TestHostRoutingResetCooldownPreservesTerminalUnauthorized(t *testing.T) {
+	auth := &coreauth.Auth{
+		ID: "terminal.json", Provider: "claude", Status: coreauth.StatusError,
+		StatusMessage: "unauthorized", Unavailable: true,
+		LastError: &coreauth.Error{HTTPStatus: 401, Message: "unauthorized"},
+		Quota:     coreauth.QuotaState{Exceeded: true},
+	}
+	auth.EnsureIndex()
+	manager := coreauth.NewManager(nil, nil, nil)
+	host := New()
+	host.SetAuthManager(manager)
+	if _, err := manager.Register(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	request, err := json.Marshal(pluginapi.HostRoutingResetCooldownRequest{AuthIndex: auth.Index})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.callFromPlugin(context.Background(), pluginabi.MethodHostRoutingResetCooldown, request); err != nil {
+		t.Fatal(err)
+	}
+	updated, _ := manager.GetByID(auth.ID)
+	if updated == nil || updated.Status != coreauth.StatusError || !updated.Unavailable ||
+		updated.LastError == nil || updated.LastError.HTTPStatus != 401 {
+		t.Fatalf("reset must keep terminal unauthorized state: %+v", updated)
+	}
+}
+
+func TestHostRoutingResetCooldownRejectsClosedPluginInstance(t *testing.T) {
+	instance := &hostCallbackInstance{}
+	instance.closed.Store(true)
+	ctx := withHostCallbackIdentity(context.Background(), "closed-plugin", instance)
+	host := New()
+	if _, err := host.callFromPlugin(ctx, pluginabi.MethodHostRoutingResetCooldown, []byte(`{"auth_index":"any"}`)); err == nil ||
+		!strings.Contains(err.Error(), "instance is closed") {
+		t.Fatalf("closed callback instance must be rejected before dispatch: %v", err)
+	}
+}
+
 func TestHostRoutingResetCooldownRequiresAuthManager(t *testing.T) {
 	host := New()
 	host.SetAuthManager(nil)
