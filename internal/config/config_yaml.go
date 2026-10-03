@@ -15,6 +15,11 @@ import (
 // also synchronizes cfg's OAuth scope for runtime snapshots.
 func SaveConfigPreserveComments(configFile string, cfg *Config, migrateV8 ...bool) error {
 	persistCfg := cfg
+	if cfg != nil {
+		copy := *cfg
+		copy.Client.Codex.OptimizeMultiAgentV2 = cfg.CodexMultiAgentV2Enabled()
+		persistCfg = &copy
+	}
 	migrating := len(migrateV8) > 0 && migrateV8[0]
 	// Load original YAML as a node tree to preserve comments and ordering.
 	data, err := os.ReadFile(configFile)

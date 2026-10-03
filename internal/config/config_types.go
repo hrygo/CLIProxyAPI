@@ -180,6 +180,10 @@ type AntigravityConnectionPoolConfig struct {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
+	// Deprecated: use Client.Codex.OptimizeMultiAgentV2 on Config.
+	// Retained for programmatic callers; historical YAML paths are boundary aliases.
+	OptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
+
 	// DisableCodexCloaking disables forcing the official Codex identity headers on HTTP/SSE and WebSocket requests.
 	DisableCodexCloaking bool `yaml:"disable-codex-cloaking" json:"disable-codex-cloaking"`
 	// StreamBootstrapBuffering holds back the frames that arrive before generation starts, none of

@@ -9,6 +9,10 @@ type SDKConfig struct {
 	// Client configures client-facing compatibility behavior.
 	Client ClientConfig `yaml:"client" json:"client"`
 
+	// Deprecated: use Client.Codex.OptimizeMultiAgentV2 for programmatic SDK configuration.
+	// YAML and JSON aliases are normalized at the configuration boundary.
+	CodexOptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
+
 	// OAuthOnlyFields records v8 provider settings that must wait for credential
 	// selection and must not affect API-key credentials. Config YAML snapshots
 	// preserve the corresponding v8 paths instead of serializing this metadata.
@@ -72,6 +76,11 @@ type SDKConfig struct {
 	// NonStreamKeepAliveInterval controls how often blank lines are emitted for non-streaming responses.
 	// <= 0 disables keep-alives. Value is in seconds.
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
+}
+
+// CodexMultiAgentV2Enabled includes the historical SDK field for source compatibility.
+func (cfg *SDKConfig) CodexMultiAgentV2Enabled() bool {
+	return cfg != nil && (cfg.Client.Codex.OptimizeMultiAgentV2 || cfg.CodexOptimizeMultiAgentV2)
 }
 
 // ClientConfig configures client-facing compatibility behavior.

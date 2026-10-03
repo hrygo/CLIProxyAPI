@@ -553,7 +553,7 @@ func (h *OpenAIResponsesAPIHandler) prepareCodexMultiAgentV2Tools(c *gin.Context
 		requestCtx,
 		requestHeaders,
 		payload,
-		h.Cfg.Client.Codex.OptimizeMultiAgentV2,
+		h.Cfg.CodexMultiAgentV2Enabled(),
 		homeEnabled,
 	)
 	if prepared && c != nil {

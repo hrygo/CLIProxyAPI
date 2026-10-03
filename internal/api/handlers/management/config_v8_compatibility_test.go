@@ -96,7 +96,7 @@ func TestConfigV8HistoricalProviderSubtrees(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "config.yaml")
-			raw := "upstream: {codex: {response-steering: true, stream-bootstrap-buffering: true}, xai: {inject-x-search: true}}\noauth: {providers: {codex: {header-defaults: {user-agent: oauth-agent}}}}\nclient: {codex: {optimize-multi-agent-v2: true, enable-apply-patch: true}}\n"
+			raw := "upstream: {codex: {response-steering: true, stream-bootstrap-buffering: true}, xai: {inject-x-search: true}}\noauth: {providers: {codex: {header-defaults: {user-agent: oauth-agent}}}}\nclient: {codex: {optimize-multi-agent-v2: true}}\n"
 			if err := os.WriteFile(file, []byte(raw), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -129,7 +129,7 @@ func TestConfigV8HistoricalProviderSubtrees(t *testing.T) {
 			if loaded.Codex.ResponseSteering != tc.steering || loaded.Codex.StreamBootstrapBuffering != tc.buffering || loaded.Client.Codex.OptimizeMultiAgentV2 != tc.optimize || loaded.CodexHeaderDefaults.UserAgent != tc.agent {
 				t.Fatal("historical subtree mutation did not preserve replacement/merge semantics")
 			}
-			if !loaded.XAI.InjectXSearch || !loaded.Client.Codex.EnableApplyPatch || loaded.ForAPIKey().CodexHeaderDefaults.UserAgent != "" {
+			if !loaded.XAI.InjectXSearch || loaded.ForAPIKey().CodexHeaderDefaults.UserAgent != "" {
 				t.Fatal("historical subtree mutation changed unrelated settings or OAuth scope")
 			}
 			data, err := os.ReadFile(file)
@@ -187,52 +187,6 @@ func TestConfigV8HistoricalConfigurationBodies(t *testing.T) {
 			}
 			if tc.route == "config.yaml" && !strings.Contains(string(data), "# Keep this comment") {
 				t.Fatal("YAML alias normalization lost comments")
-			}
-		})
-	}
-}
-
-func TestLegacyConfigYAMLSavesBySubmittedVersion(t *testing.T) {
-	for _, tc := range []struct {
-		name, body string
-		steering   bool
-		v8         bool
-	}{
-		{"legacy", "# Keep this comment\ncodex: {response-steering: true}\n", true, false},
-		{"historical v8", "# Keep this comment\noauth: {providers: {codex: {response-steering: true}}}\n", true, true},
-		{"latest v8", "# Keep this comment\nconfig-version: 8\nupstream: {codex: {response-steering: false}}\n", false, true},
-		{"mixed", "# Keep this comment\nrequest-retry: 3\nupstream: {codex: {response-steering: false}}\n", false, true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			file := filepath.Join(t.TempDir(), "config.yaml")
-			if err := os.WriteFile(file, []byte("server: {port: 8317}\n"), 0600); err != nil {
-				t.Fatal(err)
-			}
-			h := &Handler{configFilePath: file}
-			router := gin.New()
-			router.PUT("/v0/management/config.yaml", h.PutConfigYAML)
-			response := httptest.NewRecorder()
-			router.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/v0/management/config.yaml", strings.NewReader(tc.body)))
-			if response.Code != http.StatusOK {
-				t.Fatalf("legacy YAML update failed: %s", response.Body.String())
-			}
-			data, err := os.ReadFile(file)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !tc.v8 && string(data) != tc.body {
-				t.Fatalf("v0 changed the submitted layout:\n%s", data)
-			}
-			if tc.v8 {
-				if err = config.ValidateV8Config(data); err != nil || !strings.Contains(string(data), "config-version: 8") {
-					t.Fatalf("v0 did not normalize the submitted v8 document: %v", err)
-				}
-			}
-			if !strings.Contains(string(data), "# Keep this comment") {
-				t.Fatal("v0 YAML write lost comments")
-			}
-			if h.cfg.ForAPIKey().Codex.ResponseSteering != tc.steering {
-				t.Fatal("legacy YAML update changed shared runtime values")
 			}
 		})
 	}

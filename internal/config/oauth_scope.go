@@ -30,6 +30,7 @@ func (cfg *Config) ForAPIKey() *Config {
 // legacy-only Config still produces its original layout. Persistence explicitly
 // marshals legacyConfig before reconciling the on-disk layout.
 func (cfg Config) MarshalYAML() (any, error) {
+	cfg.Client.Codex.OptimizeMultiAgentV2 = cfg.CodexMultiAgentV2Enabled()
 	var root yaml.Node
 	if err := root.Encode(legacyConfig(cfg)); err != nil {
 		return nil, err
