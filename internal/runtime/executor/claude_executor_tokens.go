@@ -168,7 +168,7 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 				return cliproxyexecutor.Response{}, errSystem
 			}
 		}
-		body = relocateClaudeSystemPromptForCountTokens(body, settings.strictMode)
+		body = relocateClaudeSystemPromptForCountTokensWithPolicy(body, settings.strictMode, !policy.OAuth)
 		if len(settings.sensitiveWords) > 0 {
 			body = helps.ObfuscateSensitiveWords(body, helps.BuildSensitiveWordMatcher(settings.sensitiveWords))
 		}
