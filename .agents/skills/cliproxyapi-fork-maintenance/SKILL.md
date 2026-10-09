@@ -43,6 +43,10 @@ continues to apply to its target; do not ask again for routine steps it covers.
 - Evaluate individual diffs, including overlap with our changes. Prefer protocol,
   compatibility and security fixes; assess configuration changes and dependency
   upgrades on impact rather than commit-message prefixes alone.
+- When an upstream commit and our fork solve the same problem, prefer the upstream
+  implementation. Keep fork-only deltas only where they cover behavior upstream does
+  not address. The standing direction is convergence: retire fork-only code once
+  upstream ships an equivalent fix, and avoid new fork-only architecture.
 - Cherry-pick selected commits individually, preferably with `-x`. Do not merge
   upstream `dev`/`main` or a release range into our trunk.
 - Verify the baseline before porting and the candidate afterward. A baseline
