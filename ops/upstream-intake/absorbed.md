@@ -9,7 +9,7 @@ commits were ported onto our `main` **and** `verify-absorb.sh` exited 0.
 
 | v8.0.13 | 2026-10-03 | 28 substantive ports + 1 test-only port (initial and follow-up mappings below) | 6 entries, including 3 merge wrappers (final decisions below) | PASS; follow-up effective on merge to main | 2026-10-03 |
 
-| v8.0.16 | 2026-10-09 | 23 ports (mapping below) | 17 non-merge + 7 merge wrappers (decisions below) | PASS on intake branch | 2026-10-09 |
+| v8.0.16 | 2026-10-09 | 24 ports (mapping below) | 16 non-merge + 7 merge wrappers (decisions below) | PASS on intake branch | 2026-10-09 |
 
 ## Comparison baseline
 
@@ -354,6 +354,7 @@ note the fork delta retained.
 | `9521fe29` | `31636b68` | fix(antigravity): preserve model lifecycle and cooldown state |
 | `ad381435` | `6bcfbdb8` | fix(antigravity): coalesce probes and respect plugin model ownership |
 | `61a70dc6` | `87ced434` | Adapted: native messages JSON to SSE adapter kept; fork's unused-param signature retained per new same-problem-prefers-upstream rule. |
+| `8a945b3f` | `5e4ed963` | fix(antigravity): restore Claude 4.6 model definitions. Operator confirmed 2026-10-09 that Claude 4.6 (`claude-opus-4-6-thinking`, `claude-sonnet-4-6`) is still live on Antigravity, so the earlier "retired" skip rationale no longer holds; direct `-x` port alongside the 5.5 CAQS support already absorbed. |
 
 #### Skipped commits and reasons
 
@@ -362,7 +363,7 @@ note the fork delta retained.
 | `980c3bc3` `6d06098d` `d2e3a77e` `dfd7c638` | Skip promotional/community README additions; neutral fork READMEs remain authoritative. |
 | `8ef43e4d` | Defer AxisNow sponsorship removal; conflicts with fork README sponsorship handling, needs separate review. |
 | `01e28567` | Defer Devin-catalog home-build disable; the fork has no `catalog_sources.go` home-build path (custom catalog system not ported), conflicts. Revisit if the catalog-sources feature is ever adopted. |
-| `8a945b3f` | Skip restoring retired Claude 4.6 model definitions; the fork already absorbed the 4.6→5.5 replacement and 4.6 IDs are retired. Upstream re-added them alongside 5.5 CAQS work; no live-availability evidence for 4.6. |
+| _(removed)_ | `8a945b3f` absorbed as a ported commit above (operator-confirmed 4.6 live on 2026-10-09); row removed so the skipped list stays honest. |
 | `91c934f6` | Defer local shell tool translation; conflicts with the fork's custom/apply_patch tool pipeline (`responses_tool_index.go`, response aggregator). Needs joint protocol review like the earlier deferred bridge. |
 | `868e137f` | Defer payload-finalizer architecture; cross-cutting executor rewrite touching every request path plus an AGENTS.md invariant the fork has not adopted. Needs separate design review. |
 | `cbc4cd55` | Defer Antigravity interactions session continuation; response-file conflict depends on the fork-absent `applypatch` package. Needs joint review with the deferred bridge. |
