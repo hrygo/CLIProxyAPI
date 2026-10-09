@@ -334,7 +334,7 @@ note the fork delta retained.
 | `e1e3a811` | `928a6e89` | fix(gemini): enforce object type on schema nodes with properties |
 | `ba1bbd75` | `54cae308` | fix(gemini): support document blocks in Claude request translation |
 | `97dd9eec` | `7f0b207d` | fix(openai): report error on truncated stream missing finish_reason |
-| `d31b61cb` | `ae3e6c2c` | fix(websockets): propagate upstream disconnect errors during session activation |
+| `d31b61cb` | `ae3e6c2c` + `70dac18f` | fix(websockets): propagate upstream disconnect errors during session activation. Follow-up `70dac18f` completes the port: upstream only resets the recorded terminal error in the Codex `configureConn`, the xAI `configureXAIWebsocketConn` was missed, so a stale terminal error could leak across a retry dial. Fixed by resetting there too. |
 | `5c959cb0` | `8a409630` | fix(claude): mark missing thread state error for client replay |
 | `26e5efbb` | `2bd7a7c4` | fix(claude): reserve cache breakpoint for thread continuation |
 | `5d890405` | `6fdc3bdf` | fix(claude): keep system messages top level for terminal user turns |
