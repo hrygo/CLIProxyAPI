@@ -47,6 +47,13 @@ the wait is the only thing standing between a bad upstream cut and our `main`.
    ```
 
    Never merge upstream branches or the whole release range.
+   When an upstream commit and our fork solve the same problem, prefer the
+   upstream implementation. Keep fork-only deltas only where they cover behavior
+   upstream does not address, and record the choice in absorbed.md.
+   The standing direction is convergence: every intake should leave the fork
+   closer to upstream than before. Retire a fork-only implementation as soon as
+   upstream ships an equivalent fix, and avoid introducing new fork-only
+   architecture that widens the divergence.
 5. Run the same regression gate on the candidate. For request/response changes,
    also replay representative fixed requests on the baseline and candidate with
    equivalent isolated configuration. Record actual client coverage; fixtures

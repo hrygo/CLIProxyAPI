@@ -11,6 +11,18 @@ This repository is a self-maintained fork. `main` is the trunk; `codex/*` are ta
 branches that must merge back into `main`. Do not treat upstream as a merge target
 and do not wait for upstream review before shipping our own work.
 
+## Fork purpose and convergence
+This fork exists only to fix problems upstream has not solved: the
+response-side integral-float canonicalization for strict Codex clients
+(`sdk/translator/codex_tool_arguments.go`, tracked upstream as
+`router-for-me/CLIProxyAPI#6255`), the `local-refs: "flatten"` mode for
+recursive tool schemas (`docs/responses-tools.md`), the responses-tools
+pipeline (`internal/responsestools/`), and the Gemini/Vertex/AI Studio
+streaming repairs shipped in `v1.1.0-upstream8.0.7`. If upstream resolves one
+of these problems with an equivalent fix, retire our implementation in favor
+of upstream's rather than maintaining both; the fork is not kept for its own
+sake and is retired once nothing it fixes remains unfixed upstream.
+
 - **Remotes:** `origin` is our fork (`hrygo/CLIProxyAPI`), `upstream` is
   `router-for-me/CLIProxyAPI`.
 - **Upstream intake is release-only.** Track `upstream` releases, not its `dev` or
