@@ -2,6 +2,8 @@
 
 核验日期：2026-10-12（Asia/Shanghai）。本报告补充[完整方案 T5](../superpowers/plans/2026-10-12-cross-provider-tool-loading-completion_CN.md#t5客户端发现目录与底层权限第三批r1r2r5r6)，不构成最终跨 Provider 认证。
 
+后续[官方取消接口实测](2026-10-12-client-native-cancellation_CN.md)已补充 OpenCode session abort 的通过证据和 Codex turn/interrupt 的传播缺口；本报告保留原非交互 CLI SIGINT 结论，不将不同入口的结果相互覆盖。
+
 ## 结论与范围
 
 实际 Codex CLI `0.160.0`、OpenCode `1.19.0` 的非交互 CLI 取消探针，尚不能证明取消传到 MCP 并完成资源释放。验收器已修复直接杀进程组的问题：先向主 CLI 发送 SIGINT，等待并保留退出输出，再清理进程组；新的原生复测仍未取得 MCP cancelled/released 事件。

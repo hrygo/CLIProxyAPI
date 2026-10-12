@@ -232,13 +232,30 @@ def create_server(fixture: CatalogFixture):
 
 
 async def serve(fixture: CatalogFixture) -> None:
+    import anyio
+    from mcp import types
     from mcp.server.lowlevel import NotificationOptions
     from mcp.server.stdio import stdio_server
 
     server = create_server(fixture)
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream,
-                         server.create_initialization_options(notification_options=NotificationOptions(tools_changed=True)))
+        observed_send, observed_read = anyio.create_memory_object_stream(0)
+        async def relay():
+            async with observed_send:
+                async for message in read_stream:
+                    rpc = getattr(getattr(message, "message", None), "root", None)
+                    if isinstance(rpc, types.JSONRPCNotification) and rpc.method == "notifications/cancelled":
+                        request_id = (rpc.params or {}).get("requestId")
+                        fixture._record("protocol_cancel_received", "unknown",
+                                        request_id=request_id if type(request_id) is int else "string_id")
+                    await observed_send.send(message)
+        async with anyio.create_task_group() as group:
+            group.start_soon(relay)
+            try:
+                await server.run(observed_read, write_stream,
+                                 server.create_initialization_options(notification_options=NotificationOptions(tools_changed=True)))
+            finally:
+                group.cancel_scope.cancel()
 
 
 def main() -> None:

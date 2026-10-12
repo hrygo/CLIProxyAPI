@@ -15,6 +15,8 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from client_adapters import VERSIONS, prepare_isolated_client, synthetic_codex_model, write_private
+from codex_app_adapter import run_app_server_task
+from opencode_server_adapter import run_server_task
 
 
 def _value(value, depth=0):
@@ -174,7 +176,11 @@ def client_result(client, raw):
     return {"final_texts": texts, "legal_terminal": bool(complete and terminal), "parse_complete": complete}
 
 
-def run_case(root, client, mode, scenario, *, max_seconds=20):
+def run_case(root, client, mode, scenario, *, max_seconds=20, transport="cli"):
+    if (transport not in {"cli", "codex-app-server", "opencode-server"}
+            or (transport == "codex-app-server" and client != "codex")
+            or (transport == "opencode-server" and (client != "opencode" or scenario != "cancel"))):
+        raise ValueError("unsupported scripted client transport")
     model = ScriptedModel(client, mode, scenario)
     requests, responses = [], []
     lock = threading.Lock()
@@ -231,7 +237,7 @@ def run_case(root, client, mode, scenario, *, max_seconds=20):
             "base_url": f"http://127.0.0.1:{server.server_port}/v1", "nonce": nonce,
             "max_dispatches": 8, "max_result_bytes": 65536},
             {"client_denied": ["ledger_budget_lookup"] if scenario == "client-denied" else [], "service_denied": ["fixture_mutation"]})
-        write_private(prepared.run_dir / "case-started.json", json.dumps({"client": client, "version": VERSIONS[client], "mode": mode, "scenario": scenario}))
+        write_private(prepared.run_dir / "case-started.json", json.dumps({"client": client, "version": VERSIONS[client], "mode": mode, "scenario": scenario, "transport": transport}))
         if scenario == "cancel":
             def observe_dispatch():
                 while not stop_observer.wait(0.01):
@@ -246,8 +252,13 @@ def run_case(root, client, mode, scenario, *, max_seconds=20):
                         return
             observer = threading.Thread(target=observe_dispatch, daemon=True)
             observer.start()
-        result = prepared.run_task({"prompt": "Use the fixture to read alpha remaining budget and verification code.",
-                                    "max_seconds": max_seconds, "max_output_bytes": 1000000}, cancel_event=cancel_event)
+        if transport == "cli":
+            runner = prepared.run_task
+        else:
+            server_runner = run_app_server_task if transport == "codex-app-server" else run_server_task
+            runner = lambda spec, **kwargs: server_runner(prepared, spec, **kwargs)
+        result = runner({"prompt": "Use the fixture to read alpha remaining budget and verification code.",
+                         "max_seconds": max_seconds, "max_output_bytes": 1000000}, cancel_event=cancel_event)
     finally:
         stop_observer.set()
         if observer:
@@ -262,7 +273,11 @@ def run_case(root, client, mode, scenario, *, max_seconds=20):
     active = events[-1]["active_count"] if events else 0
     clean_exit = result["exit_code"] == 0 and result["termination"] == "exited"
     receipt_nonce = model.receipt.get("verification_code") if model.receipt else None
-    observed = client_result(client, Path(result["stdout_path"]).read_text())
+    if transport == "cli":
+        observed = client_result(client, Path(result["stdout_path"]).read_text())
+    else:
+        clean_exit = result["termination"] == "completed" and result["protocol_terminal_status"] == "completed"
+        observed = {"final_texts": result["final_texts"], "legal_terminal": result["protocol_terminal_verified"]}
     service_allowed = any(event["phase"] == "catalog" and event.get("ledger_allowed") is True for event in events)
     verified = (service_allowed and clean_exit and observed["legal_terminal"] and model.invocation_emitted
                 and bool(model.receipt) and effects == active == 0)
@@ -294,13 +309,15 @@ def run_case(root, client, mode, scenario, *, max_seconds=20):
     elif scenario == "large-result":
         verified = (verified and dispatches == 1 and any(event.get("reason") == "result_budget" for event in events))
     summary = {"client": client, "client_version": VERSIONS[client], "mode": mode, "scenario": scenario,
-               "scope": "scripted-local-client-boundary", "requests_received": len(requests), "mcp_dispatches": dispatches,
+               "scope": "scripted-local-client-boundary", "transport": transport,
+               "requests_received": len(requests), "mcp_dispatches": dispatches,
                "mcp_requests": sum(event["phase"] == "request" for event in events), "effects": effects,
                "active_final": active, "nonce_backfilled": receipt_nonce == nonce, "boundary_verified": bool(verified),
                "search_result_has_target": model.search_result_has_target if mode == "lazy" else None,
                "legal_client_terminal": observed["legal_terminal"],
                "service_initially_allowed_target": service_allowed,
                "cancellation_observed": any(event["phase"] == "cancelled" for event in events),
+               "protocol_cancel_notifications": sum(event["phase"] == "protocol_cancel_received" for event in events),
                "provider_input_tokens": None, "gate_status": "unverified", "run_dir": str(prepared.run_dir), **result}
     write_private(prepared.run_dir / "summary.json", json.dumps(summary, indent=2))
     return summary
@@ -311,8 +328,13 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--clients", nargs="+", choices=list(VERSIONS), default=list(VERSIONS))
     parser.add_argument("--modes", nargs="+", choices=["eager", "lazy"], default=["eager", "lazy"])
+    parser.add_argument("--transport", choices=["cli", "codex-app-server", "opencode-server"], default="cli")
     parser.add_argument("--cases", nargs="+", choices=["allow", "client-denied", "invalid", "revoked", "cancel", "loop", "dispatch-budget", "large-result"], default=["allow", "client-denied", "invalid", "revoked"])
     args = parser.parse_args()
+    if args.transport == "codex-app-server" and args.clients != ["codex"]:
+        parser.error("codex-app-server requires --clients codex")
+    if args.transport == "opencode-server" and (args.clients != ["opencode"] or args.cases != ["cancel"]):
+        parser.error("opencode-server requires --clients opencode --cases cancel")
     for client in args.clients:
         for mode in args.modes:
             for scenario in args.cases:
@@ -322,7 +344,7 @@ def main():
     for client in args.clients:
         for mode in args.modes:
             for scenario in args.cases:
-                result = run_case(args.output_dir.resolve(), client, mode, scenario)
+                result = run_case(args.output_dir.resolve(), client, mode, scenario, transport=args.transport)
                 results.append(result)
                 print(json.dumps(result), flush=True)
     write_private(args.output_dir / "summary.json", json.dumps({"gate_status": "unverified", "cases": results}, indent=2))

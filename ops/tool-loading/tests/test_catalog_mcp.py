@@ -10,6 +10,7 @@ import unittest
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 from mcp.shared.memory import create_connected_server_and_client_session
+from mcp.shared.exceptions import McpError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from catalog_fixture import CatalogFixture, create_server
@@ -84,6 +85,46 @@ class MCPTests(unittest.IsolatedAsyncioTestCase):
                     await task
                 except asyncio.CancelledError:
                     pass
+
+    async def test_stdio_cancel_notification_is_observed_before_sdk_release(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            events = Path(temporary) / "events.jsonl"
+            parameters = StdioServerParameters(command=sys.executable, args=[
+                str(Path(__file__).resolve().parents[1] / "catalog_fixture.py"),
+                "--nonce", "cancel-protocol-fixture", "--events", str(events),
+            ])
+            async def wait_phase(phase):
+                while True:
+                    if events.exists():
+                        raw = events.read_text()
+                        if raw.endswith("\n"):
+                            records = [json.loads(line) for line in raw.splitlines()]
+                            if any(item["phase"] == phase for item in records):
+                                return records
+                    await asyncio.sleep(0.01)
+            async with stdio_client(parameters) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    task = asyncio.create_task(session.call_tool("fixture_wait", {"project": "alpha"}))
+                    try:
+                        records = await asyncio.wait_for(wait_phase("dispatch"), timeout=5)
+                        request_id = next(item["request_id"] for item in records if item["phase"] == "request")
+                        await session.send_notification(types.ClientNotification.model_validate({
+                            "method": "notifications/cancelled", "params": {"requestId": request_id},
+                        }))
+                        records = await asyncio.wait_for(wait_phase("released"), timeout=5)
+                        phases = [item["phase"] for item in records]
+                        self.assertIn("protocol_cancel_received", phases)
+                        self.assertLess(phases.index("protocol_cancel_received"), phases.index("released"))
+                        self.assertEqual(records[-1]["active_count"], 0)
+                    finally:
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                        except McpError as error:
+                            self.assertEqual(error.error.message, "Request cancelled")
 
 
 if __name__ == "__main__":

@@ -107,6 +107,35 @@ outer process-budget termination is a failed runtime-limit probe. The dispatch
 and large-result probes separately prove the synthetic service's limits,
 not client-wide cumulative limits or Provider request limits.
 
+Official cancellation APIs have separate profiles; they are not interchangeable
+with CLI SIGINT. Both commands preserve every started/failed case:
+
+```sh
+"$task_validation/venv/bin/python" ops/tool-loading/scripted_clients.py \
+  --output-dir "$task_validation/codex-app-cancel" --clients codex \
+  --transport codex-app-server --cases cancel
+"$task_validation/venv/bin/python" ops/tool-loading/scripted_clients.py \
+  --output-dir "$task_validation/opencode-session-cancel" --clients opencode \
+  --transport opencode-server --cases cancel
+```
+
+Codex binds initialize/thread/start/turn/start/turn/interrupt to actual thread and
+turn identities, denies unrecognized server requests and waits for a matching
+`interrupted` terminal plus MCP release. OpenCode starts a private loopback
+headless server, sends a session prompt and aborts only after actual wait dispatch.
+An abort response alone cannot pass: the matching session must be idle with an
+assistant `MessageAbortedError`, and MCP active/effect counters must reach zero.
+The OpenCode server profile currently supports cancellation only.
+
+The stdio fixture records `protocol_cancel_received` before forwarding that
+notification unchanged to the official MCP SDK. A real SDK stdio cancellation
+test checks this observation and subsequent release. In the 2026-10-12 native
+API probes, OpenCode eager/lazy passed with one notification and release each;
+Codex eager/lazy returned an interrupted terminal but sent no observed MCP
+cancel notification before the task budget expired. Scope, raw API/stdio traces
+and client delivery boundaries are in the
+[official cancellation API report](../../docs/acceptance/2026-10-12-client-native-cancellation_CN.md).
+
 `client_sdk_probe.mjs` separately exercises the external OpenCode `v1.19.0`
 CodeMode package with explicit limits. `opencode-codemode-source.json` pins all
 25 TypeScript source files and three dependency versions before importing it.
