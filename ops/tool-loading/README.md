@@ -1,8 +1,8 @@
 # Tool loading acceptance infrastructure
 
 This directory contains the scoped evidence schema and a synthetic MCP fixture.
-Client adapters, the paired acceptance runner, usage normalization and live
-certification remain pending. Passing these fixture tests does not certify
+Client adapters, the paired acceptance runner and live certification remain
+pending. Request-level usage normalization is available below. Fixture tests do not certify
 Codex/OpenCode permission handling, model quality, or context savings.
 
 ## Isolated dependencies and offline checks
@@ -98,3 +98,48 @@ coding task. The client adapter must separately enforce task/process budgets.
 Client-deny tests must keep the fixture-side permission allowed and verify zero
 MCP attempts; service-deny tests verify zero dispatch/effects. Testing both
 locations prevents the service guard from hiding a client permission bypass.
+
+## Request-level usage contracts
+
+`normalize_usage.py` decodes one consolidated request-total object using an
+explicit contract: `openai-responses-v1`, `openai-chat-v1`,
+`anthropic-messages-v1`, or `gemini-generate-v1`. These describe observed wire
+formats, not model/provider names or certifications. An Antigravity, Muse or GLM
+route must choose the contract actually captured at its measurement boundary;
+this module does not infer semantics from a familiar field or model name.
+
+```sh
+python3 ops/tool-loading/normalize_usage.py --contract openai-responses-v1 < request-usage.json
+```
+
+Missing counters remain JSON null. OpenAI/Gemini input totals include cache;
+Anthropic input totals require adding its three disjoint input buckets.
+Reasoning is already included in OpenAI/Anthropic output totals; Gemini candidate
+and thought counts are separate. Tool-use prompt counts are reported separately,
+without assuming they add to the ordinary prompt or bill. Missing cache writes
+cannot be invented as zero to obtain an uncached-input or price estimate.
+
+`aggregate_usage` requires a unique ID for every Provider attempt, including
+failed requests and retries, and rejects cumulative stream snapshots. The
+collector must consolidate snapshots per request first. Missing or internally
+contradictory usage invalidates complete totals and peak input; known valid
+input is exposed as a separate subtotal. An empty observation list proves no
+cost or input total. It does not prove no Provider request occurred.
+
+`estimate_cost` uses explicit per-million prices, currency, price provenance and
+known fixed/tool charges. Mixed Anthropic cache TTLs need their own write prices.
+Incomplete prices or buckets return no complete cost; a known subtotal is
+separate. Account subscriptions, model tiers, multimodal rates and other invoice
+adjustments need independent billing evidence. These helpers do not certify
+task quality, paired savings or confidence intervals.
+
+Contract references verified on 2026-10-12:
+
+- [OpenAI Responses usage fields](https://github.com/openai/openai-python/blob/main/src/openai/types/responses/response_usage.py)
+  and [Chat usage fields](https://github.com/openai/openai-python/blob/main/src/openai/types/completion_usage.py).
+- [Anthropic input/cache accounting](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+  and [authoritative output total](https://github.com/anthropics/anthropic-sdk-python/blob/main/src/anthropic/types/usage.py).
+- [Gemini UsageMetadata](https://ai.google.dev/api/generate-content#UsageMetadata).
+
+Future upstream changes require reviewing these named contracts; a passing
+synthetic decoder test alone does not prove any live route still honors them.
