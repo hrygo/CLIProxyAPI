@@ -1,10 +1,50 @@
 # Tool loading acceptance infrastructure
 
 This directory contains the scoped evidence schema and a synthetic MCP fixture.
-Client adapters, live scheduling, statistical certification and live evidence
-remain pending. Offline case replay and request-level usage normalization are
+Version-pinned client adapters and a local first-request probe are available.
+Live scheduling, statistical certification and live evidence remain pending.
+Offline case replay and request-level usage normalization are
 available below. Fixture tests do not certify
 Codex/OpenCode permission handling, model quality, or context savings.
+
+## Native client isolation and first-request probe
+
+`client_adapters.py` supports exactly Codex CLI `0.160.0` and OpenCode `1.19.0`.
+It checks the installed version before creating artifacts, rejects unknown
+adapter keys/modes and non-loopback endpoints, and never inherits credentials
+or broad experimental flags. All configuration, catalogs, XDG state and the
+Codex home are run-local. Model metadata for real tests must be supplied for
+the actual selected model; `synthetic_codex_model` is only for local probes.
+
+Codex uses strict CLI overrides and the model's `supports_search_tool` gate,
+with direct tool mode. There is no fabricated `namespace_tools` configuration
+key or legacy `features.tool_search` flag. Whether both effective gates hold
+is established by the outbound request, not the requested flag alone.
+OpenCode V1 uses its explicit Code Mode environment flag; client-denied
+underlying MCP tools remain separate from service-side denial.
+
+With both exact CLI versions installed, run:
+
+```sh
+"$task_validation/venv/bin/python" ops/tool-loading/probe_clients.py \
+  --output-dir "$task_validation/native-probe"
+```
+
+This starts a temporary loopback HTTP fixture and real MCP subprocesses, then
+deliberately returns HTTP 400 to end inference. It checks eager declarations
+versus lazy search/execute entry points, records every received request
+(including OpenCode's title request), and keeps private request/output artifacts.
+It does not use CLIProxyAPI or a real Provider and does not certify execution,
+task quality, terminal semantics, or token savings. `gate_status` remains
+`unverified`; Provider usage is null. Serialized tool-definition bytes are a
+transport measurement, distinct from model input tokens.
+
+`run_task` bounds the isolated POSIX process group, cancellation and combined
+stored stdout/stderr. It terminates its descendants and records exit/budget
+outcomes; a zero process exit never establishes task success. Original-schema,
+client permission and cancellation evidence must still come from actual MCP
+calls and immutable artifacts before the live acceptance journal can certify
+them. CPU/output process tests alone are not Code Mode runtime budget proof.
 
 ## Isolated dependencies and offline checks
 

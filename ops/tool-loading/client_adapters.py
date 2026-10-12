@@ -1,0 +1,246 @@
+"""Version-pinned, isolated native clients for tool-loading acceptance.
+
+Requested configuration is not proof of effective mode. Inspect the outbound
+request and MCP events before accepting an eager/lazy comparison.
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
+import selectors
+import signal
+import subprocess
+import time
+from urllib.parse import urlsplit
+
+from catalog_fixture import build_catalog, digest
+
+VERSIONS = {"codex": "0.160.0", "opencode": "1.19.0"}
+ENV_KEYS = ("PATH", "TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR")
+
+
+def synthetic_codex_model(model: str) -> dict:
+    """Minimal metadata for local protocol probes, never a real-model claim."""
+    return {"slug": model, "display_name": model, "description": "Local acceptance fixture",
+            "base_instructions": "You are a local protocol acceptance agent. Use declared tools and preserve tool results.",
+            "supported_reasoning_levels": [], "shell_type": "unified_exec",
+            "visibility": "list", "supported_in_api": True, "priority": 1,
+            "support_verbosity": False, "truncation_policy": {"mode": "tokens", "limit": 10000},
+            "experimental_supported_tools": [], "context_window": 128000,
+            "tool_mode": "direct", "supports_search_tool": False}
+
+
+def write_private(path: Path, content: str) -> None:
+    with path.open("x", encoding="utf-8") as handle:
+        os.chmod(path, 0o600)
+        handle.write(content)
+
+
+@dataclass
+class PreparedClient:
+    client_id: str
+    client_version: str
+    expected_mode: str
+    command: list[str]
+    env: dict[str, str]
+    run_dir: Path
+    config_path: Path
+    catalog_path: Path
+    events_path: Path
+    permission_hash: str
+    catalog_hash: str
+
+    def collect_boundary_events(self) -> list[dict]:
+        if not self.events_path.exists():
+            return []
+        raw = self.events_path.read_text(encoding="utf-8")
+        if raw and not raw.endswith("\n"):
+            raise ValueError("incomplete MCP event journal")
+        events = [json.loads(line) for line in raw.splitlines()]
+        for index, event in enumerate(events):
+            if not isinstance(event, dict) or type(event.get("sequence")) is not int or event["sequence"] != index:
+                raise ValueError("invalid MCP event sequence")
+        return events
+
+    def run_task(self, case_spec: dict, *, cancel_event=None) -> dict:
+        """Run only the isolated process group; process exit is not task success."""
+        seconds, limit = case_spec["max_seconds"], case_spec["max_output_bytes"]
+        if (type(seconds) not in {int, float} or not 0 < seconds < float("inf")
+                or type(limit) is not int or limit < 1 or not isinstance(case_spec["prompt"], str)):
+            raise ValueError("invalid process limits or prompt")
+        if os.name != "posix":
+            raise ValueError("process-group isolation currently requires POSIX")
+        output_paths = [self.run_dir / "stdout.jsonl", self.run_dir / "stderr.log"]
+        handles = []
+        process = None
+        started = time.monotonic()
+        termination, stored, observed = "exited", 0, 0
+        selector = selectors.DefaultSelector()
+        try:
+            for path in output_paths:
+                handle = path.open("xb")
+                os.chmod(path, 0o600)
+                handles.append(handle)
+            process = subprocess.Popen(self.command + [case_spec["prompt"]], cwd=self.run_dir / "workspace" if (self.run_dir / "workspace").exists() else self.run_dir,
+                                       env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       stdin=subprocess.DEVNULL, start_new_session=True)
+            for stream, handle in zip((process.stdout, process.stderr), handles):
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, handle)
+            while selector.get_map() or process.poll() is None:
+                if cancel_event is not None and cancel_event.is_set():
+                    termination = "cancelled"
+                    break
+                if time.monotonic() - started >= seconds:
+                    termination = "process_budget"
+                    break
+                for key, _ in selector.select(min(0.05, seconds)):
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    observed += len(chunk)
+                    accepted = chunk[:max(0, limit - stored)]
+                    key.data.write(accepted)
+                    stored += len(accepted)
+                    if observed > limit:
+                        termination = "output_budget"
+                        break
+                if termination != "exited":
+                    break
+        finally:
+            selector.close()
+            if process is not None:
+                # Kill descendants even if the main CLI already exited: an MCP
+                # child may still own a pipe or execution sandbox.
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    process.wait(timeout=1)
+                except subprocess.TimeoutExpired:
+                    pass
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+                process.stdout.close()
+                process.stderr.close()
+            for handle in handles:
+                handle.close()
+        return {"exit_code": process.returncode, "termination": termination,
+                "elapsed_seconds": time.monotonic() - started, "stored_output_bytes": stored,
+                "observed_output_bytes": observed, "stdout_path": str(output_paths[0]),
+                "stderr_path": str(output_paths[1]), "task_success_verified": False}
+
+
+def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permissions: dict) -> PreparedClient:
+    if client_id not in VERSIONS or mode not in {"eager", "lazy"}:
+        raise ValueError("unsupported client or mode")
+    if catalog.get("client_version") != VERSIONS[client_id]:
+        raise ValueError("unsupported client version")
+    allowed = {"run_dir", "client_version", "executable", "model", "base_url", "fixture_python",
+               "model_metadata", "nonce", "max_dispatches", "max_result_bytes"}
+    if set(catalog) != allowed:
+        raise ValueError("missing or unknown adapter configuration keys")
+    url = urlsplit(catalog["base_url"])
+    if (url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or url.username or url.password or url.query or url.fragment or url.path.rstrip("/") != "/v1"):
+        raise ValueError("an isolated loopback /v1 endpoint is required")
+    names = {tool["name"] for tool in build_catalog()}
+    if set(permissions) != {"client_denied", "service_denied"}:
+        raise ValueError("unknown permission keys")
+    for values in permissions.values():
+        if not isinstance(values, list) or any(not isinstance(name, str) or name not in names for name in values):
+            raise ValueError("unknown denied tool")
+    for key, minimum in (("max_dispatches", 1), ("max_result_bytes", 256)):
+        if type(catalog[key]) is not int or catalog[key] < minimum:
+            raise ValueError("invalid fixture budget")
+    if not isinstance(catalog["nonce"], str) or not catalog["nonce"]:
+        raise ValueError("a fresh nonce is required")
+    metadata = deepcopy(catalog["model_metadata"])
+    if client_id == "codex" and (metadata.get("slug") != catalog["model"] or metadata.get("tool_mode", "direct") != "direct"):
+        raise ValueError("selected model metadata must match the direct-mode profile")
+    env = {key: os.environ[key] for key in ENV_KEYS if key in os.environ}
+    checked = subprocess.run([str(catalog["executable"]), "--version"], env=env,
+                             capture_output=True, text=True, check=True)
+    expected = ("codex-cli " if client_id == "codex" else "") + VERSIONS[client_id]
+    if checked.stdout.strip() != expected:
+        raise ValueError("installed client version differs from the declared scope")
+    root = Path(catalog["run_dir"]).resolve()
+    root.mkdir(mode=0o700, parents=True, exist_ok=False)
+    workspace = root / "workspace"
+    workspace.mkdir(mode=0o700)
+    events = root / "mcp-events.jsonl"
+    policy = root / "permissions.json"
+    normalized_permissions = {key: sorted(set(value)) for key, value in permissions.items()}
+    write_private(policy, json.dumps({"generation": 1, "denied": normalized_permissions["service_denied"]}))
+    catalog_path = root / "catalog.json"
+    metadata["supports_search_tool"] = mode == "lazy"
+    metadata["tool_mode"] = "direct"
+    write_private(catalog_path, json.dumps({"models": [metadata]}, ensure_ascii=False))
+    fixture_command = [str(catalog["fixture_python"]), str(Path(__file__).with_name("catalog_fixture.py").resolve()),
+                       "--nonce", catalog["nonce"], "--events", str(events), "--permissions", str(policy),
+                       "--max-dispatches", str(catalog["max_dispatches"]), "--max-result-bytes", str(catalog["max_result_bytes"])]
+    # The endpoint is an explicitly supplied local fixture/gateway. Credentials
+    # are not inherited from the operator's shell or stored in configuration.
+    env["TOOL_LOADING_GATEWAY_KEY"] = "local-acceptance-placeholder"
+    command = [str(catalog["executable"])]
+    if client_id == "codex":
+        home = root / "codex-home"
+        home.mkdir(mode=0o700)
+        env["CODEX_HOME"] = str(home)
+        values = {
+            "model_provider": "acceptance", "model_providers.acceptance.name": "Local acceptance gateway",
+            "model_providers.acceptance.base_url": catalog["base_url"], "model_providers.acceptance.wire_api": "responses",
+            "model_providers.acceptance.env_key": "TOOL_LOADING_GATEWAY_KEY",
+            "model_providers.acceptance.requires_openai_auth": False,
+            "model_providers.acceptance.supports_websockets": False,
+            "model_providers.acceptance.request_max_retries": 0, "model_providers.acceptance.stream_max_retries": 0,
+            "model_catalog_json": str(catalog_path), "approval_policy": "never", "project_doc_max_bytes": 0,
+            "features.apps": False, "features.plugins": False, "features.hooks": False,
+            "features.multi_agent": False, "features.enable_request_compression": False,
+            "features.code_mode": False, "features.code_mode_only": False, "features.code_mode_host": False,
+            "mcp_servers.fixture.command": fixture_command[0], "mcp_servers.fixture.args": fixture_command[1:],
+            "mcp_servers.fixture.default_tools_approval_mode": "approve",
+            "mcp_servers.fixture.tool_input_schema_max_bytes": 16000,
+            "mcp_servers.fixture.disabled_tools": normalized_permissions["client_denied"],
+        }
+        config_path = root / "overrides.toml"
+        overrides = [f"{key}={json.dumps(value, ensure_ascii=False)}" for key, value in values.items()]
+        write_private(config_path, "\n".join(overrides) + "\n")
+        command += ["exec", "--strict-config", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
+                    "--ephemeral", "--json", "--color", "never", "-s", "read-only", "-C", str(workspace), "-m", catalog["model"]]
+        for override in overrides:
+            command += ["-c", override]
+        expected_mode = "tool-search" if mode == "lazy" else "direct"
+    else:
+        for key in ("CONFIG", "DATA", "CACHE", "STATE"):
+            directory = root / ("xdg-" + key.lower())
+            directory.mkdir(mode=0o700)
+            env["XDG_" + key + "_HOME"] = str(directory)
+        config_dir = root / "opencode-config"
+        config_dir.mkdir(mode=0o700)
+        config_path = config_dir / "opencode.json"
+        env.update({"OPENCODE_CONFIG": str(config_path), "OPENCODE_CONFIG_DIR": str(config_dir),
+                    "OPENCODE_DISABLE_DEFAULT_PLUGINS": "true", "OPENCODE_DISABLE_MODELS_FETCH": "true",
+                    "OPENCODE_DISABLE_EXTERNAL_SKILLS": "true", "OPENCODE_DISABLE_CLAUDE_CODE": "true",
+                    "OPENCODE_EXPERIMENTAL_CODE_MODE": "true" if mode == "lazy" else "false"})
+        rules = {"*": "deny", "fixture_*": "allow", "execute": "allow"}
+        rules.update({"fixture_" + name: "deny" for name in normalized_permissions["client_denied"]})
+        config = {"model": "acceptance/" + catalog["model"], "autoupdate": False, "plugin": [],
+                  "provider": {"acceptance": {"npm": "@ai-sdk/openai-compatible",
+                    "options": {"baseURL": catalog["base_url"], "apiKey": "{env:TOOL_LOADING_GATEWAY_KEY}"},
+                    "models": {catalog["model"]: {"name": catalog["model"], "limit": {"context": 128000, "output": 4096}}}}},
+                  "mcp": {"fixture": {"type": "local", "command": fixture_command}}, "permission": rules}
+        write_private(config_path, json.dumps(config, ensure_ascii=False))
+        command += ["run", "--pure", "--format", "json", "--dir", str(workspace), "-m", "acceptance/" + catalog["model"]]
+        expected_mode = "code-mode" if mode == "lazy" else "direct"
+    return PreparedClient(client_id, VERSIONS[client_id], expected_mode, command, env, root,
+                          config_path, catalog_path, events, digest(normalized_permissions), digest(build_catalog()))
