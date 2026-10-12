@@ -31,19 +31,22 @@ type bodyArtifact struct {
 // may be captured: headers, URLs and error messages are deliberately excluded.
 // EOF means the body was read, not that a protocol's legal terminal was present.
 type HTTPAttemptJournal struct {
-	mu          sync.Mutex
-	dir         string
-	contract    string
-	maxBytes    int64
-	maxAttempts int
-	attempts    int
-	active      int
-	sequence    int
-	file        *os.File
-	closed      bool
-	closing     bool
-	idle        chan struct{}
-	err         error
+	mu               sync.Mutex
+	dir              string
+	contract         string
+	maxBytes         int64
+	maxAttempts      int
+	attempts         int
+	budgetRejections int
+	closedRejections int
+	failedRejections int
+	active           int
+	sequence         int
+	file             *os.File
+	closed           bool
+	closing          bool
+	idle             chan struct{}
+	err              error
 }
 
 // NewHTTPAttemptJournal requires a new absolute directory and explicit budgets.
@@ -109,9 +112,20 @@ func (j *HTTPAttemptJournal) Observe(req *http.Request, next http.RoundTripper) 
 		}
 	}
 	j.mu.Lock()
-	if j.closed || j.closing || j.err != nil || j.attempts >= j.maxAttempts {
+	if j.closed || j.closing {
+		j.closedRejections++
 		j.mu.Unlock()
-		return nil, errors.New("HTTP evidence journal closed, failed or exhausted")
+		return nil, errors.New("HTTP evidence journal admission closed")
+	}
+	if j.err != nil {
+		j.failedRejections++
+		j.mu.Unlock()
+		return nil, errors.New("HTTP evidence journal failed")
+	}
+	if j.attempts >= j.maxAttempts {
+		j.budgetRejections++
+		j.mu.Unlock()
+		return nil, ErrHTTPAttemptBudgetExhausted
 	}
 	j.attempts++
 	id := fmt.Sprintf("request-%06d", j.attempts)

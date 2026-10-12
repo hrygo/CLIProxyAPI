@@ -8,12 +8,62 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from live_clients import select_model_metadata, result_checks, chat_terminal, endpoint_id, make_case_spec, run_case, main
+from live_clients import select_model_metadata, result_checks, chat_terminal, endpoint_id, make_case_spec, run_case, main, http_failure_class
 from batch_plan import build_plan, fingerprint_materials
 from run_acceptance import CaseJournal, summarize
 
 
 class LiveClientTests(unittest.TestCase):
+    def test_run_case_records_local_denials_without_adding_http_attempts(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from test_http_attempts import evidence
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable, config, stdout = (root / name for name in ("client", "config", "stdout"))
+            executable.write_bytes(b"synthetic-client")
+            config.write_bytes(b"synthetic-config")
+            stdout.write_text("{}\n")
+            capture = root / "capture"
+            capture.mkdir()
+            body = b'{"choices":[{"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":1,"total_tokens":21}}'
+            events = evidence(capture, bodies=(body,) * 8, contract="openai-chat-v1")
+            for event in events:
+                event["version"] = 2
+                if event["event"] == "request-started":
+                    event["executor_identity"] = {"executor": "openai-compatible-fixture", "model_sha256": "b" * 64, "auth_sha256": "c" * 64}
+            (capture / "attempts.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+            (capture / "admission.json").write_text(json.dumps({"version": 1, "max_attempts": 8,
+                "reserved_attempts": 8, "budget_rejections": 3, "closed_rejections": 0, "failed_rejections": 0,
+                "active_bodies": 0, "journal_closed": True, "journal_failed": False}))
+            @contextmanager
+            def candidate(*args, **kwargs):
+                yield {"base_url": "http://127.0.0.1:1"}, capture
+            prepared = SimpleNamespace(run_task=Mock(return_value={"stdout_path": str(stdout), "termination": "exited", "exit_code": 1}),
+                                       collect_boundary_events=Mock(return_value=[{"phase": "catalog", "active_count": 0, "effect_count": 0}]))
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture", "contract": "openai-chat-v1"}
+            journal = CaseJournal(root / "cases.jsonl", "run-admission-budget")
+            with patch("live_clients.shutil.which", return_value=str(executable)), patch("live_clients.candidate_process", candidate), \
+                    patch("live_clients.fetch_model_metadata", return_value={}), patch("live_clients.prepare_isolated_client", return_value=prepared):
+                result = run_case(root, journal, executable, config, profile, "codex", "eager", "a" * 40, "ep_" + "b" * 32, 90)
+            self.assertEqual(result["failure_class"], "budget")
+            self.assertEqual(result["upstream_attempts"], 8)
+            self.assertEqual(result["usage"]["total_input_tokens"], 160)
+            self.assertEqual(result["admission_diagnostics"]["budget_rejections"], 3)
+            self.assertIn("http_attempt_budget_exhausted", result["issues"])
+            self.assertEqual(summarize(journal.events)["started_cases"], 1)
+            self.assertFalse(result["safe_task_success"])
+
+    def test_http_failure_class_separates_budget_evidence_and_provider(self):
+        state = {"budget_rejections": 0, "closed_rejections": 0, "failed_rejections": 0, "journal_failed": False}
+        records = [{"http_status_code": 429}]
+        self.assertEqual(http_failure_class(state, records), "provider")
+        self.assertEqual(http_failure_class({**state, "budget_rejections": 1}, records), "budget")
+        for changed in ({"closed_rejections": 1}, {"failed_rejections": 1}, {"journal_failed": True}):
+            self.assertEqual(http_failure_class({**state, **changed}, records), "framework")
+        self.assertEqual(http_failure_class(None, records), "framework")
+        self.assertIsNone(http_failure_class(state, [{"http_status_code": 200}] * 8))
+
     def test_native_structured_response_needs_actual_terminal_and_exact_gold(self):
         result = {"client_output_profile": "opencode-http-session-v1", "protocol_terminal_verified": True,
                   "protocol_terminal_status": "completed",

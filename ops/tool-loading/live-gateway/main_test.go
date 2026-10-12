@@ -2,14 +2,52 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/acceptance"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
+
+func TestCloseEvidenceWritesPrivateFinalAdmissionWithoutOverwriting(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "capture")
+	journal, err := acceptance.NewHTTPAttemptJournal(dir, "openai-chat-v1", 4096, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := closeEvidence(journal, dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "admission.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state acceptance.HTTPAdmissionDiagnostics
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != 1 || !state.JournalClosed || state.JournalFailed || state.ActiveBodies != 0 || state.MaxAttempts != 2 {
+		t.Fatalf("invalid final diagnostic: %+v", state)
+	}
+	info, _ := os.Stat(path)
+	if info.Mode().Perm() != 0600 {
+		t.Fatal("diagnostic is not private")
+	}
+	if closeEvidence(journal, dir) == nil {
+		t.Fatal("overwrote existing admission evidence")
+	}
+	unchanged, _ := os.ReadFile(path)
+	if string(data) != string(unchanged) {
+		t.Fatal("admission evidence replaced")
+	}
+}
 
 func TestSnapshotStoreNeverWritesOrMutatesSource(t *testing.T) {
 	source := &coreauth.Auth{ID: "fixture-record", Provider: "codex", Metadata: map[string]any{"access_token": "synthetic-only"}}

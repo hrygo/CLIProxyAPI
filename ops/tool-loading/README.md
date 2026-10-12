@@ -10,6 +10,31 @@ Offline case replay and request-level usage normalization are
 available below. Fixture tests do not certify
 Codex/OpenCode permission handling, model quality, or context savings.
 
+## Local HTTP admission diagnostics
+
+The isolated `live-gateway` writes private `capture/admission.json` after SDK
+shutdown and the response-body release barrier. Version 1 records the explicit
+attempt limit, reserved capture slots, local budget/closed/failed rejection
+counts, active bodies and journal closure/failure flags. Reservations are not
+physical HTTP requests: only durable request starts in `attempts.jsonl` count as
+observed physical attempts. Rejected calls never create artificial attempts.
+
+The Python reader validates the fixed schema, actual locked limit, journal count
+and closed/inactive state. Missing old snapshots stay unknown. Reaching the
+attempt limit alone does not prove a denial; an observed `budget_rejections`
+counter is required. Local capture/closure failures take precedence over budget
+attribution. Actual captured upstream HTTP statuses of 400 or higher are reported
+as `provider` when no local evidence/admission failure takes precedence; that is
+the response boundary, not proof of the underlying cause or Provider overload.
+HTTP-200 embedded errors and unrelated client/MCP budgets are not classified by
+this helper. Existing semantic/permission/usage checks still apply.
+
+`live_clients.py` retains the diagnostic in each task summary. A new candidate
+without a valid admission artifact cannot gain a passing task through this
+runner. Old evidence can still be replayed without adding zero-valued diagnostics
+or rewriting historical failure classes. These controls are opt-in acceptance
+instrumentation, not changes to production timeouts, retry policy or defaults.
+
 ## Paired diagnostic analysis
 
 ```sh

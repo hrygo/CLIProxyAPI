@@ -64,6 +64,30 @@ def _artifact(directory, value, expected):
     return body
 
 
+def read_admission_diagnostics(directory: Path, *, max_attempts: int, request_count: int) -> dict | None:
+    """Read a sealed local admission snapshot; old/missing snapshots stay unknown."""
+    if (type(max_attempts) is not int or not 1 <= max_attempts <= 10000
+            or type(request_count) is not int or not 0 <= request_count <= max_attempts):
+        raise ValueError("invalid admission comparison")
+    try:
+        state = _json(_read_file(Path(directory), "admission.json", 4096))
+    except FileNotFoundError:
+        return None
+    integers = {"version", "max_attempts", "reserved_attempts", "budget_rejections", "closed_rejections", "failed_rejections", "active_bodies"}
+    booleans = {"journal_closed", "journal_failed"}
+    if (not isinstance(state, dict) or set(state) != integers | booleans
+            or any(type(state[key]) is not int or not 0 <= state[key] <= 2**63 - 1 for key in integers)
+            or any(type(state[key]) is not bool for key in booleans)
+            or state["version"] != 1 or state["max_attempts"] != max_attempts
+            or not request_count <= state["reserved_attempts"] <= max_attempts
+            or not state["journal_failed"] and state["reserved_attempts"] != request_count
+            or not state["journal_closed"] or state["active_bodies"] != 0
+            or state["budget_rejections"] > 0 and state["reserved_attempts"] != max_attempts
+            or state["failed_rejections"] > 0 and not state["journal_failed"]):
+        raise ValueError("invalid or inconsistent admission diagnostic")
+    return state
+
+
 def _usage(contract, body):
     issues = []
     try:
@@ -262,6 +286,7 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
                                    "usage_kind": "request-total", "raw_usage": None, "finished": False,
                                    "transport_outcome": "unknown", "executor_identity": identity,
                                    "journal_version": event["version"], "transport_capture_complete": None,
+                                   "http_status_code": None,
                                    "usage_evidence": "unknown", "issues": ["unfinished_http_attempt"]}
         elif event.get("event") == "request-finished":
             if (set(event) != common | {"outcome", "status_code", "observed_bytes", "response"}
@@ -283,6 +308,7 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
             usage, issues = _usage(event["contract"], body) if complete or terminal else (None, ["incomplete_response_capture"])
             basis = ("transport-complete" if complete else "protocol-terminal") if usage is not None else "unknown"
             records[request_id].update(raw_usage=usage, finished=True, transport_outcome=event["outcome"], issues=issues,
+                                      http_status_code=event["status_code"],
                                       transport_capture_complete=complete, usage_evidence=basis)
         else:
             raise ValueError("unknown HTTP journal event")

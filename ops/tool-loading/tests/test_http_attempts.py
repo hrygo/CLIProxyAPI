@@ -9,7 +9,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from http_attempts import read_http_attempts, import_http_attempts
+from http_attempts import read_http_attempts, import_http_attempts, read_admission_diagnostics
 from run_acceptance import CaseJournal, summarize, read_journal
 from test_acceptance import spec, CHECKS, BOUNDARIES
 
@@ -37,6 +37,42 @@ def evidence(directory, bodies=(None, b'{"usage":{"input_tokens":100,"output_tok
 
 
 class HTTPAttemptsTests(unittest.TestCase):
+    def test_admission_diagnostic_requires_actual_denial_not_a_full_request_count(self):
+        state = {"version": 1, "max_attempts": 8, "reserved_attempts": 8, "budget_rejections": 0,
+                 "closed_rejections": 0, "failed_rejections": 0, "active_bodies": 0,
+                 "journal_closed": True, "journal_failed": False}
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.assertIsNone(read_admission_diagnostics(root, max_attempts=8, request_count=8))
+            path = root / "admission.json"
+            path.write_text(json.dumps(state))
+            self.assertEqual(read_admission_diagnostics(root, max_attempts=8, request_count=8)["budget_rejections"], 0)
+            path.write_text(json.dumps({**state, "budget_rejections": 2}))
+            self.assertEqual(read_admission_diagnostics(root, max_attempts=8, request_count=8)["budget_rejections"], 2)
+            for changed in ({"version": True}, {"budget_rejections": True}, {"reserved_attempts": 7},
+                            {"max_attempts": 9}, {"journal_closed": False}, {"active_bodies": 1},
+                            {"failed_rejections": 1}, {"unexpected": "private material"}):
+                with self.subTest(changed=changed):
+                    path.write_text(json.dumps({**state, **changed}))
+                    with self.assertRaises(ValueError):
+                        read_admission_diagnostics(root, max_attempts=8, request_count=8)
+            path.unlink()
+            target = root / "target.json"
+            target.write_text(json.dumps(state))
+            path.symlink_to(target)
+            with self.assertRaises(ValueError):
+                read_admission_diagnostics(root, max_attempts=8, request_count=8)
+
+    def test_http_error_status_is_preserved_without_exposing_error_message(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            events = evidence(root, bodies=(b'{"error":{"message":"private upstream message"}}',))
+            events[-1]["status_code"] = 429
+            (root / "attempts.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+            record = read_http_attempts(root)[0]
+            self.assertEqual(record["http_status_code"], 429)
+            self.assertNotIn("private upstream message", json.dumps(record))
+
     def closed_evidence(self, directory, body, contract="openai-chat-v1", **changes):
         events = evidence(directory, bodies=(body,), contract=contract)
         events[-1]["outcome"] = "closed"

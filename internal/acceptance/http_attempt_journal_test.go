@@ -399,3 +399,72 @@ func TestHTTPAttemptJournalBudgetPreventsFurtherDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHTTPAdmissionSeparatesBudgetClosureAndEvidenceFailure(t *testing.T) {
+	for _, scenario := range []string{"budget", "closed", "failed"} {
+		t.Run(scenario, func(t *testing.T) {
+			journal, err := NewHTTPAttemptJournal(filepath.Join(t.TempDir(), "run"), "openai-chat-v1", 64, 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, _ := http.NewRequest(http.MethodPost, "http://fixture.invalid/", strings.NewReader("{}"))
+			calls := 0
+			next := attemptTransport(func(*http.Request) (*http.Response, error) {
+				calls++
+				return &http.Response{StatusCode: 200, Body: http.NoBody}, nil
+			})
+			if _, err := journal.Observe(req, next); err != nil {
+				t.Fatal(err)
+			}
+			if scenario == "closed" {
+				if err := journal.Close(); err != nil {
+					t.Fatal(err)
+				}
+			} else if scenario == "failed" {
+				journal.err = errors.New("synthetic capture failure")
+			}
+			_, err = journal.Observe(req, next)
+			if err == nil || calls != 1 || errors.Is(err, ErrHTTPAttemptBudgetExhausted) != (scenario == "budget") {
+				t.Fatalf("incorrect local admission cause or dispatch: %v, %d", err, calls)
+			}
+			state := journal.AdmissionDiagnostics()
+			if state.ReservedAttempts != 1 || state.ActiveBodies != 0 ||
+				(state.BudgetRejections == 1) != (scenario == "budget") ||
+				(state.ClosedRejections == 1) != (scenario == "closed") ||
+				(state.FailedRejections == 1) != (scenario == "failed") {
+				t.Fatalf("incorrect diagnostic: %+v", state)
+			}
+			_ = journal.Close()
+		})
+	}
+}
+
+func TestHTTPAdmissionDoesNotMistakeProviderErrorForLocalBudget(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"synthetic Provider overload"}}`))
+	}))
+	defer server.Close()
+	journal, err := NewHTTPAttemptJournal(filepath.Join(t.TempDir(), "run"), "openai-chat-v1", 4096, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, server.URL, strings.NewReader("{}"))
+	resp, err := journal.Observe(req, http.DefaultTransport)
+	if err != nil || resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatal("Provider status lost", err)
+	}
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		t.Fatal(err)
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.CloseContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state := journal.AdmissionDiagnostics()
+	if state.BudgetRejections != 0 || state.FailedRejections != 0 || state.JournalFailed || !state.JournalClosed {
+		t.Fatalf("Provider response attributed to local admission: %+v", state)
+	}
+}

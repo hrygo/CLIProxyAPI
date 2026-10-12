@@ -204,6 +204,16 @@ func readLimited(path string) ([]byte, error) {
 	return data, nil
 }
 
+func closeEvidence(journal *acceptance.HTTPAttemptJournal, directory string) error {
+	errClose := journal.CloseContext(context.Background())
+	file, err := os.OpenFile(filepath.Join(directory, "admission.json"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return errors.Join(errClose, err)
+	}
+	errEncode := json.NewEncoder(file).Encode(journal.AdmissionDiagnostics())
+	return errors.Join(errClose, errEncode, file.Sync(), file.Close())
+}
+
 func run() error {
 	configPath := flag.String("config", "", "Absolute operator config source, read only")
 	state := flag.String("state-dir", "", "New absolute private directory")
@@ -339,7 +349,7 @@ func run() error {
 		c.Next()
 	})).Build()
 	if err != nil {
-		return errors.Join(err, journal.Close())
+		return errors.Join(err, closeEvidence(journal, filepath.Join(*state, "capture")))
 	}
 	err = service.Run(ctx)
 	if errors.Is(err, context.Canceled) {
@@ -347,7 +357,7 @@ func run() error {
 	}
 	// The launcher owns the cleanup budget. Do not reuse the canceled service
 	// context or add a network deadline while asynchronous readers release bodies.
-	return errors.Join(err, readyError, journal.CloseContext(context.Background()))
+	return errors.Join(err, readyError, closeEvidence(journal, filepath.Join(*state, "capture")))
 }
 
 func main() {

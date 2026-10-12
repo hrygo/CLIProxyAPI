@@ -23,7 +23,7 @@ import uuid
 from catalog_fixture import build_catalog, digest
 from batch_plan import build_plan, write_plan, fingerprint_materials, verify_materials, BatchBudget, audit_plan
 from client_adapters import VERSIONS, prepare_isolated_client, write_private, validate_session_title
-from http_attempts import import_http_attempts
+from http_attempts import import_http_attempts, read_admission_diagnostics
 from live_gateway import candidate_process
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
 from scripted_clients import client_result
@@ -123,6 +123,17 @@ def chat_terminal(body):
     return bool(reasons and all(isinstance(reason, str) and reason in {"stop", "tool_calls", "function_call"} for reason in reasons))
 
 
+def http_failure_class(admission, attempts):
+    """Classify verified local denials before actual upstream HTTP error statuses."""
+    if admission is None or admission["journal_failed"] or admission["closed_rejections"] or admission["failed_rejections"]:
+        return "framework"
+    if admission["budget_rejections"]:
+        return "budget"
+    if any(type(attempt.get("http_status_code")) is int and attempt["http_status_code"] >= 400 for attempt in attempts):
+        return "provider"
+    return None
+
+
 def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *, scenario="lookup", opencode_title=None, structured_output=False):
     task = get_scenario(scenario)
     if type(structured_output) is not bool:
@@ -167,7 +178,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     case_root.mkdir(mode=0o700)
     checks = dict.fromkeys(("answer", "dispatch", "nonce", "code", "format", "terminal"))
     boundaries = dict.fromkeys(("mcp_attempts", "dispatch", "forbidden_dispatch", "forbidden_effect", "active"))
-    capture, prepared, process = None, None, None
+    capture, prepared, process, admission = None, None, None, None
     issues, attempts = [], []
     failure, effective, declaration_bytes = "framework", False, []
     stage = "candidate_start"
@@ -246,6 +257,14 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                 issues.append("effective_tool_mode_not_observed")
             terminals = [chat_terminal((capture / ("response-" + attempt["request_id"][8:] + ".body")).read_bytes()) for attempt in attempts]
             checks["terminal"] = bool(checks["terminal"] and terminals and all(terminals))
+            admission = read_admission_diagnostics(capture, max_attempts=spec.limits["max_requests"], request_count=len(attempts))
+            local_failure = http_failure_class(admission, attempts)
+            if local_failure is not None:
+                failure = local_failure
+                checks["answer"] = False
+                issues.append("http_admission_diagnostic_missing" if admission is None else
+                              "http_attempt_budget_exhausted" if local_failure == "budget" else
+                              "upstream_http_error" if local_failure == "provider" else "http_evidence_admission_failed")
         except (OSError, ValueError):
             checks["answer"] = False
             issues.append("attempt_evidence_import_failed")
@@ -259,6 +278,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
               "checks": checks, "boundary_counts": boundaries, "upstream_attempts": len(attempts), "issues": issues,
               "effective_mode_observed": effective, "declaration_bytes": declaration_bytes, "usage": case["usage"],
               "failure_class": case["failure_class"], "gate_status": "unverified"}
+    result["admission_diagnostics"] = admission
     write_private(case_root / "summary.json", json.dumps(result, indent=2))
     return result
 
