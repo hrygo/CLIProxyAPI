@@ -16,6 +16,27 @@ def output(value):
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_title_policy_has_distinct_fixture_scope_without_changing_task_gold(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config, executable = Path(temporary) / "config", Path(temporary) / "client"
+            config.write_bytes(b"fixture-config")
+            executable.write_bytes(b"fixture-client")
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture"}
+            with patch("live_clients.shutil.which", return_value=str(executable)):
+                def spec(mode, title=None):
+                    return make_case_spec(config, profile, "opencode", mode, "a" * 40, "ep_" + "b" * 32, 90, opencode_title=title)
+                automatic = spec("eager")
+                fixed = spec("eager", "Locked title")
+                other = spec("eager", "Other title")
+                lazy = spec("lazy", "Locked title")
+            self.assertEqual(fixed.gold, automatic.gold)
+            self.assertEqual(fixed.prompt_hash, automatic.prompt_hash)
+            self.assertNotEqual(fixed.scope["fixture_hash"], automatic.scope["fixture_hash"])
+            self.assertNotEqual(fixed.scope["fixture_hash"], other.scope["fixture_hash"])
+            self.assertEqual(fixed.scope["fixture_hash"], lazy.scope["fixture_hash"])
+            self.assertEqual(fixed.pair_id, lazy.pair_id)
+            self.assertNotEqual(automatic.pair_id, fixed.pair_id)
+
     def test_scenarios_have_distinct_locked_inputs_and_paired_gold(self):
         with tempfile.TemporaryDirectory() as temporary:
             config, executable = Path(temporary) / "config", Path(temporary) / "client"

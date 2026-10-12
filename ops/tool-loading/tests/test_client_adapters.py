@@ -16,6 +16,29 @@ from probe_clients import inspect_tools
 
 
 class AdapterTests(unittest.TestCase):
+    def test_explicit_session_title_is_opencode_only_and_does_not_change_default(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            default = self.prepare("opencode", "eager", self.catalog(temporary, "opencode"))
+            self.assertNotIn("--title", default.command)
+            for mode in ("eager", "lazy"):
+                catalog = self.catalog(temporary, "opencode")
+                catalog["run_dir"] = Path(temporary) / mode
+                catalog["session_title"] = "Tool loading acceptance"
+                prepared = self.prepare("opencode", mode, catalog)
+                self.assertEqual(prepared.command[prepared.command.index("--title") + 1], catalog["session_title"])
+                self.assertEqual(default.permission_hash, prepared.permission_hash)
+                self.assertEqual(default.catalog_hash, prepared.catalog_hash)
+
+    def test_invalid_or_wrong_client_title_fails_before_artifacts(self):
+        for client, value in [("codex", "title"), ("opencode", ""), ("opencode", "\n"),
+                              ("opencode", "a\x00b"), ("opencode", "a" * 129), ("opencode", True), ("opencode", None)]:
+            with self.subTest(client=client, value=value), tempfile.TemporaryDirectory() as temporary:
+                catalog = self.catalog(temporary, client)
+                catalog["session_title"] = value
+                with self.assertRaises(ValueError):
+                    self.prepare(client, "lazy", catalog)
+                self.assertFalse(catalog["run_dir"].exists())
+
     def test_workspace_is_its_own_git_boundary_for_ancestor_instruction_lookup(self):
         import os
         real_run = subprocess.run

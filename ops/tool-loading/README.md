@@ -294,6 +294,21 @@ fixture schema admits; it requires a catalog observation, zero dispatches, and
 exact unavailable JSON. This is a no-supported-tool outcome, not proof that the
 client's search API returned an empty list. The model must not substitute alpha.
 
+An explicit OpenCode CLI title can be predeclared with
+`live_clients.py --opencode-title "Tool loading acceptance"`. This uses the
+installed CLI's supported `--title` option in both modes and leaves the default
+automatic-title profile unchanged. The local first-request probe accepts the
+same option. It must actually eliminate the auxiliary title request; do not
+filter a captured title request out of token accounting. Fixed-title results
+describe that profile, not the default OpenCode workload.
+
+The title policy is bound to the case's fixture hash and a distinct pair ID.
+Fixture fingerprints also bind the fixture, client adapter, and scenario source
+files. Switching title policy, source, or revision requires a fresh run; drift
+from the locked case fails before candidate launch. Titles are supplied only
+to the isolated CLI and are not written to operator configuration. Suppressing
+auxiliary inference does not prove model format compliance or protocol quality.
+
 `multitool` requires lookup completion followed by a separate confirmation
 execution using its actual receipt. The fixture rejects confirmation before a
 successful lookup or with a wrong receipt before dispatch. The final JSON must

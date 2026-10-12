@@ -14,6 +14,27 @@ from run_acceptance import CaseJournal, summarize
 
 
 class LiveClientTests(unittest.TestCase):
+    def test_locked_title_drift_fails_before_candidate_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary, config, executable = (root / name for name in ("gateway", "config", "client"))
+            for path in (binary, config, executable): path.write_bytes(b"synthetic-file")
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture", "contract": "openai-chat-v1"}
+            with patch("live_clients.shutil.which", return_value=str(executable)):
+                cases = [make_case_spec(config, profile, "opencode", mode, "a" * 40, "ep_" + "b" * 32, 90,
+                                       opencode_title="Locked title") for mode in ("eager", "lazy")]
+            files = {"gateway-binary": binary, "source-config": config, "client-opencode": executable}
+            plan = build_plan("run-title-locked", cases, fingerprint_materials(files), "seed", 16, 16)
+            spec = next(case for case in cases if case.case_id == plan["schedule"][0])
+            journal = CaseJournal(root / "cases.jsonl", plan["run_id"])
+            with patch("live_clients.shutil.which", return_value=str(executable)), patch("live_clients.candidate_process") as launch:
+                result = run_case(root, journal, binary, config, profile, "opencode", spec.mode, "a" * 40,
+                    "ep_" + "b" * 32, 90, specification=spec, locked_plan=plan, material_paths=files, opencode_title="Changed title")
+            launch.assert_not_called()
+            self.assertIn("scope_validation_failure", result["issues"])
+            self.assertFalse(result["safe_task_success"])
+            self.assertEqual(summarize(journal.events)["started_cases"], 1)
+
     def test_main_predeclares_all_three_scenarios_and_runs_matching_gold(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

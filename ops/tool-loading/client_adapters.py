@@ -23,6 +23,13 @@ VERSIONS = {"codex": "0.160.0", "opencode": "1.19.0"}
 ENV_KEYS = ("PATH", "TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR")
 
 
+def validate_session_title(value):
+    if (not isinstance(value, str) or not value.strip() or len(value) > 128
+            or any(ord(character) < 32 or ord(character) == 127 for character in value)):
+        raise ValueError("invalid explicit session title")
+    return value
+
+
 def synthetic_codex_model(model: str) -> dict:
     """Minimal metadata for local protocol probes, never a real-model claim."""
     return {"slug": model, "display_name": model, "description": "Local acceptance fixture",
@@ -173,8 +180,12 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
         raise ValueError("unsupported client version")
     allowed = {"run_dir", "client_version", "executable", "model", "base_url", "fixture_python",
                "model_metadata", "nonce", "max_dispatches", "max_result_bytes"}
-    if set(catalog) != allowed:
+    if set(catalog) - {"session_title"} != allowed:
         raise ValueError("missing or unknown adapter configuration keys")
+    if "session_title" in catalog:
+        if client_id != "opencode":
+            raise ValueError("explicit session title is supported only by OpenCode")
+        validate_session_title(catalog["session_title"])
     url = urlsplit(catalog["base_url"])
     if (url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}
             or url.username or url.password or url.query or url.fragment or url.path.rstrip("/") != "/v1"):
@@ -273,6 +284,8 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
                   "mcp": {"fixture": {"type": "local", "command": fixture_command}}, "permission": rules}
         write_private(config_path, json.dumps(config, ensure_ascii=False))
         command += ["run", "--pure", "--format", "json", "--dir", str(workspace), "-m", "acceptance/" + catalog["model"]]
+        if "session_title" in catalog:
+            command += ["--title", catalog["session_title"]]
         expected_mode = "code-mode" if mode == "lazy" else "direct"
     return PreparedClient(client_id, VERSIONS[client_id], expected_mode, command, env, root,
                           config_path, catalog_path, events, digest(normalized_permissions), digest(build_catalog()))

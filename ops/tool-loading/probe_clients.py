@@ -10,7 +10,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from catalog_fixture import build_catalog, canonical_bytes
-from client_adapters import VERSIONS, prepare_isolated_client, synthetic_codex_model, write_private
+from client_adapters import VERSIONS, prepare_isolated_client, synthetic_codex_model, write_private, validate_session_title
 
 
 def inspect_tools(client: str, mode: str, tools: list[dict]) -> dict:
@@ -30,7 +30,11 @@ def inspect_tools(client: str, mode: str, tools: list[dict]) -> dict:
             "mode_observed": bool(valid), "tool_definition_bytes": len(canonical_bytes(tools))}
 
 
-def probe(root: Path, client: str, mode: str, process_seconds: float = 20) -> dict:
+def probe(root: Path, client: str, mode: str, process_seconds: float = 20, *, opencode_title=None) -> dict:
+    if opencode_title is not None:
+        if client != "opencode":
+            raise ValueError("explicit title requires an OpenCode probe")
+        validate_session_title(opencode_title)
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -53,12 +57,15 @@ def probe(root: Path, client: str, mode: str, process_seconds: float = 20) -> di
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        prepared = prepare_isolated_client(client, mode, {
+        client_inputs = {
             "run_dir": root / (client + "-" + mode), "client_version": VERSIONS[client],
             "executable": shutil.which(client) or client, "fixture_python": sys.executable,
             "model": "fixture-model", "model_metadata": synthetic_codex_model("fixture-model"),
             "base_url": f"http://127.0.0.1:{server.server_port}/v1", "nonce": uuid.uuid4().hex,
-            "max_dispatches": 8, "max_result_bytes": 65536},
+            "max_dispatches": 8, "max_result_bytes": 65536}
+        if opencode_title is not None:
+            client_inputs["session_title"] = opencode_title
+        prepared = prepare_isolated_client(client, mode, client_inputs,
             {"client_denied": [], "service_denied": ["fixture_mutation"]})
         result = prepared.run_task({"prompt": "Use the fixture to read alpha remaining budget and verification code.",
                                     "max_seconds": process_seconds, "max_output_bytes": 1000000})
@@ -81,13 +88,19 @@ def probe(root: Path, client: str, mode: str, process_seconds: float = 20) -> di
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--opencode-title")
     args = parser.parse_args()
+    if args.opencode_title is not None:
+        try:
+            validate_session_title(args.opencode_title)
+        except ValueError:
+            parser.error("invalid explicit OpenCode title")
     root = args.output_dir.resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     results = []
     for client in VERSIONS:
         for mode in ("eager", "lazy"):
-            result = probe(root, client, mode)
+            result = probe(root, client, mode, opencode_title=args.opencode_title if client == "opencode" else None)
             results.append(result)
             print(json.dumps(result), flush=True)
     write_private(root / "summary.json", json.dumps({"gate_status": "unverified", "cases": results}, indent=2))
