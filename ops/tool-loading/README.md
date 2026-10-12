@@ -732,9 +732,9 @@ healthy-EOF repair scope only when the verified artifact proves complete transpo
 substantive content, a response ID and valid prompt/candidate counters. Closing a
 body or receiving a read error never supplies that EOF evidence.
 
-This is deterministic wire observation support, not an enabled Antigravity live
-profile. The isolated Go route profile still rejects Antigravity until auxiliary
-requests have independent identity, admission, capture and shutdown coverage.
+This is wire observation support plus the explicit snapshot profile described
+under Synthetic Antigravity SDK integration. Native live certification remains
+unknown; successful loopback fixtures do not establish real account availability.
 Token counters follow the inner GenerateContent usage contract; cache-write and
 billing fields that are absent remain unknown. Inner candidate finish semantics
 were checked against the [official GenerateContent reference](https://ai.google.dev/api/generate-content#FinishReason)
@@ -742,14 +742,14 @@ on 2026-10-13; the private wrapper is established by this repository's executor
 and fixtures, not by that public API reference.
 
 Antigravity's optional HTTP observer now also receives fixed auxiliary operations
-(`credits_query`, `oauth_refresh`, `project_discovery`, `http_request`) with the
+(`credits_query`, `oauth_refresh`, `project_discovery`, `model_discovery`, `http_request`) with the
 actual executor and credential fingerprint; an auxiliary request has no model
 fingerprint. The existing independent warm-hint/refresh contexts copy only that
 observer, preserving their lifetime and transport selection. Observation runs
 before dispatch, counts redirects and avoids duplicates under nested wrappers.
-No observer is enabled globally. The live profile remains gated: the acceptance
-journal/importer, auxiliary usage accounting and candidate shutdown must support
-these identities before a native live batch is admitted.
+No observer is enabled globally. The isolated profile admits only bound catalog
+and credit queries; refresh/bootstrap operation names are evidence vocabulary,
+not permission to mutate the operator account or proof of OAuth certification.
 
 The isolated candidate seals `capture/preparation.json` separately from physical
 HTTP attempts and admission diagnostics. Only a typed `ToolCompatibilityError`
@@ -920,7 +920,7 @@ or formal quality and benefit certification.
 
 An Antigravity journal selects `antigravity-auxiliary-v1` only from an actual
 executor identity with a nonempty credential fingerprint, no model fingerprint,
-and a fixed operation (`credits_query`, `oauth_refresh`, `project_discovery` or
+and a fixed operation (`credits_query`, `oauth_refresh`, `project_discovery`, `model_discovery` or
 `http_request`). Model calls retain `antigravity-generate-v1`. Each attempt keeps
 the same contract between its durable start and finish. Unbound identities are
 rejected before dispatch; URLs, headers and error prose stay out of exports.
