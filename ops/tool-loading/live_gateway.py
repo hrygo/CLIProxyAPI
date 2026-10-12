@@ -18,6 +18,33 @@ from urllib.parse import urlsplit
 from client_adapters import ENV_KEYS, write_private
 
 
+def parse_credential_bindings(values, executor):
+    if not isinstance(values, list) or len(values) > 8:
+        raise ValueError("credential selection budget exceeded")
+    bindings = []
+    for value in values:
+        if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}:[0-9a-f]{64}", value) is None:
+            raise ValueError("invalid credential binding")
+        name_hash, content_hash = value.split(":")
+        bindings.append({"name_sha256": name_hash, "content_sha256": content_hash})
+    if bindings and (executor not in {"codex", "meta", "gemini", "claude"}
+                     or len({binding["name_sha256"] for binding in bindings}) != len(bindings)):
+        raise ValueError("invalid native credential selection")
+    return bindings
+
+
+def validate_profile(profile):
+    if (not isinstance(profile, dict) or set(profile) - {"auth_files"} != {"client_model", "upstream_model", "executor", "contract"}
+            or any(not isinstance(value, str) or not value for key, value in profile.items() if key != "auth_files")):
+        raise ValueError("invalid pinned profile")
+    bindings = profile.get("auth_files", [])
+    if (not isinstance(bindings, list) or "auth_files" in profile and not bindings
+            or any(not isinstance(value, dict) or set(value) != {"name_sha256", "content_sha256"}
+                   or any(not isinstance(digest, str) for digest in value.values()) for value in bindings)):
+        raise ValueError("invalid explicit credential bindings")
+    parse_credential_bindings([binding["name_sha256"] + ":" + binding["content_sha256"] for binding in bindings], profile["executor"])
+
+
 def validate_ready(ready, pid, port, profile, config_hash):
     keys = {"version", "scope", "pid", "base_url", "ready_nonce", "profile", "source_config_sha256",
             "source_policy_sha256", "isolation_version", "selected_auth_ids_sha256", "selected_auth_count", "credential_refresh_disabled", "selected_auth_ids"}
@@ -32,7 +59,7 @@ def validate_ready(ready, pid, port, profile, config_hash):
     if (type(ready["version"]) is not int or ready["version"] != 1 or ready["scope"] != "isolated-live-candidate"
             or type(ready["pid"]) is not int or ready["pid"] != pid or ready["profile"] != profile
             or ready["source_config_sha256"] != config_hash
-            or type(ready["isolation_version"]) is not int or ready["isolation_version"] != 3 or ready["credential_refresh_disabled"] is not True
+            or type(ready["isolation_version"]) is not int or ready["isolation_version"] != 4 or ready["credential_refresh_disabled"] is not True
             or type(ready["selected_auth_count"]) is not int or ready["selected_auth_count"] < 1
             or not isinstance(ready["ready_nonce"], str) or not 1 <= len(ready["ready_nonce"]) <= 128
             or address.scheme != "http" or address.hostname != "127.0.0.1" or address.port != port
@@ -64,8 +91,8 @@ def candidate_process(binary, config, root, profile, *, max_attempts=16):
     binary, config, root = Path(binary).resolve(), Path(config).resolve(), Path(root).resolve()
     if not binary.is_file() or not config.is_file() or not root.is_dir() or type(max_attempts) is not int or not 1 <= max_attempts <= 32:
         raise ValueError("invalid candidate inputs or attempt budget")
-    if set(profile) != {"client_model", "upstream_model", "executor", "contract"} or any(not isinstance(value, str) or not value for value in profile.values()):
-        raise ValueError("invalid pinned profile")
+    validate_profile(profile)
+    bindings = profile.get("auth_files", [])
     config_hash = hashlib.sha256(config.read_bytes()).hexdigest()
     write_private(root / "gateway-binary-sha256.txt", hashlib.sha256(binary.read_bytes()).hexdigest() + "\n")
     # The SDK binds its own listener. A reservation is released before launch;
@@ -76,6 +103,8 @@ def candidate_process(binary, config, root, profile, *, max_attempts=16):
     command = [str(binary), "--config", str(config), "--state-dir", str(root / "gateway-state"), "--port", str(port),
                "--client-model", profile["client_model"], "--upstream-model", profile["upstream_model"],
                "--executor", profile["executor"], "--contract", profile["contract"], "--max-attempts", str(max_attempts)]
+    for binding in bindings:
+        command += ["--auth-file-binding", binding["name_sha256"]+":"+binding["content_sha256"]]
     env = {key: os.environ[key] for key in ENV_KEYS if key in os.environ}
     # Preserve the original owner home only for resolving the explicitly
     # requested operator auth directory. Native clients use separate homes.
@@ -138,10 +167,18 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     for field in ("client-model", "upstream-model", "executor", "contract"):
         parser.add_argument("--" + field, required=True)
+    parser.add_argument("--auth-file-binding", action="append", default=[], help="explicit native filename SHA-256:content SHA-256")
     args = parser.parse_args()
+    profile = {key: getattr(args, key) for key in ("client_model", "upstream_model", "executor", "contract")}
+    try:
+        bindings = parse_credential_bindings(args.auth_file_binding, args.executor)
+        if bindings:
+            profile["auth_files"] = bindings
+        validate_profile(profile)
+    except ValueError:
+        parser.error("invalid pinned profile or native credential selection")
     root = args.output_dir.resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
-    profile = {key: getattr(args, key) for key in ("client_model", "upstream_model", "executor", "contract")}
     with candidate_process(args.gateway_binary, args.config, root, profile) as (ready, capture):
         write_private(root / "bootstrap.summary.json", json.dumps({"gate_status": "unverified", "startup_verified": True,
                       "provider_inference_performed": False, "ready": ready, "capture_dir": str(capture)}, indent=2))

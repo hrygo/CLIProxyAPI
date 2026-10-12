@@ -24,11 +24,12 @@ from catalog_fixture import build_catalog, digest
 from batch_plan import build_plan, write_plan, fingerprint_materials, verify_materials, BatchBudget, audit_plan
 from client_adapters import VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
 from http_attempts import import_http_attempts, read_admission_diagnostics
-from live_gateway import candidate_process
+from live_gateway import candidate_process, parse_credential_bindings, validate_profile
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
 from scripted_clients import client_result
 from task_scenarios import SCENARIOS, get_scenario, output_schema, answer_matches, dispatch_matches, intermediate_receipt_replayed
 from jsonschema import Draft202012Validator
+from native_wire import wire_contract, declarations as wire_declarations, declaration_bytes as wire_declaration_bytes, successful_terminal
 
 PROMPT = get_scenario("lookup").prompt
 PERMISSIONS = {"client_denied": [], "service_denied": ["fixture_mutation"]}
@@ -100,27 +101,7 @@ def result_checks(client, raw, nonce, *, scenario="lookup", native_result=None, 
 
 
 def chat_terminal(body):
-    try:
-        values = [json.loads(body)]
-    except (ValueError, UnicodeDecodeError):
-        values = []
-        for frame in body.replace(b"\r\n", b"\n").split(b"\n\n"):
-            data = b"\n".join(line[5:].lstrip() for line in frame.splitlines() if line.startswith(b"data:"))
-            if data and data != b"[DONE]":
-                try:
-                    values.append(json.loads(data))
-                except (ValueError, UnicodeDecodeError):
-                    return False
-    reasons = []
-    for value in values:
-        if not isinstance(value, dict) or not isinstance(value.get("choices", []), list):
-            return False
-        for choice in value.get("choices", []):
-            if not isinstance(choice, dict):
-                return False
-            if choice.get("finish_reason") is not None:
-                reasons.append(choice["finish_reason"])
-    return bool(reasons and all(isinstance(reason, str) and reason in {"stop", "tool_calls", "function_call"} for reason in reasons))
+    return successful_terminal("openai-chat-v1", body)
 
 
 def http_failure_class(admission, attempts):
@@ -155,12 +136,13 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
                  client=client, client_version=VERSIONS[client], client_revision=hashlib.sha256(executable.read_bytes()).hexdigest(),
                  client_mode="direct" if mode == "eager" else "tool-search" if client == "codex" else "code-mode",
                  source_format="codex" if client == "codex" else "openai", provider=profile["executor"], model=profile["upstream_model"],
-                 upstream_format="openai", endpoint_id=endpoint, transport="http-sse", region_id="unknown",
+                 upstream_format="openai" if wire_contract(profile["executor"]) == "openai-chat-v1" else "openai-response", endpoint_id=endpoint, transport="http-sse", region_id="unknown",
                  catalog_hash=digest(build_catalog(task.coding_task)), fixture_hash=digest({
                      "sources": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                                  for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py")
                                  + (("coding_tasks.py",) if task.coding_task is not None else ())},
                      "coding_task": task.coding_task,
+                     "credential_selection": profile.get("auth_files", []),
                      "structured_output": structured_output,
                      "session_title_policy": ("not-applicable" if client == "codex" else "automatic") if opencode_title is None
                                              else hashlib.sha256(opencode_title.encode()).hexdigest()}),
@@ -265,8 +247,9 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             if scenario == "multitool" and prepared is not None and not intermediate_receipt_replayed(bodies, nonce):
                 checks["dispatch"] = False
                 issues.append("intermediate_receipt_not_replayed")
-            declarations = [body.get("tools", []) for body in bodies if body.get("tools")]
-            declaration_bytes = [len(json.dumps(tools, separators=(",", ":")).encode()) for tools in declarations]
+            declarations = [wire_declarations(profile["contract"], body) for body in bodies]
+            declarations = [tools for tools in declarations if tools]
+            declaration_bytes = [size for body in bodies if (size := wire_declaration_bytes(profile["contract"], body))]
             if declarations:
                 first = json.dumps(declarations[0])
                 effective = (len(declarations[0]) >= 60 if mode == "eager" else len(declarations[0]) < 60 and
@@ -274,7 +257,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             if not attempts or not effective:
                 checks["answer"] = False
                 issues.append("effective_tool_mode_not_observed")
-            terminals = [chat_terminal((capture / ("response-" + attempt["request_id"][8:] + ".body")).read_bytes()) for attempt in attempts]
+            terminals = [successful_terminal(attempt["contract"], (capture / ("response-" + attempt["request_id"][8:] + ".body")).read_bytes()) for attempt in attempts]
             checks["terminal"] = bool(checks["terminal"] and terminals and all(terminals))
             admission = read_admission_diagnostics(capture, max_attempts=spec.limits["max_requests"], request_count=len(attempts))
             local_failure = http_failure_class(admission, attempts)
@@ -319,9 +302,14 @@ def main():
     parser.add_argument("--batch-max-dispatches", type=int)
     parser.add_argument("--opencode-title", help="explicit task title; automatic-title profile remains the default")
     parser.add_argument("--structured-output", action="store_true", help="opt-in native JSON-schema output; default profiles remain unchanged")
+    parser.add_argument("--auth-file-binding", action="append", default=[], help="explicit native OAuth filename SHA-256:content SHA-256; repeat up to eight")
     args = parser.parse_args()
-    if not 10 <= args.task_seconds <= 300 or not args.executor.startswith("openai-compatible-"):
-        parser.error("bounded Chat calibration only")
+    try:
+        contract = wire_contract(args.executor)
+    except ValueError:
+        parser.error("executor has no verified live wire view")
+    if not 10 <= args.task_seconds <= 300:
+        parser.error("bounded task budget required")
     if any(len(set(values)) != len(values) for values in (args.clients, args.modes, args.scenarios)):
         parser.error("duplicate client, mode, or scenario")
     if args.opencode_title is not None:
@@ -338,12 +326,19 @@ def main():
         endpoint = endpoint_id(args.endpoint_sha256)
     except ValueError:
         parser.error("complete configured endpoint digest is required")
+    profile = {"client_model": args.client_model, "upstream_model": args.upstream_model,
+               "executor": args.executor, "contract": contract}
+    try:
+        bindings = parse_credential_bindings(args.auth_file_binding, args.executor)
+        if bindings:
+            profile["auth_files"] = bindings
+        validate_profile(profile)
+    except ValueError:
+        parser.error("invalid pinned profile or native credential selection")
     root = args.output_dir.resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     run_id = "live-calibration-" + uuid.uuid4().hex
     journal = CaseJournal(root / "cases.jsonl", run_id)
-    profile = {"client_model": args.client_model, "upstream_model": args.upstream_model,
-               "executor": args.executor, "contract": "openai-chat-v1"}
     results = []
     locked_plan, material_paths, budget = None, None, None
     stop_reason = "interrupted" if paired else "diagnostic-only"

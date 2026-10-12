@@ -275,6 +275,21 @@ class LiveClientTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 endpoint_id(value)
 
+    def test_invalid_native_credential_binding_fails_before_creating_run_artifacts(self):
+        import io
+        from contextlib import redirect_stderr
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "absent-run"
+            argv = ["live_clients.py", "--gateway-binary", "unused", "--config", "unused", "--output-dir", str(output),
+                    "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
+                    "--upstream-model", "fixture", "--executor", "codex", "--auth-file-binding", "bad"]
+            with patch("live_clients.sys.argv", argv), patch("live_clients.run_case") as launch, \
+                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exit:
+                main()
+            self.assertEqual(exit.exception.code, 2)
+            self.assertFalse(output.exists())
+            launch.assert_not_called()
+
     def test_real_catalog_required_without_synthetic_fallback(self):
         model = {"slug": "actual-alias", "tool_mode": "direct", "context_window": 200000, "supports_search_tool": True}
         self.assertEqual(select_model_metadata({"models": [model]}, "actual-alias", "codex", "lazy"), model)
@@ -306,7 +321,7 @@ class LiveClientTests(unittest.TestCase):
     def test_eof_and_done_do_not_substitute_for_chat_finish_reason(self):
         self.assertFalse(chat_terminal(b'data: [DONE]\n\n'))
         self.assertFalse(chat_terminal(b'data: {"choices":[{"delta":{"content":"partial"},"finish_reason":null}]}\n\n'))
-        self.assertTrue(chat_terminal(b'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n'))
+        self.assertTrue(chat_terminal(b'data: {"choices":[{"index":0,"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n'))
         self.assertFalse(chat_terminal(b'data: {"choices":[{"finish_reason":"length"}]}\n\n'))
         self.assertFalse(chat_terminal(b'{"choices":null}'))
         self.assertFalse(chat_terminal(b'{"choices":[{"finish_reason":{}}]}'))

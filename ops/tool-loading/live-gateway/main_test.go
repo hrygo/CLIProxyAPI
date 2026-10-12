@@ -106,7 +106,7 @@ func TestActualRouteGuardRejectsMismatchBeforeHTTP(t *testing.T) {
 }
 
 func TestProfilesUseSupportedExplicitUsageContracts(t *testing.T) {
-	for provider, contract := range map[string]string{"codex": "openai-responses-v1", "gemini": "gemini-generate-v1", "claude": "anthropic-messages-v1", "openai-compatible-fixture": "openai-chat-v1"} {
+	for provider, contract := range map[string]string{"codex": "openai-responses-v1", "meta": "openai-responses-v1", "gemini": "gemini-generate-v1", "claude": "anthropic-messages-v1", "openai-compatible-fixture": "openai-chat-v1"} {
 		profile := liveProfile{ClientModel: "fixture", UpstreamModel: "fixture-model", Executor: provider, Contract: contract}
 		if err := profile.validate(); err != nil {
 			t.Fatalf("valid explicit profile rejected: %s", provider)

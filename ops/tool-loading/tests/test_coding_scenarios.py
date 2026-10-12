@@ -59,7 +59,7 @@ class CodingScenarioTests(unittest.TestCase):
                 prepared = SimpleNamespace(run_dir=root / "private", permission_hash=digest(profile_permissions(
                     PERMISSIONS, structured_output=True, coding_task="retry")), catalog_hash=digest(build_catalog("retry")),
                     run_task=lambda task: native, collect_boundary_events=lambda: [{"phase": "catalog", "effect_count": 0, "active_count": 0}])
-                profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture"}
+                profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture", "contract": "openai-chat-v1"}
                 journal = CaseJournal(root / "cases.jsonl", "run-coding-host")
                 with patch("live_clients.shutil.which", return_value=str(executable)), patch("live_clients.candidate_process", candidate), \
                         patch("live_clients.fetch_model_metadata", return_value={}), patch("live_clients.prepare_isolated_client", return_value=prepared), \

@@ -2,7 +2,7 @@
 
 This directory contains the scoped evidence schema and a synthetic MCP fixture.
 Version-pinned client adapters and a local first-request probe are available.
-Predeclared paired live scheduling and bounded Chat calibration are available;
+Predeclared paired live scheduling and bounded Chat/Responses calibration are available;
 the final multi-route matrix and statistical certification remain pending.
 Read-only paired diagnostics are available in `analyze_pairs.py`; their
 conditional bounds never promote a run to a certification label.
@@ -422,7 +422,8 @@ templates per client in both modes. The default remains the lookup calibration.
 Each template has a distinct pair ID and prompt hash, with identical gold and
 limits within the eager/lazy pair. This expands the executable task set, not
 the set of certified Provider routes. The runner still accepts only explicitly
-identified Chat routes, and every gate remains `unverified`.
+identified Chat routes and native `codex`/`meta` Responses routes, and every
+gate remains `unverified` until the corresponding evidence is sufficient.
 
 `lookup` requires exactly one completed/released ledger dispatch and its fresh
 receipt in plain final JSON. `unavailable` asks for project omega, which no
@@ -657,10 +658,32 @@ remain separate work.
 
 `live-gateway/` uses the official SDK's configuration, API-key synthesis,
 executor registration and model alias initialization. Operator configuration
-is read into memory; selected native file credentials are copied into an
-ephemeral store. Source configuration and credentials are never written by
-this store. This bootstrap has been exercised with a synthetic source/upstream;
-its real Provider profiles remain unverified.
+is read into memory. Native API-key profiles do not read the OAuth directory.
+Native OAuth profiles require explicit `--auth-file-binding` arguments, each
+containing a lowercase SHA-256 of one filename followed by a colon and its
+content SHA-256. At most eight regular JSON files are selected within the
+configured auth directory; unrelated file bodies are never loaded. Bindings
+are part of the locked case fixture hash and readiness profile. Filename hashes
+are scope identifiers, not secrets or authorization tokens.
+
+Selected files use the production auth synthesizer, then a deep memory snapshot
+removes source paths, storage, refresh tokens and Meta DCA exchange authority.
+An explicit OAuth selection excludes configured API-key accounts for that
+executor. The original files are checked against their bound content after
+the candidate stops. Source configuration and credentials are never written
+by the snapshot store; credentials are not copied to disk or command arguments.
+Isolation readiness version 4 rejects older candidates lacking these rules.
+
+`live_clients.py` supports native `codex`/`meta` via the explicit
+`openai-responses-v1` wire view. Namespace leaves and Lite historical
+`additional_tools` are counted as declarations. Successful terminals require
+an actual completed response; failed/incomplete responses, broken frames,
+identity conflicts and duplicate or trailing terminals cannot pass. The
+independent usage reader may retain known usage for failed terminal responses,
+which does not make the task successful. Antigravity, Gemini CLI/plugin and AI Studio relay
+routes still need independent bootstrap, transport capture and wire gates;
+this runner does not guess that they use the ordinary Gemini HTTP executor.
+Offline bootstrap checks do not certify real Provider availability or quality.
 
 ```sh
 GOTOOLCHAIN=go1.26.4 go build -o "$task_validation/tool-loading-live-gateway" ./ops/tool-loading/live-gateway
@@ -688,7 +711,7 @@ processes are never killed or restarted. Child environment is filtered; the
 original owner home is retained solely for resolving the requested auth source.
 Native client homes remain separately isolated.
 
-Isolation version 3 deep-copies native JSON metadata, removes refresh tokens,
+Isolation version 4 deep-copies native JSON metadata, removes refresh tokens,
 and gates native snapshot background refresh before startup. API-key credentials
 are excluded by the SDK refresh scheduler. The SDK's routing selector and
 session-affinity lifecycle are preserved; neither is replaced or prematurely stopped.
@@ -699,7 +722,7 @@ The wrapper serves only model listing, synthetic readiness, and POST Chat or
 Responses for the single pinned client model. No operator management endpoint,
 config watcher, plugin, Home, discovery, logging or cooldown persistence is used.
 
-Supported constructor profiles are `codex`/Responses, `gemini`/GenerateContent,
+Supported constructor profiles are `codex`/Responses, `meta`/Responses, `gemini`/GenerateContent,
 `claude`/Messages and configured `openai-compatible-*`/Chat. These are explicit
 wire-contract constraints, not certification. Other executors remain unknown;
 no familiar provider name silently becomes Chat. The transport observer rejects

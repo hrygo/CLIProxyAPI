@@ -30,7 +30,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	_ "github.com/router-for-me/CLIProxyAPI/v8/internal/translator"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
@@ -39,10 +38,11 @@ import (
 )
 
 type liveProfile struct {
-	ClientModel   string `json:"client_model"`
-	UpstreamModel string `json:"upstream_model"`
-	Executor      string `json:"executor"`
-	Contract      string `json:"contract"`
+	ClientModel   string              `json:"client_model"`
+	UpstreamModel string              `json:"upstream_model"`
+	Executor      string              `json:"executor"`
+	Contract      string              `json:"contract"`
+	AuthFiles     []credentialBinding `json:"auth_files,omitempty"`
 }
 
 func (p liveProfile) validate() error {
@@ -52,7 +52,7 @@ func (p liveProfile) validate() error {
 	}
 	expected := "openai-chat-v1"
 	switch p.Executor {
-	case "codex":
+	case "codex", "meta":
 		expected = "openai-responses-v1"
 	case "gemini":
 		expected = "gemini-generate-v1"
@@ -65,6 +65,16 @@ func (p liveProfile) validate() error {
 	}
 	if p.Contract != expected {
 		return errors.New("executor and explicit wire contract disagree")
+	}
+	var bindings []string
+	for _, binding := range p.AuthFiles {
+		bindings = append(bindings, binding.NameSHA256+":"+binding.ContentSHA256)
+	}
+	if _, err := parseCredentialBindings(bindings); err != nil {
+		return err
+	}
+	if len(p.AuthFiles) > 0 && strings.HasPrefix(p.Executor, "openai-compatible-") {
+		return errors.New("OAuth bindings cannot select a configured Chat provider")
 	}
 	return nil
 }
@@ -124,6 +134,12 @@ func newSnapshotStore(source []*coreauth.Auth, provider string) *snapshotStore {
 			for _, key := range []string{"refresh_token", "refreshToken"} {
 				delete(clone.Attributes, key)
 			}
+			for _, key := range []string{coreauth.AttributePath, coreauth.AttributeSource, "dca_token"} {
+				delete(clone.Attributes, key)
+			}
+			if strings.HasPrefix(clone.Attributes["access_token"], "dca:") {
+				delete(clone.Attributes, "access_token")
+			}
 			clone.NextRefreshAfter = time.Date(9999, time.December, 31, 0, 0, 0, 0, time.UTC)
 			store.auths = append(store.auths, clone)
 		}
@@ -135,7 +151,7 @@ func removeRefreshCredentials(value any) {
 	switch value := value.(type) {
 	case map[string]any:
 		for key, child := range value {
-			if key == "refresh_token" || key == "refreshToken" {
+			if key == "refresh_token" || key == "refreshToken" || key == "dca_token" || key == "access_token" && strings.HasPrefix(fmt.Sprint(child), "dca:") {
 				delete(value, key)
 			} else {
 				removeRefreshCredentials(child)
@@ -148,6 +164,10 @@ func removeRefreshCredentials(value any) {
 	case map[string]string:
 		delete(value, "refresh_token")
 		delete(value, "refreshToken")
+		delete(value, "dca_token")
+		if strings.HasPrefix(value["access_token"], "dca:") {
+			delete(value, "access_token")
+		}
 	}
 }
 
@@ -222,9 +242,15 @@ func run() error {
 	upstreamModel := flag.String("upstream-model", "", "Pinned actual executor model ID")
 	provider := flag.String("executor", "", "Pinned actual executor identifier")
 	contract := flag.String("contract", "", "Explicit upstream usage/wire contract")
+	var credentialSelections credentialFlags
+	flag.Var(&credentialSelections, "auth-file-binding", "Explicit filename SHA-256:content SHA-256 within configured auth directory; repeat up to eight")
 	maxAttempts := flag.Int("max-attempts", 16, "Maximum observed upstream attempts")
 	flag.Parse()
-	profile := liveProfile{*clientModel, *upstreamModel, *provider, *contract}
+	bindings, err := parseCredentialBindings(credentialSelections)
+	if err != nil {
+		return err
+	}
+	profile := liveProfile{ClientModel: *clientModel, UpstreamModel: *upstreamModel, Executor: *provider, Contract: *contract, AuthFiles: bindings}
 	if flag.NArg() != 0 || !filepath.IsAbs(*configPath) || !filepath.IsAbs(*state) || *port < 1024 || *port > 65535 || *maxAttempts < 1 || *maxAttempts > 32 {
 		return errors.New("invalid isolated candidate arguments")
 	}
@@ -249,18 +275,9 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	var auths []*coreauth.Auth
-	if profile.Executor == "codex" || profile.Executor == "gemini" || profile.Executor == "claude" {
-		directory, err := util.ResolveAuthDir(source.AuthDir)
-		if err != nil {
-			return err
-		}
-		store := sdkauth.NewFileTokenStore()
-		store.SetBaseDir(directory)
-		auths, err = store.List(context.Background())
-		if err != nil {
-			return errors.New("cannot load selected credential snapshot")
-		}
+	auths, err := loadSelectedCredentials(source, profile)
+	if err != nil {
+		return err
 	}
 	if err := os.Mkdir(*state, 0700); err != nil {
 		return err
@@ -270,6 +287,7 @@ func run() error {
 		return err
 	}
 	cfg := isolateConfig(source, *state, *port)
+	isolateSelectedAPIKeys(cfg, profile)
 	store := newSnapshotStore(auths, profile.Executor)
 	sdkauth.RegisterTokenStore(store)
 	var manager *coreauth.Manager
@@ -277,7 +295,7 @@ func run() error {
 	ready := map[string]any{"version": 1, "scope": "isolated-live-candidate", "pid": os.Getpid(),
 		"base_url": fmt.Sprintf("http://127.0.0.1:%d/v1", *port), "ready_nonce": readyNonce,
 		"profile": profile, "source_config_sha256": fingerprint(raw), "source_policy_sha256": fingerprint(policy),
-		"isolation_version": 3, "credential_refresh_disabled": true}
+		"isolation_version": 4, "credential_refresh_disabled": true}
 	var allowedAuths atomic.Value
 	allowedAuths.Store(map[string]bool{})
 	observer := guardObserver(profile, journal.Observe, func(id string) bool { return allowedAuths.Load().(map[string]bool)[id] })
@@ -357,7 +375,7 @@ func run() error {
 	}
 	// The launcher owns the cleanup budget. Do not reuse the canceled service
 	// context or add a network deadline while asynchronous readers release bodies.
-	return errors.Join(err, readyError, closeEvidence(journal, filepath.Join(*state, "capture")))
+	return errors.Join(err, readyError, closeEvidence(journal, filepath.Join(*state, "capture")), verifySelectedCredentialSources(source, profile))
 }
 
 func main() {
