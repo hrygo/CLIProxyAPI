@@ -29,8 +29,9 @@ type Attempt struct {
 // route needs adaptation, or the original body with a nil attempt when the
 // request passes through untouched.
 type Prepared struct {
-	Body    []byte
-	Attempt *Attempt
+	Body           []byte
+	Attempt        *Attempt
+	Transformation TransformationReport
 }
 
 // Prepare parses one raw client request body against the effective route
@@ -47,6 +48,18 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		return Prepared{}, err
 	}
 	body = repaired
+	// Native requests also expose position diagnostics, including when no
+	// response adapter is needed. Inspect only the Lite declaration dialect.
+	if root == nil && bytes.Contains(body, []byte("\"additional_tools\"")) {
+		value, ok := decodeValue(body)
+		if ok {
+			root, _ = value.(map[string]any)
+		}
+	}
+	report := TransformationReport{PositionPreserved: true}
+	if hasAdditionalToolsInput(root) {
+		report.Positions = AnalyzeToolPositions(root)
+	}
 	contract := ParseContract(body)
 	customDeclarations := hasCustomDeclarations(body)
 	customHistory := hasCustomHistory(body)
@@ -68,7 +81,7 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		portableAdditional = hasAdditionalToolsInput(root)
 	}
 	if contract == nil && !customHistory && !portableAdditional {
-		return Prepared{Body: body}, nil
+		return Prepared{Body: body, Transformation: report}, nil
 	}
 	if contract == nil {
 		contract = NewToolContract()
@@ -92,7 +105,7 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 		root, ok = value.(map[string]any)
 		if !ok {
-			return Prepared{Body: body}, nil
+			return Prepared{Body: body, Transformation: report}, nil
 		}
 	}
 	if needsCustomHistory {
@@ -120,7 +133,7 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		return Prepared{}, unprocessableError(ReasonOpaqueHistory, fmt.Errorf("tool adaptation cannot resolve opaque response or item history"))
 	}
 	if !needsSearch && !needsNativeSearch && !needsCustom && !needsSchema {
-		return Prepared{Body: body}, nil
+		return Prepared{Body: body, Transformation: report}, nil
 	}
 
 	// Portable native routes cannot accept Lite declaration input items. Lift
@@ -296,11 +309,11 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 			attempt.responseOnly = true
 			attempt.feed = NewStreamFeed(attempt.contract, attempt.bridge, lease, limits)
 			closeOnError = false
-			return Prepared{Body: body, Attempt: attempt}, nil
+			return Prepared{Body: body, Attempt: attempt, Transformation: report}, nil
 		}
 		closeOnError = false
 		attempt.Close()
-		return Prepared{Body: body}, nil
+		return Prepared{Body: body, Transformation: report}, nil
 	}
 	if err := checkAdaptedInputItemIDs(originalOwners, originalInputLength, root); err != nil {
 		return Prepared{}, err
@@ -326,7 +339,8 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 	attempt.adapted = true
 	attempt.feed = NewStreamFeed(attempt.contract, attempt.bridge, lease, limits)
 	closeOnError = false
-	return Prepared{Body: out, Attempt: attempt}, nil
+	report.comparePositions(root)
+	return Prepared{Body: out, Attempt: attempt, Transformation: report}, nil
 }
 
 func hasAdditionalToolsInput(root map[string]any) bool {

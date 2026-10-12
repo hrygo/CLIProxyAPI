@@ -8,7 +8,8 @@ import (
 )
 
 // liftAdditionalTools adapts Lite declaration containers for portable native
-// Responses routes. Conversation items and discovery history are untouched.
+// Responses routes. Conversation item identities and discovery history remain
+// intact, but declaration positions are lost and reported by Prepare.
 func liftAdditionalTools(root map[string]any, limits Limits) error {
 	tools, _ := root["tools"].([]any)
 	if value, exists := root["tools"]; exists && value != nil && tools == nil {

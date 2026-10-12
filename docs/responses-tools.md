@@ -160,6 +160,25 @@ derived from the upstream format **and** the provider:
   IDs are preserved, and lifted declarations
   remain subject to the active declaration budget. Inherited native routes
   retain the original Lite input dialect and request bytes.
+  Lifting changes declaration scope: a declaration originally between
+  conversation items becomes visible at whole-request scope. The internal
+  `Prepared.Transformation` sidecar reports original Lite declaration indices,
+  interleaving and same-identity updates. A lift reports
+  `position_preserved: false` and `additional_tools_position_lift`; native
+  passthrough reports `position_preserved: true`, including response-only alias
+  repair. Diagnostics contain no prompts, names, schemas or fingerprints.
+  This report concerns declaration positions only, not full semantic fidelity.
+  It is not an HTTP response field and does not alter route policy.
+
+  Exact position semantics are not certified on portable lifting routes.
+  A future opt-in strict contract should reject an unmappable interleaved
+  declaration or same-identity update locally with 422
+  `unsupported_protocol`, before opening an upstream connection; clients
+  should then select a route with position-preserving support rather than
+  retrying the same incompatible payload. This strict contract is a proposal,
+  not an enabled configuration option. Existing ambiguous definition conflicts
+  already fail with 422 `ambiguous_identity`. The compatibility behavior
+  above remains in effect pending whole-branch review.
   `schema.local-refs: inline` stays opt-in for every provider, `meta`
   included: the convention never expands a client-authored `$ref`; flattening
   only replaces the references that close a cycle with an unconstrained

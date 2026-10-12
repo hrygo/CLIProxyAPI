@@ -51,6 +51,9 @@ func TestNativeAdditionalToolsInheritPreservesBytes(t *testing.T) {
 	if !bytes.Equal(body, prepared.Body) {
 		t.Fatal("native inherited declaration format changed")
 	}
+	if !prepared.Transformation.PositionPreserved || len(prepared.Transformation.Losses) != 0 {
+		t.Fatalf("response-only adaptation lost declaration positions: %+v", prepared.Transformation)
+	}
 }
 
 func TestNativePortableAdditionalToolsMergeAndReject(t *testing.T) {
