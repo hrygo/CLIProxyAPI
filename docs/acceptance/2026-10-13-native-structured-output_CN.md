@@ -56,4 +56,21 @@ OpenCode 验收要求：session 匹配、assistant 有 parent ID 与完成时间
 
 失败回归 `t6-native-schema-negative-red.log` 已复现，修复后全套 166 项通过（11.014 秒），日志 `t6-native-schema-negative-green.log`。下一批只复测已能接收原生输出的 OpenCode 两条路线，预先保留三场景 eager/lazy、同一 gold 与预算；Codex 的格式不支持/任务失败证据保留，不反复启动已知不兼容配置以累加样本。
 
+## 去除答案 enum 后的独立复测
+
+候选 `06e7b3eeb3cd7f4766ca75100e9b20e5e1416a84`，Go 1.26.4、`vcs.modified=false`。两批各 6 案例，只含 OpenCode，原三场景 eager/lazy、同一 gold/90 秒/每例最多 8 请求和 dispatch；各批预锁总预算为 48 请求/48 dispatch。两批均已结束：Qwen exit 0，GLM exit 1；12 planned = 12 started = 12 finished，全部 input usage 完整、预算未超。全部候选退出 0、源配置未变，forbidden/effect/active 均 0。
+
+| 路由 / 客户端 | eager 成功 | lazy 成功 | 首轮减少 | 峰值减少 | 全任务减少 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen / OpenCode（shape-only） | 3 / 3 | 3 / 3 | 90.97% | 77.06% | 73.06% |
+| GLM / OpenCode（shape-only） | 3 / 3 | 2 / 3 | 91.25% | 77.88% | 73.61% |
+
+Qwen 共 15 物理 HTTP、6 MCP dispatch；GLM 共 13 HTTP、4 dispatch。28 个出站请求均观察到 `StructuredOutput` 与 `tool_choice=required`，未发现上述仓库 AGENTS 标记。全部禁止工具和副作用计数为 0，退出时无 active MCP；这批未触发用户取消或运行中撤权，不能据此补齐那两类生命周期认证。
+
+GLM 多工具 lazy 是保留的失败：唯一上游响应中的 assistant 同时包含三个完成的 `StructuredOutput` 和一个 `execute`；实际 MCP dispatch 为 0，没有中间 receipt 回放。OpenCode 同步 API 返回 200、session idle，但不满足本 profile 恰好一个 StructuredOutput 的终态规则，因此框架记录失败，不能放宽为成功。已确认模型在该请求上提交重复输出工具；是否需要客户端禁止重复终结调用属于独立客户端交付，Gateway 不能静默删除工具调用。这个失败输入少约 97.06%，并不代表正确完成多工具任务的收益。
+
+两组仍只有三个模板，质量条件下界分别 −63.16pp / −86.46pp，收益条件下界均缺失；scope 中地域和缓存条件仍未知。上述输入降幅全部为描述性数字，GLM 失败成本保留，不宣称通过 G4/G5 或账单节省。
+
+证据目录 `.omo/tool-loading-completion/t6-native-shape-{qwen,glm}-live/`；终态 journal/plan 校验和独立配对分析为同前缀 `*-validation.json`、`*-paired-analysis.json`。本轮共 36 个真实案例分属两个候选与输出 profile；只有最后 12 个属于修正后的候选，不能相加充作最终 60 案例。源配置 SHA-256 仍为 `3a6ab28f1605437c2cd9358b7a5320781718f30266353c93953882469b9f46fe`。
+
 本轮没有 Go 源码修改；候选构建用于固定真实 SDK revision，不代表完整 Go gate 重新运行。未发布、未改默认配置/catalog、未重启原服务。剩余原生路由、最终 60 案例、代表性 Coding、取消/权限生命周期和请求预算拒绝的精确诊断继续按完整目标推进。
