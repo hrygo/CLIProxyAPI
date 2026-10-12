@@ -47,8 +47,8 @@ def output_schema(name):
     """Declare answer shape without supplying the tool-derived gold values."""
     get_scenario(name)
     if name == "unavailable":
-        properties = {"status": {"type": "string", "enum": ["unavailable"]},
-                      "project": {"type": "string", "enum": ["omega"]}}
+        properties = {"status": {"type": "string", "minLength": 1},
+                      "project": {"type": "string", "minLength": 1}}
     else:
         properties = {"remaining_budget": {"type": "integer"},
                       "verification_code": {"type": "string", "minLength": 1}}

@@ -16,6 +16,16 @@ def output(value):
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_native_schema_does_not_force_the_unavailable_answer(self):
+        from jsonschema import Draft202012Validator
+        wrong = {"status": "available", "project": "alpha"}
+        self.assertTrue(Draft202012Validator(output_schema("unavailable")).is_valid(wrong))
+        native = {"client_output_profile": "opencode-http-session-v1", "protocol_terminal_verified": True,
+                  "protocol_terminal_status": "completed", "structured_output": wrong}
+        checks = result_checks("opencode", "", "nonce", scenario="unavailable", native_result=native)
+        self.assertTrue(checks["format"])
+        self.assertFalse(checks["answer"])
+
     def test_output_schema_constrains_shape_without_leaking_golden_receipts(self):
         from jsonschema import Draft202012Validator
         for name in ("lookup", "unavailable", "multitool"):
