@@ -203,6 +203,12 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     workspace = root / "workspace"
     workspace.mkdir(mode=0o700)
+    # OpenCode resolves ancestor instructions up to its detected worktree.
+    # A private repository prevents the artifact directory's parent policy
+    # from becoming part of an otherwise isolated synthetic task.
+    subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "--quiet", "--template=", str(workspace)],
+                   env={**env, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
+                   capture_output=True, check=True)
     events = root / "mcp-events.jsonl"
     policy = root / "permissions.json"
     normalized_permissions = {key: sorted(set(value)) for key, value in permissions.items()}

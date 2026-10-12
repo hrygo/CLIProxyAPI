@@ -16,6 +16,28 @@ from probe_clients import inspect_tools
 
 
 class AdapterTests(unittest.TestCase):
+    def test_workspace_is_its_own_git_boundary_for_ancestor_instruction_lookup(self):
+        import os
+        real_run = subprocess.run
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            (parent / "AGENTS.md").write_text("unrelated ancestor instructions")
+            catalog = self.catalog(temporary, "opencode")
+            def version_or_git(command, **kwargs):
+                if command[-1] == "--version":
+                    return subprocess.CompletedProcess(command, 0, "1.19.0\n", "")
+                return real_run(command, **kwargs)
+            with patch("client_adapters.subprocess.run", side_effect=version_or_git):
+                prepared = prepare_isolated_client("opencode", "lazy", catalog,
+                    {"client_denied": [], "service_denied": ["fixture_mutation"]})
+            workspace = prepared.run_dir / "workspace"
+            self.assertTrue((workspace / ".git").is_dir())
+            checked = real_run(["git", "rev-parse", "--show-toplevel"], cwd=workspace,
+                env={**prepared.env, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
+                check=True, capture_output=True, text=True)
+            self.assertEqual(Path(checked.stdout.strip()).resolve(), workspace.resolve())
+            self.assertEqual((parent / "AGENTS.md").read_text(), "unrelated ancestor instructions")
+
     def catalog(self, root, client="codex"):
         return {"run_dir": Path(root) / "run", "client_version": "0.160.0" if client == "codex" else "1.19.0",
                 "executable": sys.executable, "model": "fixture-model", "base_url": "http://127.0.0.1:12345/v1",

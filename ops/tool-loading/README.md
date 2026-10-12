@@ -14,7 +14,11 @@ Codex/OpenCode permission handling, model quality, or context savings.
 It checks the installed version before creating artifacts, rejects unknown
 adapter keys/modes and non-loopback endpoints, and never inherits credentials
 or broad experimental flags. All configuration, catalogs, XDG state and the
-Codex home are run-local. Model metadata for real tests must be supplied for
+Codex home are run-local. Each task workspace has its own Git root, initialized
+without operator Git configuration or templates, so OpenCode's ancestor rule
+lookup stops at the task boundary. `--pure` disables plugins; it does not disable
+instruction files. Verify the actual system request before claiming complete
+runtime isolation. Model metadata for real tests must be supplied for
 the actual selected model; `synthetic_codex_model` is only for local probes.
 
 Codex uses strict CLI overrides and the model's `supports_search_tool` gate,
