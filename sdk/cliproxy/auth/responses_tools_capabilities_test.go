@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"testing"
+	"time"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
@@ -12,6 +13,71 @@ import (
 
 func capabilitiesTestManager(t *testing.T, routes []internalconfig.ResponsesToolsRoute) *Manager {
 	return capabilitiesTestManagerForModels(t, routes, "gpt-5.6-sol", "")
+}
+
+func TestClientSearchSupportedCooledCandidateVeto(t *testing.T) {
+	blocked := capRoute("disabled", "inherit")
+	blocked.Match.UpstreamModel = "blocked-upstream"
+	mgr := capabilitiesTestManagerForModels(t, []internalconfig.ResponsesToolsRoute{capRoute("bridge", "inherit"), blocked}, "client-alias", "gpt-5.6-sol")
+	registry.GetGlobalRegistry().RegisterClient("cap-cooled", "codex", []*registry.ModelInfo{{ID: "client-alias"}})
+	t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient("cap-cooled") })
+	if _, err := mgr.Register(context.Background(), &Auth{
+		ID: "cap-cooled", Provider: "codex", Unavailable: true,
+		NextRetryAfter: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC),
+		Attributes:     map[string]string{"auth_kind": "oauth", homeUpstreamModelAttributeKey: "blocked-upstream"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if routes := mgr.clientSearchCandidateRoutes("client-alias"); len(routes) != 2 {
+		t.Fatalf("cooled route omitted: %+v", routes)
+	}
+	if supported := mgr.ClientSearchSupported("client-alias"); supported == nil || *supported {
+		t.Fatal("cooled disabled candidate did not veto public alias")
+	}
+}
+
+func TestClientSearchSupportedRegionFailureKeepsDeclaredCapability(t *testing.T) {
+	mgr := capabilitiesTestManager(t, nil)
+	mgr.mu.Lock()
+	auth := mgr.auths["cap-auth"]
+	auth.Unavailable = true
+	auth.NextRetryAfter = time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)
+	auth.StatusMessage = "fixture provider region unavailable"
+	mgr.mu.Unlock()
+	if supported := mgr.ClientSearchSupported("gpt-5.6-sol"); supported == nil || !*supported {
+		t.Fatal("availability observation changed declared capability")
+	}
+	routes := mgr.clientSearchCandidateRoutes("gpt-5.6-sol")
+	if len(routes) != 1 {
+		t.Fatal("unavailable route vanished")
+	}
+	profile := responsestools.CapabilityProfileForRoute(routes[0], responsestools.ConventionPolicy(routes[0]))
+	if profile.Evidence != responsestools.EvidenceUnknown {
+		t.Fatal("provider availability promoted certification")
+	}
+}
+
+func TestClientSearchSupportedModelCooldownAndExplicitDisable(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(map[bool]string{false: "cooldown", true: "explicit disabled"}[explicit], func(t *testing.T) {
+			blocked := capRoute("disabled", "inherit")
+			blocked.Match.UpstreamModel = "blocked-upstream"
+			mgr := capabilitiesTestManagerForModels(t, []internalconfig.ResponsesToolsRoute{capRoute("bridge", "inherit"), blocked}, "client-alias", "gpt-5.6-sol")
+			registry.GetGlobalRegistry().RegisterClient("cap-model-state", "codex", []*registry.ModelInfo{{ID: "client-alias"}})
+			t.Cleanup(func() { registry.GetGlobalRegistry().UnregisterClient("cap-model-state") })
+			state := &ModelState{Unavailable: true, NextRetryAfter: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC)}
+			if explicit {
+				state.Status = StatusDisabled
+			}
+			if _, err := mgr.Register(context.Background(), &Auth{ID: "cap-model-state", Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth", homeUpstreamModelAttributeKey: "blocked-upstream"}, ModelStates: map[string]*ModelState{"blocked-upstream": state}}); err != nil {
+				t.Fatal(err)
+			}
+			supported := mgr.ClientSearchSupported("client-alias")
+			if supported == nil || *supported != explicit {
+				t.Fatalf("temporary and explicit disable conflated: explicit=%v supported=%v", explicit, supported)
+			}
+		})
+	}
 }
 
 func capabilitiesTestManagerForModels(t *testing.T, routes []internalconfig.ResponsesToolsRoute, clientModel, upstreamModel string) *Manager {

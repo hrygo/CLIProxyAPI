@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Tool loading evidence manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "run_id", "scope", "profile", "evidence"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "run_id": {"$ref": "#/$defs/identifier"},
+    "scope": {"$ref": "#/$defs/scope"},
+    "profile": {"$ref": "#/$defs/profile"},
+    "evidence": {"type": "array", "items": {"$ref": "#/$defs/record"}},
+    "transformation": {"$ref": "#/$defs/transformation"}
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string", "minLength": 1, "maxLength": 160,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:+/@()-]*$",
+      "not": {"pattern": "://"},
+      "allOf": [{"if": {"pattern": "^[Uu][Nn][Kk][Nn][Oo][Ww][Nn]$"}, "then": {"const": "unknown"}}]
+    },
+    "hash": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"const": "unknown"}]},
+    "endpoint": {"anyOf": [{"type": "string", "pattern": "^ep_[0-9a-f]{32}$"}, {"const": "unknown"}]},
+    "transport": {"enum": ["http-buffered", "http-sse", "websocket-replay", "websocket-duplex", "unknown"]},
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["gateway_revision", "policy_generation", "client", "client_version", "client_revision", "client_mode", "source_format", "provider", "model", "upstream_format", "endpoint_id", "transport", "catalog_hash", "fixture_hash", "permission_hash", "region_id"],
+      "properties": {
+        "gateway_revision": {"$ref": "#/$defs/identifier"},
+        "policy_generation": {"$ref": "#/$defs/identifier"},
+        "client": {"$ref": "#/$defs/identifier"},
+        "client_version": {"$ref": "#/$defs/identifier"},
+        "client_revision": {"$ref": "#/$defs/identifier"},
+        "client_mode": {"$ref": "#/$defs/identifier"},
+        "source_format": {"$ref": "#/$defs/identifier"},
+        "provider": {"$ref": "#/$defs/identifier"},
+        "model": {"$ref": "#/$defs/identifier"},
+        "upstream_format": {"$ref": "#/$defs/identifier"},
+        "endpoint_id": {"$ref": "#/$defs/endpoint"},
+        "transport": {"$ref": "#/$defs/transport"},
+        "catalog_hash": {"$ref": "#/$defs/hash"},
+        "fixture_hash": {"$ref": "#/$defs/hash"},
+        "permission_hash": {"$ref": "#/$defs/hash"},
+        "region_id": {"$ref": "#/$defs/identifier"}
+      }
+    },
+    "loss": {"enum": ["additional_tools_position_lift", "custom_grammar_constraints_described", "recursive_schema_widened", "optional_schema_widened", "custom_declarations_stripped"]},
+    "profile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["client_search", "activation", "additional_tool_positions", "transports", "evidence"],
+      "properties": {
+        "client_search": {"enum": ["native", "bridge", "disabled", "unknown"]},
+        "activation": {"enum": ["upstream-owned", "cumulative-budgeted", "disabled", "unknown"]},
+        "additional_tool_positions": {"enum": ["upstream-owned", "whole-request", "unknown"]},
+        "potential_losses": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/loss"}},
+        "transports": {
+          "type": "object", "additionalProperties": false,
+          "required": ["http-buffered", "http-sse", "websocket-replay", "websocket-duplex"],
+          "properties": {
+            "http-buffered": {"enum": ["declared", "unsupported", "unknown"]},
+            "http-sse": {"enum": ["declared", "unsupported", "unknown"]},
+            "websocket-replay": {"enum": ["declared", "unsupported", "unknown"]},
+            "websocket-duplex": {"enum": ["declared", "unsupported", "unknown"]}
+          }
+        },
+        "evidence": {"const": "unknown"}
+      }
+    },
+    "record": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scope", "status", "artifact_id", "artifact_sha256"],
+      "properties": {
+        "scope": {"$ref": "#/$defs/scope"},
+        "status": {"enum": ["unknown", "protocol-verified", "bounded-live", "task-benchmarked", "operationally-verified", "revalidation-required", "failed"]},
+        "artifact_id": {"$ref": "#/$defs/identifier"},
+        "artifact_sha256": {"$ref": "#/$defs/hash"}
+      },
+      "allOf": [{
+        "if": {"properties": {"status": {"enum": ["protocol-verified", "bounded-live", "task-benchmarked", "operationally-verified"]}}, "required": ["status"]},
+        "then": {"properties": {
+          "artifact_id": {"not": {"const": "unknown"}},
+          "artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "scope": {"properties": {
+            "gateway_revision": {"not": {"const": "unknown"}},
+            "policy_generation": {"not": {"const": "unknown"}},
+            "client": {"not": {"const": "unknown"}},
+            "client_version": {"not": {"const": "unknown"}},
+            "client_revision": {"not": {"const": "unknown"}},
+            "client_mode": {"not": {"const": "unknown"}},
+            "source_format": {"not": {"const": "unknown"}},
+            "provider": {"not": {"const": "unknown"}},
+            "model": {"not": {"const": "unknown"}},
+            "upstream_format": {"not": {"const": "unknown"}},
+            "endpoint_id": {"not": {"const": "unknown"}},
+            "transport": {"not": {"const": "unknown"}},
+            "catalog_hash": {"not": {"const": "unknown"}},
+            "fixture_hash": {"not": {"const": "unknown"}},
+            "permission_hash": {"not": {"const": "unknown"}},
+            "region_id": {"not": {"const": "unknown"}}
+          }}
+        }}
+      }]
+    },
+    "transformation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["positions", "position_preserved"],
+      "properties": {
+        "positions": {
+          "type": "object", "additionalProperties": false,
+          "required": ["interleaved", "same_identity_changed"],
+          "properties": {
+            "declaration_indices": {"type": "array", "uniqueItems": true, "items": {"type": "integer", "minimum": 0}},
+            "interleaved": {"type": "boolean"},
+            "same_identity_changed": {"type": "boolean"}
+          }
+        },
+        "position_preserved": {"type": "boolean"},
+        "losses": {"type": "array", "uniqueItems": true, "items": {"const": "additional_tools_position_lift"}}
+      }
+    }
+  }
+}

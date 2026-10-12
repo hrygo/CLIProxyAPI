@@ -45,10 +45,10 @@ func (m *Manager) ClientSearchSupported(modelID string) *bool {
 			no := false
 			return &no
 		}
-		switch routePolicy.ClientSearch {
-		case responsestools.ClientSearchBridge, responsestools.ClientSearchNative:
-			// Supported through a verified bridge or native path.
-		default:
+		profile := responsestools.CapabilityProfileForRoute(route, routePolicy)
+		// Preserve the policy-based catalog projection. Scope-bound empirical
+		// certification is independent and must not silently restore eager tools.
+		if !profile.CatalogSearchSupported() {
 			no := false
 			return &no
 		}
@@ -77,7 +77,7 @@ func (m *Manager) responsesToolsCandidateRoutes(modelID, authID string) []respon
 	m.mu.RLock()
 	auths := make([]*Auth, 0, len(m.auths))
 	for _, auth := range m.auths {
-		if auth == nil || auth.Disabled || (authID != "" && auth.ID != authID) {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled || (authID != "" && auth.ID != authID) {
 			continue
 		}
 		auths = append(auths, auth.Clone())
@@ -98,11 +98,24 @@ func (m *Manager) responsesToolsCandidateRoutes(modelID, authID string) []respon
 		if !ok || executor == nil {
 			continue
 		}
-		models, _, _, _ := m.preparedExecutionModelsWithAlias(auth, modelID)
+		// Capability is stable across temporary availability changes. Resolve
+		// the same aliases and pools as execution without its cooldown filter.
+		models, pooled, _, _ := m.executionModelCandidatesWithAlias(auth, modelID)
 		if len(models) == 0 {
 			continue
 		}
 		for _, upstreamModel := range models {
+			stateModel := m.stateModelForExecution(auth, modelID, upstreamModel, pooled)
+			declaredDisabled := false
+			for model, state := range auth.ModelStates {
+				if state != nil && canonicalModelKey(model) == canonicalModelKey(stateModel) && state.Status == StatusDisabled {
+					declaredDisabled = true
+					break
+				}
+			}
+			if declaredDisabled {
+				continue
+			}
 			probeReq := cliproxyexecutor.Request{Model: upstreamModel}
 			probeOpts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatCodex}
 			toFormat := requestToFormat(providerKey, executor, probeReq, probeOpts)
