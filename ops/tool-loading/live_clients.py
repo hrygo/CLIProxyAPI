@@ -22,7 +22,7 @@ import uuid
 
 from catalog_fixture import build_catalog, digest
 from batch_plan import build_plan, write_plan, fingerprint_materials, verify_materials, BatchBudget, audit_plan
-from client_adapters import VERSIONS, prepare_isolated_client, write_private, validate_session_title
+from client_adapters import VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
 from http_attempts import import_http_attempts, read_admission_diagnostics
 from live_gateway import candidate_process
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
@@ -68,14 +68,14 @@ def fetch_model_metadata(ready, model, client, mode):
         connection.close()
 
 
-def result_checks(client, raw, nonce, *, scenario="lookup", native_result=None):
+def result_checks(client, raw, nonce, *, scenario="lookup", native_result=None, source_sha256=None):
     if native_result is not None:
         legal = (client == "opencode" and native_result.get("client_output_profile") == "opencode-http-session-v1"
                  and native_result.get("protocol_terminal_verified") is True
                  and native_result.get("protocol_terminal_status") == "completed")
         value = native_result.get("structured_output")
         valid = isinstance(value, dict) and Draft202012Validator(output_schema(scenario)).is_valid(value)
-        matched, receipt, exact = answer_matches(scenario, value, nonce)
+        matched, receipt, exact = answer_matches(scenario, value, nonce, source_sha256=source_sha256)
         return {"answer": bool(legal and matched), "dispatch": None, "nonce": receipt, "code": None,
                 "format": bool(legal and valid and exact), "terminal": legal}
     observed = client_result(client, raw)
@@ -94,7 +94,7 @@ def result_checks(client, raw, nonce, *, scenario="lookup", native_result=None):
                 except ValueError:
                     pass
     answer = values[-1] if values and isinstance(values[-1], dict) else {}
-    matched, receipt, exact = answer_matches(scenario, answer, nonce)
+    matched, receipt, exact = answer_matches(scenario, answer, nonce, source_sha256=source_sha256)
     return {"answer": matched, "dispatch": None, "nonce": receipt, "code": None,
             "format": bool(observed["parse_complete"] and plain_json and exact), "terminal": observed["legal_terminal"]}
 
@@ -156,13 +156,15 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
                  client_mode="direct" if mode == "eager" else "tool-search" if client == "codex" else "code-mode",
                  source_format="codex" if client == "codex" else "openai", provider=profile["executor"], model=profile["upstream_model"],
                  upstream_format="openai", endpoint_id=endpoint, transport="http-sse", region_id="unknown",
-                 catalog_hash=digest(build_catalog()), fixture_hash=digest({
+                 catalog_hash=digest(build_catalog(task.coding_task)), fixture_hash=digest({
                      "sources": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                                 for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py")},
+                                 for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py")
+                                 + (("coding_tasks.py",) if task.coding_task is not None else ())},
+                     "coding_task": task.coding_task,
                      "structured_output": structured_output,
                      "session_title_policy": ("not-applicable" if client == "codex" else "automatic") if opencode_title is None
                                              else hashlib.sha256(opencode_title.encode()).hexdigest()}),
-                 permission_hash=digest({"denials": PERMISSIONS, "native_structured_output": True} if structured_output else PERMISSIONS))
+                 permission_hash=digest(profile_permissions(PERMISSIONS, structured_output=structured_output, coding_task=task.coding_task)))
     return CaseSpec(case_id, pair, task.template_id, mode, "unknown", scope, hashlib.sha256(task.prompt.encode()).hexdigest(),
                     "live-calibration-2", {"max_requests": 8, "max_dispatches": 8, "task_seconds": seconds}, task.gold)
 
@@ -178,7 +180,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     case_root.mkdir(mode=0o700)
     checks = dict.fromkeys(("answer", "dispatch", "nonce", "code", "format", "terminal"))
     boundaries = dict.fromkeys(("mcp_attempts", "dispatch", "forbidden_dispatch", "forbidden_effect", "active"))
-    capture, prepared, process, admission = None, None, None, None
+    capture, prepared, process, admission, code_outcome = None, None, None, None, None
     issues, attempts = [], []
     failure, effective, declaration_bytes = "framework", False, []
     stage = "candidate_start"
@@ -205,24 +207,41 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                 client_inputs["session_title"] = opencode_title
             if structured_output:
                 client_inputs["output_schema"] = output_schema(scenario)
+            if task.coding_task is not None:
+                client_inputs["coding_task"] = task.coding_task
             prepared = prepare_isolated_client(client, mode, client_inputs, PERMISSIONS)
+            if prepared.permission_hash != spec.scope["permission_hash"] or prepared.catalog_hash != spec.scope["catalog_hash"]:
+                raise ValueError("prepared permissions or catalog differ from predeclared scope")
             remaining = seconds - (time.monotonic() - started)
             if remaining <= 0:
                 raise ValueError("task budget exhausted before client launch")
             stage = "client_execution"
             process = prepared.run_task({"prompt": task.prompt, "max_seconds": remaining, "max_output_bytes": 2 * 1024 * 1024})
+            if task.coding_task is not None:
+                stage = "independent_code_verification"
+                from coding_tasks import CodingProject, TASKS
+                import difflib
+                project = CodingProject(prepared.run_dir / "workspace", task.coding_task)
+                code_outcome = project.score()
+                write_private(case_root / "code-outcome.json", json.dumps(code_outcome, indent=2))
+                write_private(case_root / "source.diff", "".join(difflib.unified_diff(
+                    TASKS[task.coding_task].baseline.splitlines(keepends=True),
+                    project.read()["source"].splitlines(keepends=True), fromfile="baseline/module.py", tofile="candidate/module.py")))
             checks = result_checks(client, Path(process["stdout_path"]).read_text(), nonce, scenario=scenario,
-                                   native_result=process if structured_output and client == "opencode" else None)
+                                   native_result=process if structured_output and client == "opencode" else None,
+                                   source_sha256=None if code_outcome is None else code_outcome["source_sha256"])
+            if code_outcome is not None:
+                checks["code"] = code_outcome["passed"] and code_outcome["changed"]
             events = prepared.collect_boundary_events()
             if events:
                 boundaries.update(mcp_attempts=sum(event["phase"] == "request" for event in events),
                     dispatch=sum(event["phase"] == "dispatch" for event in events),
                     forbidden_dispatch=sum(event["phase"] == "dispatch" and event["tool"] == "fixture_mutation" for event in events),
                     forbidden_effect=max(event["effect_count"] for event in events), active=events[-1]["active_count"])
-                checks["dispatch"] = dispatch_matches(scenario, events)
+                checks["dispatch"] = dispatch_matches(scenario, events, source_sha256=None if code_outcome is None else code_outcome["source_sha256"])
                 if not task.requires_dispatch:
                     checks["answer"] = bool(checks["answer"] and checks["dispatch"])
-            failure = "model"
+            failure = "framework" if code_outcome is not None and code_outcome["reason"] == "worker_failed" else "model"
             process_ok = process["termination"] == "exited" and process["exit_code"] == 0
             if structured_output and client == "opencode":
                 process_ok = (process["termination"] == "exited" and process["exit_code"] in (0, -signal.SIGTERM)
@@ -279,6 +298,8 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
               "effective_mode_observed": effective, "declaration_bytes": declaration_bytes, "usage": case["usage"],
               "failure_class": case["failure_class"], "gate_status": "unverified"}
     result["admission_diagnostics"] = admission
+    if task.coding_task is not None:
+        result["code_outcome"] = code_outcome
     write_private(case_root / "summary.json", json.dumps(result, indent=2))
     return result
 

@@ -216,8 +216,13 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
         raise ValueError("unsupported client version")
     allowed = {"run_dir", "client_version", "executable", "model", "base_url", "fixture_python",
                "model_metadata", "nonce", "max_dispatches", "max_result_bytes"}
-    if set(catalog) - {"session_title", "output_schema"} != allowed:
+    if set(catalog) - {"session_title", "output_schema", "coding_task"} != allowed:
         raise ValueError("missing or unknown adapter configuration keys")
+    coding_task = catalog.get("coding_task")
+    if "coding_task" in catalog:
+        from coding_tasks import TASKS
+        if type(coding_task) is not str or coding_task not in TASKS or catalog["max_result_bytes"] < 32768:
+            raise ValueError("invalid explicit coding profile")
     if "session_title" in catalog:
         if client_id != "opencode":
             raise ValueError("explicit session title is supported only by OpenCode")
@@ -228,7 +233,7 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
     if (url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}
             or url.username or url.password or url.query or url.fragment or url.path.rstrip("/") != "/v1"):
         raise ValueError("an isolated loopback /v1 endpoint is required")
-    names = {tool["name"] for tool in build_catalog()}
+    names = {tool["name"] for tool in build_catalog(coding_task)}
     if set(permissions) != {"client_denied", "service_denied"}:
         raise ValueError("unknown permission keys")
     for values in permissions.values():
@@ -258,6 +263,9 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
     subprocess.run(["git", "-c", "init.defaultBranch=main", "init", "--quiet", "--template=", str(workspace)],
                    env={**env, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull},
                    capture_output=True, check=True)
+    if coding_task is not None:
+        from coding_tasks import CodingProject
+        CodingProject.create(workspace, coding_task)
     events = root / "mcp-events.jsonl"
     policy = root / "permissions.json"
     normalized_permissions = {key: sorted(set(value)) for key, value in permissions.items()}
@@ -269,6 +277,10 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
     fixture_command = [str(catalog["fixture_python"]), str(Path(__file__).with_name("catalog_fixture.py").resolve()),
                        "--nonce", catalog["nonce"], "--events", str(events), "--permissions", str(policy),
                        "--max-dispatches", str(catalog["max_dispatches"]), "--max-result-bytes", str(catalog["max_result_bytes"])]
+    if coding_task is not None:
+        # Built-in shell remains read-only/denied. Only the explicit MCP profile
+        # grants a scoped write to the synthetic task's single source file.
+        fixture_command += ["--coding-task", coding_task, "--coding-workspace", str(workspace)]
     # The endpoint is an explicitly supplied local fixture/gateway. Credentials
     # are not inherited from the operator's shell or stored in configuration.
     env["TOOL_LOADING_GATEWAY_KEY"] = "local-acceptance-placeholder"
@@ -331,7 +343,15 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
         if "session_title" in catalog:
             command += ["--title", catalog["session_title"]]
         expected_mode = "code-mode" if mode == "lazy" else "direct"
-    permission_material = {"denials": normalized_permissions, "native_structured_output": True} if "output_schema" in catalog else normalized_permissions
+    permission_material = profile_permissions(normalized_permissions, structured_output="output_schema" in catalog, coding_task=coding_task)
     return PreparedClient(client_id, VERSIONS[client_id], expected_mode, command, env, root,
-                          config_path, catalog_path, events, digest(permission_material), digest(build_catalog()),
+                          config_path, catalog_path, events, digest(permission_material), digest(build_catalog(coding_task)),
                           deepcopy(catalog.get("output_schema")), catalog.get("session_title"))
+
+
+def profile_permissions(permissions, *, structured_output=False, coding_task=None):
+    material = {"denials": permissions, "native_structured_output": True} if structured_output else permissions
+    if coding_task is not None:
+        material = {"base": material, "coding_task": coding_task, "writable_files": ["module.py"],
+                    "execution_profile": "bounded-pure-python-v1"}
+    return material

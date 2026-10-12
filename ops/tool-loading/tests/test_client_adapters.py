@@ -16,6 +16,35 @@ from probe_clients import inspect_tools
 
 
 class AdapterTests(unittest.TestCase):
+    def test_coding_profile_is_explicit_scoped_and_distinct_from_read_only(self):
+        from coding_tasks import TASKS
+        for client in ("codex", "opencode"):
+            with self.subTest(client=client), tempfile.TemporaryDirectory() as temporary:
+                plain_catalog = self.catalog(temporary, client)
+                plain = self.prepare(client, "lazy", plain_catalog)
+                coding_catalog = self.catalog(temporary, client)
+                coding_catalog["run_dir"] = Path(temporary) / "coding"
+                coding_catalog["coding_task"] = "retry"
+                coding = self.prepare(client, "lazy", coding_catalog)
+                self.assertEqual((coding.run_dir / "workspace" / "module.py").read_text(), TASKS["retry"].baseline)
+                self.assertNotEqual(plain.permission_hash, coding.permission_hash)
+                self.assertNotEqual(plain.catalog_hash, coding.catalog_hash)
+                text = coding.config_path.read_text()
+                self.assertIn("--coding-workspace", text)
+                if client == "codex":
+                    self.assertEqual(coding.command[coding.command.index("-s") + 1], "read-only")
+                else:
+                    self.assertEqual(json.loads(text)["permission"]["*"], "deny")
+                    self.assertNotIn("bash", json.loads(text)["permission"])
+
+    def test_invalid_coding_profile_is_rejected_before_artifacts(self):
+        for value in (None, True, "unknown", "../retry"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as temporary:
+                catalog = self.catalog(temporary)
+                catalog["coding_task"] = value
+                with self.assertRaises(ValueError): self.prepare("codex", "lazy", catalog)
+                self.assertFalse(catalog["run_dir"].exists())
+
     def test_native_output_schema_is_explicit_and_default_is_unchanged(self):
         schema = {"type": "object", "properties": {"receipt": {"type": "string"}},
                   "required": ["receipt"], "additionalProperties": False}

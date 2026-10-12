@@ -102,6 +102,50 @@ OpenCode first-request constraints can be checked with
 `probe_clients.py --structured-output --opencode-title "Tool loading acceptance"`;
 this local probe intentionally returns HTTP 400 and does not certify execution.
 
+### Explicit coding pilot profile
+
+`live_clients.py --scenarios coding-budget coding-retry coding-identity` selects
+three independent pure-function tasks: posted/refund budget arithmetic, retry
+eligibility before/after output exposure, and stable call-ID deduplication. The
+normal lookup/unavailable/multitool profiles retain their original permissions.
+This is an initial coding corpus, not the full representative Coding suite.
+
+The private Git workspace contains one editable `module.py`. Only this explicit
+MCP profile advertises `coding_task_read`, `coding_source_replace` and
+`coding_tests_run`; source replacement requires the current SHA-256. Built-in
+shell remains read-only in Codex and denied in OpenCode. An MCP server is a
+separate execution boundary: the Codex shell sandbox alone does not make MCP
+tools read-only. The profile's permission fingerprint explicitly grants this
+one synthetic source write, without changing operator permissions or config.
+
+Host-owned tests never reside in the client workspace and cannot be changed
+through these tools. The runner independently scores the final source after
+the client exits, saves `code-outcome.json` and `source.diff`, and requires a
+changed source, passing behavior, final source-hash/receipt use, and sequential
+read/edit/test dispatches with every release observed. A valid final JSON claim
+alone fails the code gate. The code outcome, full catalog and explicit permission
+profile are locked before task start; eager/lazy use the same task and gold.
+
+Execution supports only the documented pure Python subset, in a fresh `-I -S`
+worker with no inherited environment. Imports, attributes, dynamic calls,
+decorators, annotations, comprehensions and exponentiation are rejected. AST
+statement and collection bounds apply on all admitted POSIX platforms; CPU and
+parent process limits cap execution, and Linux also caps address space. Darwin
+does not admit lowering RLIMIT_DATA/AS in the tested runtime, so this profile
+does not claim a kernel heap limit there. This is not a general Python sandbox.
+Cancellation kills and joins the checker before the MCP callback is released.
+Symlinks/hardlinks and workspace identity changes are rejected, and the source
+revision is checked on the write descriptor before truncation. Allowed source
+edits are separate from the forbidden synthetic effect counter, which must stay
+zero. Worker failures are framework failures, not successful model outcomes.
+
+Use the existing bounded live command with those scenarios, optionally adding
+`--structured-output --opencode-title "Tool loading coding pilot"` for the
+OpenCode native-output profile. Provider limitations still apply: a route that
+rejects Codex JSON schema is not made compatible by this fixture. Every started
+case, failed code check, request and MCP attempt remains in the same journal.
+Three templates are insufficient for the formal non-inferiority gate.
+
 `client_adapters.py` supports exactly Codex CLI `0.160.0` and OpenCode `1.19.0`.
 It checks the installed version before creating artifacts, rejects unknown
 adapter keys/modes and non-loopback endpoints, and never inherits credentials

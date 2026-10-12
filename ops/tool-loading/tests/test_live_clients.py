@@ -39,7 +39,10 @@ class LiveClientTests(unittest.TestCase):
             @contextmanager
             def candidate(*args, **kwargs):
                 yield {"base_url": "http://127.0.0.1:1"}, capture
-            prepared = SimpleNamespace(run_task=Mock(return_value={"stdout_path": str(stdout), "termination": "exited", "exit_code": 1}),
+            from catalog_fixture import digest, build_catalog
+            from live_clients import PERMISSIONS
+            prepared = SimpleNamespace(permission_hash=digest(PERMISSIONS), catalog_hash=digest(build_catalog()),
+                                       run_task=Mock(return_value={"stdout_path": str(stdout), "termination": "exited", "exit_code": 1}),
                                        collect_boundary_events=Mock(return_value=[{"phase": "catalog", "active_count": 0, "effect_count": 0}]))
             profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture", "contract": "openai-chat-v1"}
             journal = CaseJournal(root / "cases.jsonl", "run-admission-budget")
@@ -166,7 +169,10 @@ class LiveClientTests(unittest.TestCase):
             @contextmanager
             def candidate(*args, **kwargs):
                 yield {"base_url": "http://127.0.0.1:1"}, capture
-            prepared = SimpleNamespace(run_task=Mock(return_value={"stdout_path": str(stdout), "termination": "exited", "exit_code": 0}),
+            from catalog_fixture import digest, build_catalog
+            from live_clients import PERMISSIONS
+            prepared = SimpleNamespace(permission_hash=digest(PERMISSIONS), catalog_hash=digest(build_catalog()),
+                                       run_task=Mock(return_value={"stdout_path": str(stdout), "termination": "exited", "exit_code": 0}),
                                        collect_boundary_events=Mock(return_value=[]))
             profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture", "contract": "openai-chat-v1"}
             journal = CaseJournal(root / "cases.jsonl", "run-client-preparation")
