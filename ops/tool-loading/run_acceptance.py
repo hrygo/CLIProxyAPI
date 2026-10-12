@@ -125,6 +125,11 @@ def _replay(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
             raise ValueError("multiple runs cannot share a journal")
         phase = event.get("phase")
         common = {"sequence", "run_id", "phase", "case_id"}
+        if phase == "batch_locked":
+            if (sequence != 0 or set(event) != common | {"plan_sha256"} or event["case_id"] != "batch"
+                    or not isinstance(event["plan_sha256"], str) or not HASH.fullmatch(event["plan_sha256"])):
+                raise ValueError("batch lock must precede all cases with a concrete digest")
+            continue
         fields = {"case_started": {"spec"}, "request_started": {"request"}, "request_finished": {"request"},
                   "case_finished": {"checks", "boundary_counts", "elapsed_ms", "failure_class"}}
         if phase not in fields or set(event) != common | fields[phase]:
@@ -193,6 +198,9 @@ class CaseJournal:
 
     def start_case(self, spec: CaseSpec) -> None:
         self._append("case_started", spec.case_id, spec=asdict(spec))
+
+    def lock_plan(self, plan_sha256: str) -> None:
+        self._append("batch_locked", "batch", plan_sha256=plan_sha256)
 
     def record_request(self, case_id: str, request: dict[str, Any]) -> None:
         self._append("request_finished", case_id, request=_safe_request(request))

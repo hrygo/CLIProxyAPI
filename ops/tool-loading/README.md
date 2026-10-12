@@ -575,3 +575,45 @@ requests and unsupported closed wire contracts remain unknown. See the
 Credential/account region and full immutable runtime scope remain unknown, so
 pair certification and confidence gates remain unverified. These diagnostics
 must not be pooled as a final-revision sixty-case matrix.
+
+## Predeclared paired batches
+
+With both modes selected, `live_clients.py` writes `batch-plan.json` before any
+task and fsyncs a `batch_locked` digest as the first CaseJournal event. The plan
+binds exact case specs, a concrete gateway revision, prompt/gold/permission/catalog
+fingerprints, file material digests, schedule seed and total request/dispatch
+budgets. The runner checks the selected binary, source config, client binaries,
+Python interpreter and harness files before and after each case. Paths and secret
+contents are not exported. A drift is a started framework failure before launch.
+
+Pairs must agree in every scope dimension except client mode, and in their
+template, cache condition, prompt, fixture seed, gold and per-task limits.
+The deterministic schedule shuffles pairs and routes, alternates first mode
+within each route and interleaves route blocks. An odd number of pairs permits
+one-order imbalance per route. The Python interpreter and explicit stored order
+are pinned; rerunning uses a fresh run, not an appended denominator.
+
+`--schedule-seed` chooses the predeclared order. `--batch-max-requests` and
+`--batch-max-dispatches` set total ceilings; defaults reserve eight of each per
+planned task. A full task ceiling is reserved before launch. Only verified actual
+counts refund unused capacity. Missing capture/boundary evidence keeps the full
+reservation, and insufficient capacity stops admission. Planned-but-unstarted
+tasks are reported separately; every started failure or interruption stays in
+the journal. Single-mode diagnostics retain the legacy path and do not accept
+paired-budget flags. This single-process harness has no resume mode.
+
+```sh
+python3 ops/tool-loading/validate_evidence.py \
+  --journal "$task_validation/calibration/cases.jsonl" \
+  --plan "$task_validation/calibration/batch-plan.json"
+```
+
+The audit checks the durable lock, exact specs, schedule prefix and recorded
+budgets. Missing lock or a replaced plan is a binding error, distinguished from
+an invalid journal. Recorded request count is kept separate from unknown physical
+attempt evidence when a started case has no request records. An audit is always
+`unverified`: it does not lock installed dependency contents, actual model metadata,
+OAuth material, account region, cache conditions or statistical acceptance.
+Planning sixty synthetic slots does not execute sixty real cases. The current
+live CLI still runs one lookup template against an explicit Chat profile; the
+three-scene L2 matrix, all real routes and Coding tasks remain separate work.

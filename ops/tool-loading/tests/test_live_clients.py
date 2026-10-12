@@ -1,13 +1,133 @@
 import json
+import io
+from contextlib import redirect_stdout, contextmanager
 from pathlib import Path
 import sys
+import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from live_clients import select_model_metadata, result_checks, chat_terminal, endpoint_id
+from live_clients import select_model_metadata, result_checks, chat_terminal, endpoint_id, make_case_spec, run_case, main
+from batch_plan import build_plan, fingerprint_materials
+from run_acceptance import CaseJournal, summarize
 
 
 class LiveClientTests(unittest.TestCase):
+    def test_client_preparation_keeps_executable_after_spec_extraction(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from test_http_attempts import evidence
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable, config = root / "client", root / "config"
+            executable.write_bytes(b"synthetic-client")
+            config.write_bytes(b"synthetic-config")
+            stdout = root / "stdout"
+            stdout.write_text("{}\n")
+            capture = root / "capture"
+            capture.mkdir()
+            evidence(capture, bodies=(b'{"choices":[{"finish_reason":"stop"}]}',), contract="openai-chat-v1")
+            @contextmanager
+            def candidate(*args, **kwargs):
+                yield {"base_url": "http://127.0.0.1:1"}, capture
+            prepared = SimpleNamespace(run_task=Mock(return_value={"stdout_path": str(stdout), "termination": "exited", "exit_code": 0}),
+                                       collect_boundary_events=Mock(return_value=[]))
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture", "contract": "openai-chat-v1"}
+            journal = CaseJournal(root / "cases.jsonl", "run-client-preparation")
+            with patch("live_clients.shutil.which", return_value=str(executable)), \
+                    patch("live_clients.candidate_process", candidate), patch("live_clients.fetch_model_metadata", return_value={}), \
+                    patch("live_clients.prepare_isolated_client", return_value=prepared) as prepare:
+                run_case(root, journal, executable, config, profile, "codex", "eager", "a" * 40, "ep_" + "b" * 32, 90)
+            self.assertEqual(prepare.call_args.args[2]["executable"], str(executable.resolve()))
+            self.assertEqual(summarize(journal.events)["started_cases"], 1)
+            self.assertEqual(summarize(journal.events)["unfinished_cases"], 0)
+
+    def test_main_writes_plan_before_launch_and_stops_without_unknown_refunds(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary, config, executable = (root / name for name in ("gateway", "config", "client"))
+            for path in (binary, config, executable): path.write_bytes(b"synthetic-file")
+            output = root / "run"
+            calls = []
+            def task(root, journal, *args, specification, locked_plan, material_paths, **kwargs):
+                self.assertTrue((root / "batch-plan.json").exists())
+                self.assertEqual(specification.case_id, locked_plan["schedule"][len(calls)])
+                calls.append(specification.case_id)
+                journal.start_case(specification)
+                checks = dict.fromkeys(("answer", "dispatch", "nonce", "code", "format", "terminal"))
+                boundaries = dict.fromkeys(("mcp_attempts", "dispatch", "forbidden_dispatch", "forbidden_effect", "active"))
+                journal.finish_case(specification.case_id, checks=checks, boundary_counts=boundaries,
+                                    elapsed_ms=1, failure_class="framework")
+                return {"case_id": specification.case_id, "safe_task_success": False, "upstream_attempts": 0,
+                        "issues": ["no_gateway_attempt_capture"], "boundary_counts": boundaries}
+            argv = ["live_clients.py", "--gateway-binary", str(binary), "--config", str(config), "--output-dir", str(output),
+                    "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
+                    "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "codex",
+                    "--batch-max-requests", "8"]
+            with patch("live_clients.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+                    patch("live_clients.run_case", side_effect=task), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exit:
+                main()
+            self.assertEqual(exit.exception.code, 1)
+            self.assertEqual(len(calls), 1)
+            summary = json.loads((output / "summary.json").read_text())
+            self.assertEqual(summary["batch_stop_reason"], "request_budget")
+            audit = json.loads((output / "batch-audit.json").read_text())
+            self.assertEqual(audit["started_cases"], 1)
+            self.assertEqual(audit["planned_not_started"], 1)
+            self.assertIsNone(audit["total_dispatches"])
+            self.assertIsNone(audit["request_attempts"])
+            self.assertEqual(audit["journaled_request_attempts"], 0)
+
+    def test_main_preserves_started_unfinished_task_on_unexpected_interruption(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary, config, executable = (root / name for name in ("gateway", "config", "client"))
+            for path in (binary, config, executable): path.write_bytes(b"synthetic-file")
+            output = root / "run"
+            def task(root, journal, *args, specification, **kwargs):
+                journal.start_case(specification)
+                raise OSError("synthetic interruption")
+            argv = ["live_clients.py", "--gateway-binary", str(binary), "--config", str(config), "--output-dir", str(output),
+                    "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
+                    "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "codex"]
+            with patch("live_clients.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+                    patch("live_clients.run_case", side_effect=task), self.assertRaises(OSError):
+                main()
+            summary = json.loads((output / "summary.json").read_text())
+            self.assertEqual(summary["batch_stop_reason"], "interrupted")
+            audit = json.loads((output / "batch-audit.json").read_text())
+            self.assertEqual(audit["started_cases"], 1)
+            self.assertEqual(audit["unfinished_cases"], 1)
+            self.assertEqual(audit["safe_successes"], 0)
+
+    def test_locked_material_drift_counts_started_failure_before_gateway_launch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary, config, executable = (root / name for name in ("gateway", "config", "client"))
+            binary.write_bytes(b"synthetic")
+            config.write_bytes(b"synthetic-config")
+            executable.write_bytes(b"synthetic-client")
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture", "contract": "openai-chat-v1"}
+            with patch("live_clients.shutil.which", return_value=str(executable)):
+                specs = [make_case_spec(config, profile, "codex", mode, "a" * 40, "ep_" + "b" * 32, 90) for mode in ("eager", "lazy")]
+            files = {"gateway-binary": binary, "source-config": config, "client-codex": executable}
+            plan = build_plan("run-locked", specs, fingerprint_materials(files), "seed", 16, 16)
+            selected = next(case for case in specs if case.case_id == plan["schedule"][0])
+            config.write_bytes(b"changed-config")
+            journal = CaseJournal(root / "cases.jsonl", plan["run_id"])
+            with patch("live_clients.candidate_process") as launch:
+                result = run_case(root, journal, binary, config, profile, "codex", selected.mode, "a" * 40,
+                                  "ep_" + "b" * 32, 90, specification=selected, locked_plan=plan, material_paths=files)
+            launch.assert_not_called()
+            self.assertFalse(result["safe_task_success"])
+            self.assertIn("material_validation_failure", result["issues"])
+            report = summarize(journal.events)
+            self.assertEqual(report["started_cases"], 1)
+            self.assertEqual(report["unfinished_cases"], 0)
+            self.assertEqual(report["safe_successes"], 0)
+            self.assertIsNone(report["cases"][0]["usage"]["total_input_tokens"])
+
     def test_endpoint_identifier_is_derived_from_complete_digest(self):
         self.assertEqual(endpoint_id("a" * 64), "ep_" + "a" * 32)
         for value in ("a" * 33, "unknown", "A" * 64, None):

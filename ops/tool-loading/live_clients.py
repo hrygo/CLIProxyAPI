@@ -6,6 +6,7 @@ Only synthetic MCP data is sent; operator configuration remains read only.
 
 import argparse
 from copy import deepcopy
+from dataclasses import asdict
 import hashlib
 import http.client
 import json
@@ -19,6 +20,7 @@ from urllib.parse import urlsplit
 import uuid
 
 from catalog_fixture import build_catalog, digest
+from batch_plan import build_plan, write_plan, fingerprint_materials, verify_materials, BatchBudget, audit_plan
 from client_adapters import VERSIONS, prepare_isolated_client, write_private
 from http_attempts import import_http_attempts
 from live_gateway import candidate_process
@@ -112,8 +114,7 @@ def chat_terminal(body):
     return bool(reasons and all(isinstance(reason, str) and reason in {"stop", "tool_calls", "function_call"} for reason in reasons))
 
 
-def run_case(root, journal, binary, config, profile, client, mode, revision, endpoint, seconds):
-    started = time.monotonic()
+def make_case_spec(config, profile, client, mode, revision, endpoint, seconds):
     pair = client + "-" + profile["client_model"]
     case_id = pair + "-" + mode
     executable = Path(shutil.which(client) or client).resolve()
@@ -124,9 +125,16 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                  upstream_format="openai", endpoint_id=endpoint, transport="http-sse", region_id="unknown",
                  catalog_hash=digest(build_catalog()), fixture_hash=hashlib.sha256(Path(__file__).with_name("catalog_fixture.py").read_bytes()).hexdigest(),
                  permission_hash=digest(PERMISSIONS))
-    spec = CaseSpec(case_id, pair, "ledger-json-lookup", mode, "unknown", scope, hashlib.sha256(PROMPT.encode()).hexdigest(),
+    return CaseSpec(case_id, pair, "ledger-json-lookup", mode, "unknown", scope, hashlib.sha256(PROMPT.encode()).hexdigest(),
                     "live-calibration-1", {"max_requests": 8, "max_dispatches": 8, "task_seconds": seconds},
                     {"requires_dispatch": True, "requires_nonce": True, "requires_code": False, "format_required": True})
+
+
+def run_case(root, journal, binary, config, profile, client, mode, revision, endpoint, seconds, *,
+             specification=None, locked_plan=None, material_paths=None):
+    started = time.monotonic()
+    spec = specification or make_case_spec(config, profile, client, mode, revision, endpoint, seconds)
+    case_id = spec.case_id
     journal.start_case(spec)
     case_root = root / case_id
     case_root.mkdir(mode=0o700)
@@ -137,12 +145,20 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     failure, effective, declaration_bytes = "framework", False, []
     stage = "candidate_start"
     try:
-        with candidate_process(binary, config, case_root, profile, max_attempts=8) as (ready, capture):
+        if locked_plan is not None:
+            stage = "material_validation"
+            verify_materials(locked_plan, material_paths)
+            stage = "scope_validation"
+            if asdict(spec) != asdict(make_case_spec(config, profile, client, mode, revision, endpoint, seconds)):
+                raise ValueError("actual task inputs differ from predeclared case")
+        stage = "candidate_start"
+        with candidate_process(binary, config, case_root, profile, max_attempts=spec.limits["max_requests"]) as (ready, capture):
             stage = "catalog_validation"
             metadata = fetch_model_metadata(ready, profile["client_model"], client, mode)
             write_private(case_root / "actual-model.json", json.dumps(metadata, indent=2))
             nonce = uuid.uuid4().hex
             stage = "client_preparation"
+            executable = Path(shutil.which(client) or client).resolve()
             prepared = prepare_isolated_client(client, mode, {
                 "run_dir": case_root / "client", "client_version": VERSIONS[client], "executable": str(executable),
                 "fixture_python": sys.executable, "model": profile["client_model"], "model_metadata": metadata,
@@ -165,6 +181,9 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                 checks["answer"] = False
                 failure = "budget" if process["termination"] in {"process_budget", "output_budget"} else "framework"
             stage = "candidate_cleanup"
+        if locked_plan is not None:
+            stage = "material_revalidation"
+            verify_materials(locked_plan, material_paths)
     except (OSError, ValueError, subprocess.SubprocessError):
         checks["answer"] = False
         issues.append(stage + "_failure")
@@ -210,28 +229,71 @@ def main():
     parser.add_argument("--clients", nargs="+", choices=list(VERSIONS), default=list(VERSIONS))
     parser.add_argument("--modes", nargs="+", choices=["eager", "lazy"], default=["eager", "lazy"])
     parser.add_argument("--task-seconds", type=int, default=90)
+    parser.add_argument("--schedule-seed", default="calibration-order-1")
+    parser.add_argument("--batch-max-requests", type=int)
+    parser.add_argument("--batch-max-dispatches", type=int)
     args = parser.parse_args()
     if not 10 <= args.task_seconds <= 300 or not args.executor.startswith("openai-compatible-"):
         parser.error("bounded Chat calibration only")
+    if len(set(args.clients)) != len(args.clients) or len(set(args.modes)) != len(args.modes):
+        parser.error("duplicate client or mode")
+    paired = set(args.modes) == {"eager", "lazy"}
+    if not paired and (args.batch_max_requests is not None or args.batch_max_dispatches is not None):
+        parser.error("batch reservations require paired modes")
     try:
         endpoint = endpoint_id(args.endpoint_sha256)
     except ValueError:
         parser.error("complete configured endpoint digest is required")
     root = args.output_dir.resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
-    journal = CaseJournal(root / "cases.jsonl", "live-calibration-" + uuid.uuid4().hex)
+    run_id = "live-calibration-" + uuid.uuid4().hex
+    journal = CaseJournal(root / "cases.jsonl", run_id)
     profile = {"client_model": args.client_model, "upstream_model": args.upstream_model,
                "executor": args.executor, "contract": "openai-chat-v1"}
     results = []
-    for client in args.clients:
-        for mode in args.modes:
-            result = run_case(root, journal, args.gateway_binary.resolve(), args.config.resolve(), profile, client, mode,
-                              args.gateway_revision, endpoint, args.task_seconds)
+    locked_plan, material_paths, budget = None, None, None
+    stop_reason = "interrupted" if paired else "diagnostic-only"
+    try:
+        cases = [make_case_spec(args.config.resolve(), profile, client, mode, args.gateway_revision, endpoint, args.task_seconds)
+                 for client in args.clients for mode in args.modes]
+        if paired:
+            material_paths = {"gateway-binary": args.gateway_binary.resolve(), "source-config": args.config.resolve(),
+                              "harness-python": Path(sys.executable).resolve()}
+            material_paths.update({"client-" + client: Path(shutil.which(client) or client).resolve() for client in args.clients})
+            material_paths.update({"harness-" + path.name.replace(".", "-"): path for path in Path(__file__).resolve().parent.iterdir()
+                                   if path.is_file() and path.suffix in {".py", ".json", ".txt"}})
+            locked_plan = build_plan(run_id, cases, fingerprint_materials(material_paths), args.schedule_seed,
+                len(cases) * 8 if args.batch_max_requests is None else args.batch_max_requests,
+                len(cases) * 8 if args.batch_max_dispatches is None else args.batch_max_dispatches)
+            write_plan(root / "batch-plan.json", locked_plan)
+            journal.lock_plan(locked_plan["plan_sha256"])
+            budget = BatchBudget(locked_plan)
+        while cases:
+            declaration = budget.admit_next() if budget is not None else asdict(cases.pop(0))
+            if declaration is None:
+                stop_reason = budget.stop_reason
+                break
+            selected = CaseSpec(**declaration)
+            result = run_case(root, journal, args.gateway_binary.resolve(), args.config.resolve(), profile,
+                              selected.scope["client"], selected.mode, args.gateway_revision, endpoint, args.task_seconds,
+                              specification=selected, locked_plan=locked_plan, material_paths=material_paths)
             results.append(result)
             print(json.dumps(result), flush=True)
-    write_private(root / "replay.json", json.dumps(summarize(read_journal(journal.path)), indent=2))
-    write_private(root / "summary.json", json.dumps({"scope": "real-provider-calibration", "gate_status": "unverified", "cases": results}, indent=2))
-    if not all(case["safe_task_success"] for case in results):
+            if budget is not None:
+                audit_plan(locked_plan, journal.events)
+                unknown = any(issue in {"attempt_evidence_import_failed", "no_gateway_attempt_capture"} for issue in result["issues"])
+                budget.settle(selected.case_id, requests=None if unknown else result["upstream_attempts"],
+                              dispatches=result["boundary_counts"]["dispatch"])
+    finally:
+        durable_events = read_journal(journal.path)
+        replay = summarize(durable_events)
+        write_private(root / "replay.json", json.dumps(replay, indent=2))
+        if locked_plan is not None:
+            write_private(root / "batch-audit.json", json.dumps(audit_plan(locked_plan, durable_events), indent=2))
+        write_private(root / "summary.json", json.dumps({"scope": "real-provider-calibration", "gate_status": "unverified",
+            "batch_stop_reason": stop_reason, "batch_plan_sha256": None if locked_plan is None else locked_plan["plan_sha256"],
+            "cases": results}, indent=2))
+    if not results or paired and stop_reason != "complete" or not all(case["safe_task_success"] for case in results):
         raise SystemExit(1)
 
 
