@@ -12,6 +12,17 @@ from catalog_fixture import CatalogFixture, build_catalog, QUERY_GROUND_TRUTH
 
 
 class CatalogTests(unittest.TestCase):
+    def test_list_records_positive_service_authorization_without_dispatch(self):
+        fixture = CatalogFixture("nonce")
+        fixture.list_tools()
+        event = next(event for event in fixture.events if event["phase"] == "catalog")
+        self.assertTrue(event["ledger_allowed"])
+        self.assertEqual(event["exposed_count"], 66)
+        self.assertEqual(event["dispatch_count"], 0)
+        fixture.set_denied({"fixture_mutation", "ledger_budget_lookup"})
+        fixture.list_tools()
+        self.assertFalse(fixture.events[-1]["ledger_allowed"])
+
     def test_catalog_is_stable_and_large(self):
         first = CatalogFixture("one")
         second = CatalogFixture("two")

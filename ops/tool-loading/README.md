@@ -46,6 +46,42 @@ client permission and cancellation evidence must still come from actual MCP
 calls and immutable artifacts before the live acceptance journal can certify
 them. CPU/output process tests alone are not Code Mode runtime budget proof.
 
+## Scripted native execution boundaries
+
+With the same exact CLI versions and isolated SDK environment:
+
+```sh
+"$task_validation/venv/bin/python" ops/tool-loading/scripted_clients.py \
+  --output-dir "$task_validation/scripted-clients"
+```
+
+This runs both clients in eager/lazy modes against deterministic local SSE
+responses. Four scenarios cover an allowed ledger call, client denial while
+the service permits the target, an invalid original-schema constant, and
+service revocation after declaration/discovery but before invocation. Each
+case records its start before CLI launch, every received request, responses,
+MCP events, full client output and summary in a fresh private directory.
+The service's catalog event proves positive target authorization independently
+of client filtering; absence of MCP calls alone cannot establish client denial.
+
+The local model learns the fresh nonce exclusively from the client's actual
+tool-result receipt. Allowed cases require exactly one dispatch, matching
+nonce in the final assistant message, zero effects/active operations and a
+legal client terminal. Codex's wall-time output wrapper is decoded explicitly.
+Denied cases require a returned error receipt and zero dispatch; client-denied
+cases additionally require zero MCP requests. Invalid and revoked cases require
+the corresponding service rejection reason. The revocation artifact ties the
+generation change to the invocation, excluding the preceding Code Mode search.
+
+These probes bypass CLIProxyAPI and real Providers. Scripted model decisions
+do not test retrieval strategy, coding quality, reliability or token savings.
+Native CLI usage defaults to zero when this fixture omits usage; those values
+are not accepted as measurements. Summary usage remains null, task success is
+unverified and the overall gate stays unverified. Cancellation, dynamic client
+permission changes/index refresh and cumulative Code Mode limits still need
+their own native execution evidence. Formal attempt accounting remains the
+responsibility of the live journal and gateway collector, not this fixture.
+
 ## Isolated dependencies and offline checks
 
 Use Python 3.11 or later. The official MCP Python SDK is pinned to

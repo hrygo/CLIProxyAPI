@@ -142,7 +142,11 @@ class CatalogFixture:
 
     def list_tools(self) -> list[dict[str, Any]]:
         self._sync_policy()
-        return deepcopy([tool for name, tool in self.tools.items() if name not in self.denied])
+        exposed = [tool for name, tool in self.tools.items() if name not in self.denied]
+        self._record("catalog", "catalog", exposed_count=len(exposed),
+                     ledger_allowed="ledger_budget_lookup" not in self.denied,
+                     policy_generation=self.policy_generation)
+        return deepcopy(exposed)
 
     def _reject(self, name: str, code: str) -> dict[str, Any]:
         self._record("rejected", name, reason=code)
