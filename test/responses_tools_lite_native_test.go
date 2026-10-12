@@ -112,3 +112,59 @@ func splitSSEData(body []byte) [][]byte {
 	}
 	return out
 }
+
+func TestResponsesToolsNativeEagerNamespaceExecutor(t *testing.T) {
+	for _, stream := range []bool{false, true} {
+		name := "buffered"
+		if stream {
+			name = "stream"
+		}
+		t.Run(name, func(t *testing.T) {
+			body := []byte(`{"model":"review-model","tools":[{"type":"namespace","name":"mcp__fixture","tools":[{"type":"function","name":"ledger_budget_lookup","parameters":{"type":"object"}}]}],"input":[]}`)
+			response := `data: {"type":"response.completed","response":{"id":"resp_budget","status":"completed","output":[{"type":"function_call","id":"fc_budget","call_id":"budget","name":"mcp__fixture.ledger_budget_lookup","arguments":"{}"}]}}` + "\n\n"
+			server, received := newResponsesToolsProviderServer(t, response)
+			cfg := &config.Config{}
+			cfg.NormalizeResponsesToolsConfig()
+			mgr := auth.NewManager(nil, nil, nil)
+			mgr.SetConfig(cfg)
+			mgr.SetRetryConfig(0, 0, 0)
+			mgr.RegisterExecutor(runtimeexecutor.NewMetaExecutor(cfg))
+			registerResponsesToolsProvider(t, mgr, "native-eager-"+name, "meta", "review-model", server.URL)
+			req := executor.Request{Model: "review-model", Payload: body}
+			opts := executor.Options{SourceFormat: translator.FormatOpenAIResponse, OriginalRequest: body, Stream: stream}
+			var clientBody []byte
+			if stream {
+				result, err := mgr.ExecuteStream(context.Background(), []string{"meta"}, req, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for chunk := range result.Chunks {
+					if chunk.Err != nil {
+						t.Fatal(chunk.Err)
+					}
+					for _, frame := range splitSSEData(chunk.Payload) {
+						if gjson.GetBytes(frame, "type").String() == "response.completed" {
+							clientBody = []byte(gjson.GetBytes(frame, "response").Raw)
+						}
+					}
+				}
+			} else {
+				result, err := mgr.Execute(context.Background(), []string{"meta"}, req, opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				clientBody = result.Payload
+			}
+			wire := received.get()
+			if gjson.GetBytes(wire, "tools.0.type").String() != "namespace" || gjson.GetBytes(wire, "tools.0.name").String() != "mcp__fixture" ||
+				gjson.GetBytes(wire, "tools.0.tools.0.name").String() != "ledger_budget_lookup" || gjson.GetBytes(wire, "input.#").Int() != 0 {
+				t.Fatalf("eager declarations were changed: %s", wire)
+			}
+			item := gjson.GetBytes(clientBody, "output.0")
+			if item.Get("type").String() != "function_call" || item.Get("namespace").String() != "mcp__fixture" ||
+				item.Get("name").String() != "ledger_budget_lookup" || item.Get("call_id").String() != "budget" || item.Get("arguments").String() != "{}" {
+				t.Fatalf("native eager identity was lost: %s", clientBody)
+			}
+		})
+	}
+}

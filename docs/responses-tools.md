@@ -160,6 +160,14 @@ derived from the upstream format **and** the provider:
   IDs are preserved, and lifted declarations
   remain subject to the active declaration budget. Inherited native routes
   retain the original Lite input dialect and request bytes.
+
+  Portable native routes also retain a response-only adapter for eager,
+  non-deferred namespaced functions. Some upstreams return `namespace.name`
+  in the function `name` without a separate `namespace`; the existing request
+  contract restores the declared leaf name and namespace without changing
+  call IDs, arguments or outgoing request bytes. Deferred or discovered-only
+  identities do not activate this eager adapter. Transparent native policies
+  and plain top-level functions retain their previous passthrough behavior.
   Lifting changes declaration scope: a declaration originally between
   conversation items becomes visible at whole-request scope. The internal
   `Prepared.Transformation` sidecar reports original Lite declaration indices,
@@ -368,7 +376,8 @@ grammar bodies, prompts, results, tokens, and credentials are never logged.
   Resolved client aliases and pinned credentials retain their actual format
   and endpoint policy; partial route hints cannot override a pinned credential.
   An unmatched rule still follows the convention. Unchanged ordinary functions
-  and native search requests keep passthrough. Replay does not certify duplex:
+  and native search requests keep passthrough, except portable native eager
+  namespaces that require response-only identity repair. Replay does not certify duplex:
   `response.steer` in a replay turn fails explicitly with 422 before dispatch.
 - Server-side history: only locally expandable history converts; requests
   that depend on remote opaque `previous_response_id` references fail with

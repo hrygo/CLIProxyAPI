@@ -85,6 +85,7 @@ func TestResponsesWebsocketReplayIncludesActualSchemaAndLitePreparation(t *testi
 		{"lite eager", "meta", `{"type":"response.create","input":[{"type":"additional_tools","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}]}`, true},
 		{"lite response-only", "codex", `{"type":"response.create","input":[{"type":"additional_tools","tools":[{"type":"tool_search"}]}]}`, true},
 		{"plain function", "meta", `{"type":"response.create","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],"input":[]}`, false},
+		{"eager namespace identity", "meta", `{"type":"response.create","tools":[{"type":"namespace","name":"fs","tools":[{"type":"function","name":"read"}]}],"input":[]}`, true},
 		{"native search", "codex", `{"type":"response.create","tools":[{"type":"tool_search"}],"input":[]}`, false},
 		{"request-only repair", "codex", `{"type":"response.create","input":[{"type":"function_call","id":"ctc_x","call_id":"c1","name":"lookup","arguments":"{}"}]}`, true},
 	} {
@@ -120,10 +121,9 @@ func TestResponsesWebsocketExecutorInputIsNotPassedToToolsReplay(t *testing.T) {
 	}
 }
 
-// A turn that carries tool metadata the core protocol would pass through
-// unchanged must not be forced into tools-replay: replay drops the duplex
-// input channel, so live steering would start failing on turns that never
-// needed any rewriting.
+// Unadapted metadata preserves duplex. A portable native namespace needs the
+// same response-only identity adapter as HTTP, even with unchanged declarations;
+// it must use replay rather than skip recovery through raw duplex passthrough.
 func TestResponsesWebsocketPassThroughTurnKeepsNativePassthrough(t *testing.T) {
 	h := toolsReplayTestHandlerConventions()
 	cases := []struct {
@@ -143,8 +143,15 @@ func TestResponsesWebsocketPassThroughTurnKeepsNativePassthrough(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			for _, provider := range []string{"xai", "codex", "meta", "gemini"} {
 				payload := []byte(testCase.payload)
-				if h.responsesWebsocketRequiresToolsReplayForRoute(payload, provider, "review-model") {
-					t.Errorf("provider %q: a pass-through turn must not force tools-replay", provider)
+				wantReplay := provider == "meta" && testCase.name == "namespace only"
+				if got := h.responsesWebsocketRequiresToolsReplayForRoute(payload, provider, "review-model"); got != wantReplay {
+					t.Errorf("provider %q: replay=%v want=%v", provider, got, wantReplay)
+				}
+				if wantReplay {
+					native, replay := h.responsesWebsocketResolveToolMode(payload, "", provider, "review-model", "", true)
+					if native || !replay {
+						t.Error("portable namespace bypassed response identity repair in duplex mode")
+					}
 				}
 			}
 		})

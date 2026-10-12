@@ -123,6 +123,15 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		policy.CustomTools == CustomToolsFunction && hasAdditionalToolsInput(root)
 	needsNativeActivation := contract.ClientSearch && policy.ClientSearch == ClientSearchNative &&
 		policy.CustomTools == CustomToolsFunction && len(contract.Discovered) > 0
+	needsNativeIdentity := false
+	if policy.ClientSearch == ClientSearchNative && policy.CustomTools == CustomToolsFunction {
+		for _, identity := range contract.Identities {
+			if _, discovered := contract.Discovered[identity]; identity.Namespace != "" && !contract.Deferred[identity] && !discovered {
+				needsNativeIdentity = true
+				break
+			}
+		}
+	}
 	contract.SearchBridged = needsSearch
 	needsCustom := policy.CustomTools == CustomToolsFunction || policy.CustomTools == CustomToolsStrip
 	needsSchema := policy.Schema.CompletesSearchSchemas() || policy.Schema.LocalRefs == LocalRefsInline ||
@@ -315,9 +324,10 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}
 	if !changed {
-		if needsNativeSearch {
-			// Native requests stay byte-identical, but Lite upstreams may emit
-			// the search built-in as a namespaced function on the response side.
+		if needsNativeSearch || needsNativeIdentity {
+			// Native requests stay byte-identical. Portable upstreams may return
+			// qualified eager names or the Lite search built-in as a function;
+			// retain the existing identity adapter without changing declarations.
 			attempt.adapted = true
 			attempt.responseOnly = true
 			attempt.feed = NewStreamFeed(attempt.contract, attempt.bridge, lease, limits)
