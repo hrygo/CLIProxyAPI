@@ -457,3 +457,66 @@ decoding, not actual Provider tokens; reports retain null measured input and
 `gate_status: unverified`. Serialized tool bytes are a transport metric only.
 Live scope manifests, balanced scheduling and clustered quality/benefit gates
 remain separate work.
+
+## Read-only live candidate bootstrap
+
+`live-gateway/` uses the official SDK's configuration, API-key synthesis,
+executor registration and model alias initialization. Operator configuration
+is read into memory; selected native file credentials are copied into an
+ephemeral store. Source configuration and credentials are never written by
+this store. This bootstrap has been exercised with a synthetic source/upstream;
+its real Provider profiles remain unverified.
+
+```sh
+GOTOOLCHAIN=go1.26.4 go build -o "$task_validation/tool-loading-live-gateway" ./ops/tool-loading/live-gateway
+"$task_validation/venv/bin/python" ops/tool-loading/probe_live_gateway.py \
+  --gateway-binary "$task_validation/tool-loading-live-gateway" \
+  --output-dir "$task_validation/live-bootstrap-fixture"
+```
+
+To verify only startup using an explicitly selected operator model/route:
+
+```sh
+"$task_validation/venv/bin/python" ops/tool-loading/live_gateway.py \
+  --gateway-binary "$task_validation/tool-loading-live-gateway" \
+  --config "$task_operator_config" --output-dir "$task_validation/live-bootstrap" \
+  --client-model "$task_model_id" --upstream-model "$task_upstream_model_id" \
+  --executor "$task_executor_id" --contract "$task_contract"
+```
+
+This command starts and closes only its own candidate and performs no inference.
+All output directories must be new. The SDK requires an explicit listener port;
+the launcher releases its reservation before launch. A collision fails closed:
+both actual child PID and random instance nonce must match a bounded local HTTP
+readiness probe. Startup text alone cannot prove endpoint ownership. Existing
+processes are never killed or restarted. Child environment is filtered; the
+original owner home is retained solely for resolving the requested auth source.
+Native client homes remain separately isolated.
+
+Isolation version 3 deep-copies native JSON metadata, removes refresh tokens,
+and gates native snapshot background refresh before startup. API-key credentials
+are excluded by the SDK refresh scheduler. The SDK's routing selector and
+session-affinity lifecycle are preserved; neither is replaced or prematurely stopped.
+Access credentials and provider identity remain intact. Expired credentials
+produce unavailable/failed observations; shared OAuth refresh is not a fallback.
+The original refresh credentials and nested source objects remain unchanged.
+The wrapper serves only model listing, synthetic readiness, and POST Chat or
+Responses for the single pinned client model. No operator management endpoint,
+config watcher, plugin, Home, discovery, logging or cooldown persistence is used.
+
+Supported constructor profiles are `codex`/Responses, `gemini`/GenerateContent,
+`claude`/Messages and configured `openai-compatible-*`/Chat. These are explicit
+wire-contract constraints, not certification. Other executors remain unknown;
+no familiar provider name silently becomes Chat. The transport observer rejects
+wrong actual executor/model or an auth fingerprint outside the frozen initial
+set before capture/dispatch. Readiness includes source config/policy hashes and
+sorted credential-ID fingerprints; the launcher validates their set digest.
+
+Binary digest, readiness, exit code, unchanged-source check, collector artifacts
+and original failed startup records are private evidence. Credential-ID hashes
+do not prove endpoint/account region, credential material or full scope freshness.
+The live case runner still must lock actual client model metadata, immutable
+scope/endpoint manifests, permissions/catalog, cache conditions and template
+schedule, then start each case before invoking this bootstrap and import every
+attempt. The startup-only command and synthetic probe do not contribute to
+sixty live cases, coding success, context savings or confidence intervals.
