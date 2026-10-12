@@ -150,7 +150,12 @@ func TestResponsesToolsNativeDiscoveryPostRuleGuard(t *testing.T) {
 				alias := responsestools.CustomAliasFor("", "apply_patch")
 				cfg := &config.Config{Payload: config.PayloadConfig{Override: []config.PayloadRule{{
 					Models: []config.PayloadModelRule{{Name: "review-model"}},
-					Params: map[string]any{"input.1.tools": []any{map[string]any{
+					// Discovery is now also activated in top-level tools. Remove
+					// both copies to test loss of the negotiated declaration.
+					Params: map[string]any{"tools": []any{
+						map[string]any{"type": "tool_search", "execution": "client"},
+						map[string]any{"type": "function", "name": alias, "parameters": map[string]any{"type": "object"}},
+					}, "input.1.tools": []any{map[string]any{
 						"type": "function", "name": alias,
 						"parameters": map[string]any{"type": "object"},
 					}}},

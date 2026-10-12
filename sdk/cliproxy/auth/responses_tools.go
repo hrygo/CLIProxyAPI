@@ -163,6 +163,12 @@ func (m *Manager) prepareResponsesToolsAttempt(route responsestools.Route, paylo
 		ActiveToolBytes:    responsestools.ActiveToolArraysBytesOf(prepared.Body),
 		MaxActiveToolBytes: prepared.Attempt.MaxActiveToolBytes(),
 	}
+	if prepared.Attempt.ResponseOnly() {
+		// Native Lite alias repair changes only upstream responses. Retain
+		// the declaration budget without pinning unadapted built-in names
+		// that the route's existing post rules may filter or rename.
+		return prepared.Body, prepared.Attempt, guard, nil
+	}
 	collectResponsesToolsAliases(prepared.Attempt, guard)
 	if err := collectResponsesToolsWireRequirements(prepared.Body, guard); err != nil {
 		prepared.Attempt.Close()

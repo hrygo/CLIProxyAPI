@@ -122,8 +122,14 @@ derived from the upstream format **and** the provider:
 
 - `client-search: native` only when the upstream format is `openai-response`
   or `codex` **and** the provider forwards the `tool_search` built-in
-  unchanged. Today that is `codex` and `meta`. Nothing is rewritten and the
-  native passthrough path — including live duplex steering — is preserved.
+  unchanged. Today that is `codex` and `meta`. The search built-in and its
+  history stay native. Codex Lite requests using `input[].additional_tools`
+  retain a response adapter: the exact `tool_search/tool_search_tool`
+  namespaced function alias is restored to a client `tool_search_call`, with
+  object arguments and consistent item IDs across stream events. Declared
+  business tools with that identity are never treated as search aliases.
+  Response-only repair preserves request bytes and declaration budgets without
+  pinning unadapted function names that later route optimizers may rename.
 - `client-search: bridge` for every other upstream, including providers that
   speak a native Responses format but rewrite the built-in: the `xai`
   executor strips it, so native passthrough would silently drop discovery.
@@ -139,6 +145,21 @@ derived from the upstream format **and** the provider:
   `required` and rejects recursive schemas, so the convention folds its tools
   with `custom-tools: function`, `custom-grammar: describe`,
   `schema.complete-search-required: true`, and `schema.local-refs: flatten`.
+  Native client search on a `custom-tools: function` route also activates
+  discovered tools from `tool_search_output` in top-level `tools`, reusing the
+  same identity and latest-round budget checks as the search bridge. Native
+  search history remains intact; provider function calls are restored to the
+  original tool identity. On these portable native routes, Lite
+  `input[].additional_tools` containers are lifted into top-level `tools`
+  before schema/custom adaptation, for eager and search requests alike.
+  Identical declarations are deduplicated, matching namespace containers
+  are merged, and conflicting definitions fail locally with 422. Namespace
+  containers receive a neutral description if Lite supplied an empty or
+  missing one, satisfying the portable native required-field contract.
+  Nonempty client descriptions and remaining conversation/search-history
+  IDs are preserved, and lifted declarations
+  remain subject to the active declaration budget. Inherited native routes
+  retain the original Lite input dialect and request bytes.
   `schema.local-refs: inline` stays opt-in for every provider, `meta`
   included: the convention never expands a client-authored `$ref`; flattening
   only replaces the references that close a cycle with an unconstrained

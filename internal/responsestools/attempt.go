@@ -13,15 +13,16 @@ import (
 // feed, and the budget lease. Attempts are never shared across requests; a
 // retry rebuilds from the original client contract with a fresh Prepare.
 type Attempt struct {
-	Body     []byte
-	contract *ToolContract
-	bridge   *CustomBridge
-	feed     *StreamFeed
-	lease    *Lease
-	limits   Limits
-	policy   RoutePolicy
-	adapted  bool
-	closed   bool
+	Body         []byte
+	contract     *ToolContract
+	bridge       *CustomBridge
+	feed         *StreamFeed
+	lease        *Lease
+	limits       Limits
+	policy       RoutePolicy
+	adapted      bool
+	responseOnly bool
+	closed       bool
 }
 
 // Prepared is the result of Prepare: the wire body plus the attempt when the
@@ -34,8 +35,8 @@ type Prepared struct {
 
 // Prepare parses one raw client request body against the effective route
 // policy and returns the normalized wire body. Pure computation: it starts no
-// network or tool execution. Unchanged requests return the original slice
-// with no state.
+// network or tool execution. Unchanged requests return the original slice;
+// native Lite requests may retain state for response-only alias repair.
 func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (Prepared, error) {
 	originalBody := body
 	// Replayed tool items are repaired before anything else looks at the
@@ -55,7 +56,18 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}
 	needsCustomHistory := (policy.CustomTools == CustomToolsFunction || policy.CustomTools == CustomToolsStrip) && customHistory
-	if contract == nil && !customHistory {
+	portableAdditional := false
+	if policy.ClientSearch == ClientSearchNative && policy.CustomTools == CustomToolsFunction &&
+		bytes.Contains(body, []byte("\"additional_tools\"")) {
+		if root == nil {
+			value, ok := decodeValue(body)
+			if ok {
+				root, _ = value.(map[string]any)
+			}
+		}
+		portableAdditional = hasAdditionalToolsInput(root)
+	}
+	if contract == nil && !customHistory && !portableAdditional {
 		return Prepared{Body: body}, nil
 	}
 	if contract == nil {
@@ -89,21 +101,37 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}
 	needsSearch := contract.ClientSearch && policy.ClientSearch == ClientSearchBridge
+	needsNativeSearch := contract.ClientSearch && policy.ClientSearch == ClientSearchNative && hasAdditionalToolsInput(root)
+	needsPortableDeclarations := policy.ClientSearch == ClientSearchNative &&
+		policy.CustomTools == CustomToolsFunction && hasAdditionalToolsInput(root)
+	needsNativeActivation := contract.ClientSearch && policy.ClientSearch == ClientSearchNative &&
+		policy.CustomTools == CustomToolsFunction && len(contract.Discovered) > 0
 	contract.SearchBridged = needsSearch
 	needsCustom := policy.CustomTools == CustomToolsFunction || policy.CustomTools == CustomToolsStrip
 	needsSchema := policy.Schema.CompletesSearchSchemas() || policy.Schema.LocalRefs == LocalRefsInline ||
 		policy.Schema.LocalRefs == LocalRefsFlatten
 	needsCustomConversion := (policy.CustomTools == CustomToolsFunction || policy.CustomTools == CustomToolsStrip) &&
 		(customDeclarations || customHistory)
-	if contract.discoveryConflict && (needsSearch || needsCustomConversion) {
+	if contract.discoveryConflict && (needsSearch || needsNativeActivation || needsCustomConversion) {
 		return Prepared{}, unprocessableError(ReasonAmbiguousIdentity, fmt.Errorf("discovery round contains conflicting declarations for one tool identity"))
 	}
-	if hasOpaqueResponseHistory(root) && (needsSearch || needsCustomConversion ||
+	if hasOpaqueResponseHistory(root) && (needsSearch || needsCustomConversion || needsPortableDeclarations ||
 		(policy.Schema.CompletesSearchSchemas() && contract.ClientSearch)) {
 		return Prepared{}, unprocessableError(ReasonOpaqueHistory, fmt.Errorf("tool adaptation cannot resolve opaque response or item history"))
 	}
-	if !needsSearch && !needsCustom && !needsSchema {
+	if !needsSearch && !needsNativeSearch && !needsCustom && !needsSchema {
 		return Prepared{Body: body}, nil
+	}
+
+	// Portable native routes cannot accept Lite declaration input items. Lift
+	// only these containers before recording the identities of conversation
+	// items; every remaining item's id and position must survive adaptation.
+	changed := false
+	if needsPortableDeclarations {
+		if err := liftAdditionalTools(root, limits); err != nil {
+			return Prepared{}, err
+		}
+		changed = true
 	}
 
 	// The adapters below change item types, and a type change moves an id.
@@ -129,7 +157,6 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}()
 
-	changed := false
 	if needsSchema && policy.Schema.LocalRefs == LocalRefsInline {
 		if tools, okTools := root["tools"].([]any); okTools {
 			if errDepth := ValidateToolArrayDepth(tools, 1, limits.MaxDepth); errDepth != nil {
@@ -231,6 +258,13 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 			changed = true
 		}
 	}
+	if needsNativeActivation {
+		activationChanged, err := injectDiscoveredTools(root, contract, limits)
+		if err != nil {
+			return Prepared{}, err
+		}
+		changed = changed || activationChanged
+	}
 	if policy.CustomTools == CustomToolsFunction {
 		var customChanged bool
 		customChanged, err = rewriteCustomDeclarationsValue(root, bridge)
@@ -255,6 +289,15 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}
 	if !changed {
+		if needsNativeSearch {
+			// Native requests stay byte-identical, but Lite upstreams may emit
+			// the search built-in as a namespaced function on the response side.
+			attempt.adapted = true
+			attempt.responseOnly = true
+			attempt.feed = NewStreamFeed(attempt.contract, attempt.bridge, lease, limits)
+			closeOnError = false
+			return Prepared{Body: body, Attempt: attempt}, nil
+		}
 		closeOnError = false
 		attempt.Close()
 		return Prepared{Body: body}, nil
@@ -284,6 +327,16 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 	attempt.feed = NewStreamFeed(attempt.contract, attempt.bridge, lease, limits)
 	closeOnError = false
 	return Prepared{Body: out, Attempt: attempt}, nil
+}
+
+func hasAdditionalToolsInput(root map[string]any) bool {
+	input, _ := root["input"].([]any)
+	for _, raw := range input {
+		if item, ok := raw.(map[string]any); ok && stringField(item, "type") == "additional_tools" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasOpaqueResponseHistory(root map[string]any) bool {
@@ -502,9 +555,15 @@ func (a *Attempt) Close() {
 	}
 }
 
-// Adapted reports whether the attempt rewrote the wire body.
+// Adapted reports whether the attempt adapts request or response tool semantics.
 func (a *Attempt) Adapted() bool {
 	return a != nil && a.adapted
+}
+
+// ResponseOnly reports a native compatibility repair that introduces no
+// outbound tool identities and must preserve the route's existing post rules.
+func (a *Attempt) ResponseOnly() bool {
+	return a != nil && a.responseOnly
 }
 
 // MaxActiveToolBytes returns the validated declaration ceiling that was

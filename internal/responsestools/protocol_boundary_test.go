@@ -178,8 +178,11 @@ func TestLimiterInitialAttemptBoundaryAndHotUpdate(t *testing.T) {
 func TestResponsesToolBoundaryControls(t *testing.T) {
 	t.Run("native_discovery_function", func(t *testing.T) {
 		p := prepareNativeMetaBoundary(t, `{"tools":[{"type":"tool_search","execution":"client"}],"input":[{"type":"tool_search_call","id":"tsc_1","call_id":"s1","arguments":{}},{"type":"tool_search_output","id":"tso_1","call_id":"s1","tools":[{"type":"function","name":"read","parameters":{"type":"object"}}]}]}`)
-		if p.Attempt != nil {
-			t.Fatal("healthy native function discovery should pass through")
+		value, _ := decodeValue(p.Body)
+		root := value.(map[string]any)
+		tools, _ := root["tools"].([]any)
+		if p.Attempt == nil || len(tools) != 2 || stringField(tools[1].(map[string]any), "name") != "read" {
+			t.Fatal("native portable discovery must activate its discovered function")
 		}
 	})
 	t.Run("valid_search_response", func(t *testing.T) {
