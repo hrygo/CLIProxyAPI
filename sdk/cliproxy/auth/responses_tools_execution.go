@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
+
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -75,6 +77,7 @@ func (m *Manager) responsesToolsCallToFormat(
 	payload := responsesToolsPayload(execReq, execOpts)
 	wireBody, attempt, wire, errPrepare := m.prepareResponsesToolsAttempt(route, payload)
 	if errPrepare != nil {
+		responsestools.ReportPreparationFailure(execCtx, errPrepare)
 		return cliproxyexecutor.Response{}, errPrepare
 	}
 	if attempt == nil {
@@ -162,6 +165,7 @@ func (m *Manager) responsesToolsCountCall(
 	payload := responsesToolsPayload(execReq, execOpts)
 	wireBody, attempt, wire, errPrepare := m.prepareResponsesToolsAttempt(route, payload)
 	if errPrepare != nil {
+		responsestools.ReportPreparationFailure(execCtx, errPrepare)
 		return cliproxyexecutor.Response{}, errPrepare
 	}
 	if attempt == nil {
@@ -213,6 +217,7 @@ func (m *Manager) responsesToolsStreamCall(
 	payload := responsesToolsPayload(execReq, execOpts)
 	wireBody, attempt, wire, errPrepare := m.prepareResponsesToolsAttempt(route, payload)
 	if errPrepare != nil {
+		responsestools.ReportPreparationFailure(parentCtx, errPrepare)
 		return nil, false, errPrepare
 	}
 	if attempt == nil {
