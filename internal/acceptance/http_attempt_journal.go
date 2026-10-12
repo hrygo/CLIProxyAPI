@@ -250,6 +250,9 @@ func (b *attemptBody) Read(p []byte) (int, error) {
 func (b *attemptBody) Close() error {
 	err := b.source.Close()
 	if err != nil {
+		b.journal.mu.Lock()
+		b.journal.err = errors.Join(b.journal.err, errors.New("HTTP evidence response body close failed"))
+		b.journal.mu.Unlock()
 		b.finish("close_error", false)
 	} else {
 		b.finish("closed", false)

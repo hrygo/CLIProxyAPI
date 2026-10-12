@@ -27,6 +27,19 @@ GLM/OpenCode eager 标题请求仍无 finish，已知任务输入仅为其余两
 
 以上只是描述性计量，包含缓存输入，不能换算成账单节省。缓存条件、region、完整不可变 scope 及模板独立性未锁定，没有配对认证或收益置信区间；不能替代最终版本的 60 个跨 Provider 案例及代表性 Coding 任务。
 
+## 固定候选 GLM/OpenCode 复测
+
+本地提交 `1d598d0ab29bc37efff83d5b264287198647c762` 的隔离候选，使用 OpenCode 1.19.0、`opencode-go-glm53-flash` → `glm-5.3-flash` 及实际 MCP 合成工具，执行 eager/lazy 两个案例。每例仍限 90 秒、最多 8 次上游请求；批次 `.omo/tool-loading-completion/t6-live-glm-close-barrier/` 保存原始 CaseJournal、collector、客户端结果、候选 digest/readiness/exit。
+
+- 2 个任务均完成记录，7 次实际请求全部记录 finish；两个候选退出 0，source-config 校验均未变化。
+- lazy 完整任务通过；eager 答案及随机回执正确，但最终格式违反纯 JSON 要求，仍判失败。没有删去失败或放宽门槛。
+- 两例均有 1 次真实 MCP dispatch、0 forbidden dispatch/effect、最终 active 为 0；所有请求均有协议终态与 usage，原 transport outcome 仍为 `closed`，`complete` 仍为 false。
+- 首个实际请求 555 → 555，节省 0%；峰值 50,751 → 14,284，减少 **71.85%**；全任务输入 101,994 → 36,174，减少 **64.53%**。这包含缓存输入，不是账单折扣，也没有配对认证或置信区间。
+
+本次标题请求有完整终态，旧的“无 finish、候选退出 1”未复现。它没有复现旧标题请求异步收尾的确切时序，因此不能把这次正常退出当成旧故障根因证明；关闭屏障的等待语义由独立确定性回归证明。旧记录仍保留未知，不用新请求补填旧计量。
+
+复测后另补 body Close 失败的回归：在 EOF 前和 EOF 后都必须使 journal 关闭返回失败；只保留泛化错误，不把源错误细节写入证据。此后续增强没有混入上述候选版本的在线结果；最终单一版本验收仍待实施。
+
 ## 下一步与边界
 
-使用固定候选版本重测 GLM/OpenCode 标题请求，观察 SDK 停止后的实际 body 释放和 finish，而非把退出码改善当成根因证明。随后继续全路由 scope 固定、权限/取消与客户端缺口、平衡调度及统计门槛。未发布、未改默认配置、未重启原服务。
+补受控 SDK/HTTP 取消时序复现，继续区分异步读取器收尾与 Provider 缺终态。随后继续全路由 scope 固定、权限/取消与客户端缺口、平衡调度及统计门槛。未发布、未改默认配置、未重启原服务。

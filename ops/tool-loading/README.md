@@ -63,7 +63,9 @@ consistent identity, successful status and no capture truncation. Read errors,
 unfinished starts and unproven terminals retain unknown usage. HTTP EOF does not
 establish a legal protocol terminal or release the underlying response body.
 `CloseContext` freezes admission and waits for actual body close, including after
-EOF. A canceled wait retains unfinished evidence. The isolated live candidate
+EOF. A canceled wait retains unfinished evidence. Body Close errors fail sealing,
+including after EOF, without capturing private source-error details. The isolated
+live candidate
 uses this barrier after SDK shutdown; the launcher owns its existing 35-second
 cleanup budget and retains a forced exit as failure. No upstream deadline is added.
 

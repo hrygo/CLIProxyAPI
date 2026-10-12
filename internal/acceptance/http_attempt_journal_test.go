@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -142,6 +143,47 @@ func TestHTTPAttemptJournalCloseContextRequiresCloseEvenAfterEOF(t *testing.T) {
 	}
 	if events := readAttemptEvents(t, dir); len(events) != 2 || events[1]["outcome"] != "eof" {
 		t.Fatal("release rewrote the original EOF evidence")
+	}
+}
+
+type closeFailureBody struct{ io.Reader }
+
+func (*closeFailureBody) Close() error { return errors.New("private close detail") }
+
+func TestHTTPAttemptJournalCloseContextReportsBodyCloseFailure(t *testing.T) {
+	for _, afterEOF := range []bool{false, true} {
+		t.Run(fmt.Sprint(afterEOF), func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "run")
+			journal, err := NewHTTPAttemptJournal(dir, "openai-chat-v1", 4096, 4)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req, _ := http.NewRequest(http.MethodPost, "http://fixture.invalid/", strings.NewReader("{}"))
+			response, err := journal.Observe(req, attemptTransport(func(*http.Request) (*http.Response, error) {
+				return &http.Response{StatusCode: 200, Body: &closeFailureBody{Reader: strings.NewReader("complete bytes")}}, nil
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if afterEOF {
+				if _, err := io.ReadAll(response.Body); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := response.Body.Close(); err == nil {
+				t.Fatal("source close error hidden")
+			}
+			if err := journal.CloseContext(context.Background()); err == nil {
+				t.Fatal("body close failure certified as resource release")
+			}
+			data, err := os.ReadFile(filepath.Join(dir, "attempts.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(data), "private close detail") {
+				t.Fatal("source error leaked into journal")
+			}
+		})
 	}
 }
 
