@@ -20,10 +20,41 @@ class NativeWireTests(unittest.TestCase):
         body={"tools":[{"type":"namespace","name":"fixture","tools":[{"type":"function","name":"one"},{"type":"function","name":"two"}]}]}
         self.assertEqual(len(declarations("openai-responses-v1",body)),2)
         self.assertEqual(declaration_bytes("openai-responses-v1",body),len(json.dumps(body["tools"],separators=(",", ":")).encode()))
-        body={"input":[{"type":"tool_search_output","additional_tools":[{"type":"namespace","name":"fixture","tools":[{"type":"function","name":"three"}]}]}]}
+        body={"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"fixture","tools":[{"type":"function","name":"three"}]}]}]}
         self.assertEqual(declarations("openai-responses-v1",body)[0]["name"],"three")
-        self.assertEqual(declaration_bytes("openai-responses-v1",body),len(json.dumps(body["input"][0]["additional_tools"],separators=(",", ":")).encode()))
+        self.assertEqual(declaration_bytes("openai-responses-v1",body),len(json.dumps(body["input"][0]["tools"],separators=(",", ":")).encode()))
         with self.assertRaises(ValueError): declarations("openai-responses-v1",{"tools":[{"type":"namespace","tools":"bad"}]})
+
+    def test_actual_lite_and_search_history_declarations_are_metered(self):
+        leaf = {"type": "function", "name": "confirm", "parameters": {"type": "object"}}
+        namespace = {"type": "namespace", "name": "fixture", "description": "Fixture tools", "tools": [leaf]}
+        body = {"tools": [leaf], "input": [
+            {"type": "additional_tools", "tools": [namespace]},
+            {"type": "tool_search_output", "tools": [namespace]},
+            {"type": "function_call_output", "tools": [leaf], "output": "ordinary result"},
+            {"type": "tool_search_output", "additional_tools": [leaf]},
+        ]}
+        self.assertEqual(declarations("openai-responses-v1", body), [leaf, leaf, leaf])
+        containers = ([leaf], [namespace], [namespace])
+        self.assertEqual(declaration_bytes("openai-responses-v1", body),
+                         sum(len(json.dumps(value, separators=(",", ":")).encode()) for value in containers))
+        # Repeated transport occurrences must remain visible, even if the gateway
+        # later deduplicates the active callable set. Chat does not have this history.
+        self.assertEqual(declarations("openai-chat-v1", body), [leaf])
+
+    def test_malformed_recognized_history_containers_cannot_disappear(self):
+        for item in ({"type": "additional_tools"},
+                     {"type": "additional_tools", "tools": "invalid"},
+                     {"type": "tool_search_output", "tools": None},
+                     {"type": "tool_search_output", "tools": [None]}):
+            with self.subTest(item=item):
+                with self.assertRaises(ValueError):
+                    declarations("openai-responses-v1", {"input": [item]})
+                with self.assertRaises(ValueError):
+                    declaration_bytes("openai-responses-v1", {"input": [item]})
+        self.assertEqual(declarations("openai-responses-v1", {"input": [
+            {"type": "additional_tools", "tools": []}, {"type": "tool_search_output"},
+        ]}), [])
 
     def test_responses_complete_success_is_separate_from_failed_terminal(self):
         def sse(status):

@@ -20,8 +20,15 @@ def _declaration_containers(contract, body):
     if contract == "openai-responses-v1":
         history = body.get("input", [])
         if isinstance(history, list):
-            containers.extend(item["additional_tools"] for item in history
-                              if isinstance(item, dict) and "additional_tools" in item)
+            for item in history:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "additional_tools":
+                    # Lite declarations are conversation items, not an embedded
+                    # additional_tools field. A missing array is invalid evidence.
+                    containers.append(item.get("tools"))
+                elif item.get("type") == "tool_search_output" and "tools" in item:
+                    containers.append(item["tools"])
     return containers
 
 

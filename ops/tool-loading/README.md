@@ -675,8 +675,13 @@ by the snapshot store; credentials are not copied to disk or command arguments.
 Isolation readiness version 4 rejects older candidates lacking these rules.
 
 `live_clients.py` supports native `codex`/`meta` via the explicit
-`openai-responses-v1` wire view. Namespace leaves and Lite historical
-`additional_tools` are counted as declarations. Successful terminals require
+`openai-responses-v1` wire view. Namespace leaves, Lite historical
+`input[].type = additional_tools` items' `tools` arrays, and native
+`tool_search_output.tools` arrays are counted as declarations. Repeated wire
+occurrences are retained in both counts and serialized-container bytes; active
+tool deduplication must not erase transport overhead. Unrelated result fields
+are not declarations, and malformed recognized containers reject the observation.
+Successful terminals require
 an actual completed response; failed/incomplete responses, broken frames,
 identity conflicts and duplicate or trailing terminals cannot pass. The
 independent usage reader may retain known usage for failed terminal responses,
