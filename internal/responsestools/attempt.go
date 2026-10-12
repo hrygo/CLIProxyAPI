@@ -49,8 +49,11 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 	}
 	body = repaired
 	// Native requests also expose position diagnostics, including when no
-	// response adapter is needed. Inspect only the Lite declaration dialect.
-	if root == nil && bytes.Contains(body, []byte("\"additional_tools\"")) {
+	// response adapter is needed. Also inspect ordinary declarations when
+	// local schema preparation is enabled, even without discovery metadata.
+	localSchemaPolicy := policy.Schema.LocalRefs == LocalRefsInline || policy.Schema.LocalRefs == LocalRefsFlatten
+	if root == nil && (bytes.Contains(body, []byte("\"additional_tools\"")) ||
+		(localSchemaPolicy && bytes.Contains(body, []byte("\"tools\"")))) {
 		value, ok := decodeValue(body)
 		if ok {
 			root, _ = value.(map[string]any)
@@ -80,7 +83,8 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 		portableAdditional = hasAdditionalToolsInput(root)
 	}
-	if contract == nil && !customHistory && !portableAdditional {
+	schemaDeclarations := localSchemaPolicy && hasDeclarationToolArrays(root)
+	if contract == nil && !customHistory && !portableAdditional && !schemaDeclarations {
 		return Prepared{Body: body, Transformation: report}, nil
 	}
 	if contract == nil {
@@ -357,6 +361,21 @@ func hasAdditionalToolsInput(root map[string]any) bool {
 	for _, raw := range input {
 		if item, ok := raw.(map[string]any); ok && stringField(item, "type") == "additional_tools" {
 			return true
+		}
+	}
+	return false
+}
+
+func hasDeclarationToolArrays(root map[string]any) bool {
+	if tools, ok := root["tools"].([]any); ok && len(tools) > 0 {
+		return true
+	}
+	input, _ := root["input"].([]any)
+	for _, raw := range input {
+		if item, ok := raw.(map[string]any); ok && IsToolDeclarationInput(item) {
+			if tools, ok := item["tools"].([]any); ok && len(tools) > 0 {
+				return true
+			}
 		}
 	}
 	return false

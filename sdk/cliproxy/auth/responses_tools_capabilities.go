@@ -143,6 +143,85 @@ func (m *Manager) ResponsesToolsEnabled() bool {
 	return state.enabled
 }
 
+// ResponsesToolsRequiresReplayForRoute evaluates actual preparation rather
+// than a tool-metadata heuristic. Partial hints use matching explicit routes,
+// or the convention when none matches. Fully resolved client/credential
+// candidates should use ResponsesToolsRequiresReplayForClientModel instead.
+func (m *Manager) ResponsesToolsRequiresReplayForRoute(payload []byte, provider, upstreamModel string) bool {
+	if m == nil {
+		return false
+	}
+	state := m.responsesToolsSnapshot()
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	policy, enabled := state.policy, state.enabled
+	state.mu.Unlock()
+	if !enabled {
+		return false
+	}
+	provider, upstreamModel = strings.TrimSpace(provider), strings.TrimSpace(upstreamModel)
+	matched := false
+	for _, rule := range policy.Routes {
+		if provider != "" && !strings.EqualFold(provider, rule.Match.Provider) {
+			continue
+		}
+		if upstreamModel != "" && upstreamModel != strings.TrimSpace(rule.Match.UpstreamModel) {
+			continue
+		}
+		matched = true
+		route := responsestools.Route{Provider: rule.Match.Provider, AuthKind: rule.Match.AuthKind, UpstreamModel: rule.Match.UpstreamModel, UpstreamFormat: rule.Match.UpstreamFormat, BaseURL: rule.Match.BaseURL}
+		effective, err := responsestools.EffectivePolicy(policy, route)
+		if err != nil || responsestools.RequiresToolReplay(payload, effective, policy.Limits) {
+			return true
+		}
+	}
+	if matched {
+		return false
+	}
+	route := responsestools.Route{Provider: provider, UpstreamModel: upstreamModel, UpstreamFormat: providerDefaultFormat(provider).String()}
+	effective, err := responsestools.EffectivePolicy(policy, route)
+	return err != nil || responsestools.RequiresToolReplay(payload, effective, policy.Limits)
+}
+
+// ResponsesToolsRequiresReplayForClientModel preserves alias, credential and
+// format resolution when deciding whether a turn requires managed replay.
+func (m *Manager) ResponsesToolsRequiresReplayForClientModel(payload []byte, modelID, provider, authID string) bool {
+	if m == nil {
+		return false
+	}
+	state := m.responsesToolsSnapshot()
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	policy, enabled := state.policy, state.enabled
+	state.mu.Unlock()
+	if !enabled {
+		return false
+	}
+	routes := m.responsesToolsCandidateRoutes(modelID, authID)
+	if len(routes) == 0 {
+		if strings.TrimSpace(authID) != "" {
+			// No candidate exists for this pinned credential. Do not infer its
+			// policy from another credential's rule; selection handles absence.
+			return false
+		}
+		return m.ResponsesToolsRequiresReplayForRoute(payload, provider, modelID)
+	}
+	for _, route := range routes {
+		if provider != "" && !strings.EqualFold(strings.TrimSpace(provider), route.Provider) {
+			continue
+		}
+		effective, err := responsestools.EffectivePolicy(policy, route)
+		if err != nil || responsestools.RequiresToolReplay(payload, effective, policy.Limits) {
+			return true
+		}
+	}
+	return false
+}
+
 // ResponsesToolsMayApplyToRoute reports whether a non-pass-through policy
 // could match the route information known to a caller. Empty hints represent
 // unknown dimensions rather than mismatches.

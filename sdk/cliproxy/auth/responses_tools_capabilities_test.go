@@ -220,3 +220,68 @@ func TestResponsesToolsMayApplyToClientModelResolvesUpstreamAlias(t *testing.T) 
 		t.Fatal("different pinned auth must not require tools replay")
 	}
 }
+
+func TestResponsesToolsReplayProbeUsesResolvedCredentialAndHTTPPreparation(t *testing.T) {
+	bridge := capRoute("bridge", "inherit")
+	bridge.Match.BaseURL = "https://bridge.invalid"
+	native := capRoute("native", "inherit")
+	native.Match.BaseURL = "https://native.invalid"
+	mgr := capabilitiesTestManagerForModels(t, []internalconfig.ResponsesToolsRoute{bridge, native}, "client-alias", "gpt-5.6-sol")
+	mgr.mu.Lock()
+	mgr.auths["cap-auth"].Attributes["base_url"] = bridge.Match.BaseURL
+	mgr.mu.Unlock()
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient("cap-native", "codex", []*registry.ModelInfo{{ID: "client-alias"}})
+	t.Cleanup(func() { reg.UnregisterClient("cap-native") })
+	if _, err := mgr.Register(context.Background(), &Auth{ID: "cap-native", Provider: "codex", Attributes: map[string]string{
+		"auth_kind": "oauth", "base_url": native.Match.BaseURL, homeUpstreamModelAttributeKey: "gpt-5.6-sol",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte(`{"tools":[{"type":"tool_search"}],"input":[]}`)
+	for _, tc := range []struct {
+		authID string
+		want   bool
+	}{{"cap-auth", true}, {"cap-native", false}, {"", true}, {"missing-auth", false}} {
+		t.Run(tc.authID, func(t *testing.T) {
+			got := mgr.ResponsesToolsRequiresReplayForClientModel(payload, "client-alias", "codex", tc.authID)
+			if got != tc.want {
+				t.Fatalf("replay=%v want %v", got, tc.want)
+			}
+			if tc.authID == "" || tc.authID == "missing-auth" {
+				return
+			}
+			routes := mgr.responsesToolsCandidateRoutes("client-alias", tc.authID)
+			if len(routes) != 1 {
+				t.Fatalf("resolved routes=%d", len(routes))
+			}
+			_, attempt, _, err := mgr.prepareResponsesToolsAttempt(routes[0], payload)
+			if attempt != nil {
+				defer attempt.Close()
+			}
+			if httpReplay := attempt != nil || err != nil; got != httpReplay {
+				t.Fatalf("WS replay=%v HTTP replay=%v", got, httpReplay)
+			}
+		})
+	}
+	if mgr.ResponsesToolsRequiresReplayForClientModel(payload, "client-alias", "gemini", "cap-auth") {
+		t.Fatal("provider hint must narrow actual credential candidates")
+	}
+	if mgr.ResponsesToolsRequiresReplayForClientModel(payload, "gpt-5.6-sol", "codex", "missing-auth") {
+		t.Fatal("an absent pinned credential must not borrow an unrelated explicit route")
+	}
+	if attempts, bytes := mgr.responsesToolsSnapshot().limiter.Usage(); attempts != 0 || bytes != 0 {
+		t.Fatalf("probe or HTTP comparison retained shared reservations: attempts=%d bytes=%d", attempts, bytes)
+	}
+}
+
+func TestResponsesToolsReplayProbePreservesExactModelMatching(t *testing.T) {
+	mgr := capabilitiesTestManager(t, []internalconfig.ResponsesToolsRoute{capRoute("bridge", "inherit")})
+	payload := []byte(`{"tools":[{"type":"tool_search"}],"input":[]}`)
+	if mgr.ResponsesToolsRequiresReplayForRoute(payload, "codex", "Gpt-5.6-sol") {
+		t.Fatal("a case-mismatched model must use the native HTTP convention, not another model's bridge rule")
+	}
+	if !mgr.ResponsesToolsRequiresReplayForRoute(payload, "codex", "gpt-5.6-sol") {
+		t.Fatal("the exact model must retain its explicit bridge rule")
+	}
+}

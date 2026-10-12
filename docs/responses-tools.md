@@ -183,6 +183,9 @@ derived from the upstream format **and** the provider:
   included: the convention never expands a client-authored `$ref`; flattening
   only replaces the references that close a cycle with an unconstrained
   schema and keeps acyclic `$defs` untouched.
+  An effective `inline` or `flatten` policy also prepares ordinary function
+  declarations without discovery or custom metadata. Recursive schemas on an
+  `inline` route fail locally; they do not bypass validation as plain functions.
 
 Lossy strategies stay opt-in, because each of them either drops a capability
 or rewrites user schema. The single exception is the portable-surface folding
@@ -347,6 +350,15 @@ grammar bodies, prompts, results, tokens, and credentials are never logged.
   transformation is allowed. Bridged ordinary WebSocket traffic uses replay;
   live steering combinations that need bridging are rejected explicitly, and
   live duplex is not bridged frame-by-frame.
+  The per-turn gate probes the same request preparation as HTTP, including
+  ordinary schema conversion, Lite declaration lifting, response-only repair,
+  request ID repair and local rejection. It uses private temporary state,
+  releases it before returning, and performs no upstream or tool dispatch.
+  Resolved client aliases and pinned credentials retain their actual format
+  and endpoint policy; partial route hints cannot override a pinned credential.
+  An unmatched rule still follows the convention. Unchanged ordinary functions
+  and native search requests keep passthrough. Replay does not certify duplex:
+  `response.steer` in a replay turn fails explicitly with 422 before dispatch.
 - Server-side history: only locally expandable history converts; requests
   that depend on remote opaque `previous_response_id` references fail with
   422 on routes that need transformation. Native paths keep their existing
