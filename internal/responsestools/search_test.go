@@ -140,7 +140,7 @@ func TestPrepareRejectsConflictingDiscoveryDeclarationsInOneRound(t *testing.T) 
 	}
 }
 
-func TestInjectDiscoveredToolsKeepsOlderDiscoveryRoundsAtomic(t *testing.T) {
+func TestInjectDiscoveredToolsRejectsCumulativeBudgetAtomically(t *testing.T) {
 	search := map[string]any{"type": "function", "name": ToolSearchName, "parameters": map[string]any{"type": "object"}}
 	root := map[string]any{"tools": []any{search}, "input": []any{}}
 	latest := ToolIdentity{Name: "latest", Kind: ToolKindFunction}
@@ -182,8 +182,10 @@ func TestInjectDiscoveredToolsKeepsOlderDiscoveryRoundsAtomic(t *testing.T) {
 	}
 	limits := DefaultLimits()
 	limits.MaxActiveToolBytes = oneOldSize
-	if _, err := injectDiscoveredTools(root, contract, limits); err != nil {
-		t.Fatalf("inject: %v", err)
+	if _, err := injectDiscoveredTools(root, contract, limits); err == nil {
+		t.Fatal("cumulative budget overflow accepted")
+	} else if responseStatus(err) != 413 || !IsRequestScopedError(err) {
+		t.Fatalf("wrong cumulative budget error: %v", err)
 	}
 	tools := root["tools"].([]any)
 	names := make(map[string]bool, len(tools))
@@ -193,11 +195,8 @@ func TestInjectDiscoveredToolsKeepsOlderDiscoveryRoundsAtomic(t *testing.T) {
 			names[stringField(tool, "name")] = true
 		}
 	}
-	if !names[latest.Name] {
-		t.Fatal("latest discovery round was not activated")
-	}
-	if names[oldOne.Name] || names[oldTwo.Name] {
-		t.Fatalf("older discovery round was only partially activated: %v", names)
+	if len(tools) != 1 || !names[ToolSearchName] || names[latest.Name] || names[oldOne.Name] || names[oldTwo.Name] {
+		t.Fatalf("rejected activation changed the original declarations: %v", names)
 	}
 }
 

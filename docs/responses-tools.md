@@ -147,7 +147,7 @@ derived from the upstream format **and** the provider:
   `schema.complete-search-required: true`, and `schema.local-refs: flatten`.
   Native client search on a `custom-tools: function` route also activates
   discovered tools from `tool_search_output` in top-level `tools`, reusing the
-  same identity and latest-round budget checks as the search bridge. Native
+  same identity and cumulative declaration budget checks as the search bridge. Native
   search history remains intact; provider function calls are restored to the
   original tool identity. On these portable native routes, Lite
   `input[].additional_tools` containers are lifted into top-level `tools`
@@ -351,3 +351,27 @@ grammar bodies, prompts, results, tokens, and credentials are never logged.
   that depend on remote opaque `previous_response_id` references fail with
   422 on routes that need transformation. Native paths keep their existing
   capabilities.
+
+## Cumulative discovery activation
+
+Bridge routes and portable native routes using `custom-tools: function` retain
+all discovered identities from the explicit request history. After discovering
+B, a previously discovered A remains callable with its canonical alias; portable
+native function-call replay uses that alias as well. A later discovery of the
+same identity supplies its latest declaration, while earlier calls and results
+remain historical facts. Conflicting definitions within one round fail with
+422 `ambiguous_identity`.
+
+The cumulative active declaration set must fit `max-active-tool-bytes`. If it
+does not, the entire request fails locally with 413 `declaration_budget`, without
+silently dropping older rounds, sending a partial activation, or rotating
+credentials. All attempt leases are released on rejection. This changes the
+older best-effort admission behavior: clients that relied on implicit eviction
+must explicitly bound their retained history or use a sufficient limit. Pure
+native passthrough continues to use the upstream's activation semantics.
+
+Discovery history is not execution authorization. Removing an identity from a
+later search result does not prove revocation of an earlier tool. The client or
+MCP execution service must check current permissions and validate arguments at
+dispatch, including after schema updates; the gateway preserves call identity
+and does not execute tools or infer permission grants from historical manifests.

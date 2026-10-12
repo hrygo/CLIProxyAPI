@@ -277,6 +277,15 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 			return Prepared{}, err
 		}
 		changed = changed || activationChanged
+		// Portable native routes inject flat function declarations too. Replay
+		// those calls with the same wire aliases, while keeping search history
+		// native and letting the custom adapter handle custom call envelopes.
+		input, _ := root["input"].([]any)
+		for _, raw := range input {
+			if item, ok := raw.(map[string]any); ok && stringField(item, "type") == "function_call" {
+				changed = rewriteActivatedToolCallForRequest(item, contract) || changed
+			}
+		}
 	}
 	if policy.CustomTools == CustomToolsFunction {
 		var customChanged bool

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -13,6 +15,60 @@ import (
 type loopRequest struct {
 	request cliproxyexecutor.Request
 	opts    cliproxyexecutor.Options
+}
+
+func TestResponsesToolsCumulativeDiscoveryRejectsBeforeDispatch(t *testing.T) {
+	for _, search := range []responsestools.ClientSearchMode{responsestools.ClientSearchBridge, responsestools.ClientSearchNative} {
+		for _, operation := range []string{"execute", "stream", "count"} {
+			t.Run(string(search)+"/"+operation, func(t *testing.T) {
+				body := `{"model":"gpt-5.6-sol","tools":[{"type":"tool_search"}],"input":[{"type":"tool_search_call","call_id":"s1","arguments":{}},{"type":"tool_search_output","call_id":"s1","tools":[{"type":"function","name":"old","description":"` + strings.Repeat("old schema ", 100) + `","parameters":{"type":"object"}}]},{"type":"tool_search_call","call_id":"s2","arguments":{}},{"type":"tool_search_output","call_id":"s2","tools":[{"type":"function","name":"latest","parameters":{"type":"object"}}]}]}`
+				limits := responsestools.DefaultLimits()
+				prepared, err := responsestools.Prepare([]byte(body), responsestools.RoutePolicy{ClientSearch: search, CustomTools: responsestools.CustomToolsFunction}, limits, responsestools.NewLimiter(limits))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if prepared.Attempt == nil {
+					t.Fatal("no calibration attempt")
+				}
+				fullSize := responsestools.ActiveToolArraysBytesOf(prepared.Body)
+				prepared.Attempt.Close()
+				cfg := &internalconfig.Config{}
+				enabled := true
+				cfg.ResponsesTools.Enabled = &enabled
+				cfg.ResponsesTools.Limits.MaxActiveToolBytes = fullSize - 100
+				cfg.ResponsesTools.Routes = []internalconfig.ResponsesToolsRoute{{
+					Match:        internalconfig.ResponsesToolsMatch{Provider: "codex", AuthKind: "oauth", UpstreamModel: "gpt-5.6-sol", UpstreamFormat: "codex"},
+					ClientSearch: string(search), CustomTools: "function",
+				}}
+				cfg.NormalizeResponsesToolsConfig()
+				mgr := NewManager(nil, nil, nil)
+				mgr.SetConfig(cfg)
+				mgr.SetRetryConfig(2, 2, 0)
+				responsesToolsTestAuth(t, mgr)
+				exec := &fakeResponsesExecutor{provider: "codex", toFormat: sdktranslator.FormatCodex, response: []byte(`{"output":[]}`)}
+				mgr.RegisterExecutor(exec)
+				req := loopTurn("gpt-5.6-sol", body)
+				switch operation {
+				case "execute":
+					_, err = mgr.Execute(context.Background(), []string{"codex"}, req.request, req.opts)
+				case "stream":
+					_, err = mgr.ExecuteStream(context.Background(), []string{"codex"}, req.request, req.opts)
+				case "count":
+					_, err = mgr.ExecuteCount(context.Background(), []string{"codex"}, req.request, req.opts)
+				}
+				if err == nil || !responsestools.IsRequestScopedError(err) {
+					t.Fatalf("cumulative budget not rejected: %v", err)
+				}
+				if exec.execCalls != 0 || exec.streamCall != 0 || exec.countCalls != 0 {
+					t.Fatalf("rejected request dispatched: execute=%d stream=%d count=%d", exec.execCalls, exec.streamCall, exec.countCalls)
+				}
+				state := mgr.responsesToolsSnapshot()
+				if n, b := state.limiter.Usage(); n != 0 || b != 0 {
+					t.Fatalf("rejected manager attempt leaked: %d/%d", n, b)
+				}
+			})
+		}
+	}
 }
 
 func loopTurn(model, body string) loopRequest {
