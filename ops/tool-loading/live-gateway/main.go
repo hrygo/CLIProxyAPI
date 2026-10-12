@@ -56,6 +56,11 @@ func (p liveProfile) validate() error {
 		expected = "openai-responses-v1"
 	case "gemini":
 		expected = "gemini-generate-v1"
+	case "antigravity":
+		expected = "antigravity-generate-v1"
+		if len(p.AuthFiles) == 0 {
+			return errors.New("Antigravity profile requires explicit credential bindings")
+		}
 	case "claude":
 		expected = "anthropic-messages-v1"
 	default:
@@ -201,10 +206,16 @@ func isolateConfig(source *config.Config, state string, port int) *config.Config
 	return &isolated
 }
 
-func guardObserver(profile liveProfile, observer helps.HTTPAttemptObserver, authAllowed func(string) bool) helps.HTTPAttemptObserver {
+func guardObserver(profile liveProfile, observer helps.HTTPAttemptObserver, authAllowed func(string) bool, auxiliaryAllowed func(*http.Request, *helps.HTTPAttemptIdentity) bool) helps.HTTPAttemptObserver {
 	return func(req *http.Request, next http.RoundTripper) (*http.Response, error) {
 		identity := helps.HTTPAttemptIdentityFromContext(req.Context())
-		if identity == nil || identity.Executor != profile.Executor || identity.ModelSHA256 != fingerprint([]byte(profile.UpstreamModel)) || identity.AuthSHA256 == "" || !authAllowed(identity.AuthSHA256) {
+		if identity == nil || identity.Executor != profile.Executor || identity.AuthSHA256 == "" || !authAllowed(identity.AuthSHA256) {
+			return nil, errors.New("actual acceptance route differs from pinned scope")
+		}
+		inference := identity.Operation == "" && identity.ModelSHA256 == fingerprint([]byte(profile.UpstreamModel))
+		auxiliary := profile.Executor == "antigravity" && profile.Contract == "antigravity-generate-v1" &&
+			(identity.Operation == "credits_query" || identity.Operation == "model_discovery") && identity.ModelSHA256 == "" && auxiliaryAllowed != nil && auxiliaryAllowed(req, identity)
+		if !inference && !auxiliary {
 			return nil, errors.New("actual acceptance route differs from pinned scope")
 		}
 		return observer(req, next)
@@ -299,8 +310,28 @@ func run() error {
 		"profile": profile, "source_config_sha256": fingerprint(raw), "source_policy_sha256": fingerprint(policy),
 		"isolation_version": 6, "credential_refresh_disabled": true}
 	var allowedAuths atomic.Value
-	allowedAuths.Store(map[string]bool{})
-	observer := guardObserver(profile, journal.Observe, func(id string) bool { return allowedAuths.Load().(map[string]bool)[id] })
+	var auxiliaryRoutes atomic.Value
+	initialAllowed := map[string]bool{}
+	initialRoutes := map[string]map[string]string{}
+	// Antigravity model registration performs HTTP before OnBeforeStart. Bind
+	// that work to the explicit snapshots; readiness later verifies actual IDs.
+	if profile.Executor == "antigravity" {
+		for _, item := range store.auths {
+			id := fingerprint([]byte(item.ID))
+			routes, errRoutes := antigravityAuxiliaryEndpoints(item)
+			if errRoutes != nil {
+				return errors.Join(errRoutes, closeAuxiliaryWork(context.Background(), auxiliaryWork, filepath.Join(*state, "capture")),
+					closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")))
+			}
+			initialAllowed[id], initialRoutes[id] = true, routes
+		}
+	}
+	allowedAuths.Store(initialAllowed)
+	auxiliaryRoutes.Store(initialRoutes)
+	observer := guardObserver(profile, journal.Observe, func(id string) bool { return allowedAuths.Load().(map[string]bool)[id] },
+		func(req *http.Request, identity *helps.HTTPAttemptIdentity) bool {
+			return req.Method == http.MethodPost && req.URL.String() == auxiliaryRoutes.Load().(map[string]map[string]string)[identity.AuthSHA256][identity.Operation]
+		})
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 	var readyError error
@@ -316,9 +347,19 @@ func run() error {
 			}
 			var ids []string
 			allowed := map[string]bool{}
+			routes := map[string]map[string]string{}
 			for _, item := range manager.List() {
 				if item.Provider == profile.Executor {
 					id := fingerprint([]byte(item.ID))
+					if profile.Executor == "antigravity" {
+						endpoint, errEndpoint := antigravityAuxiliaryEndpoints(item)
+						if errEndpoint != nil {
+							readyError = errEndpoint
+							cancel()
+							return
+						}
+						routes[id] = endpoint
+					}
 					ids = append(ids, id)
 					allowed[id] = true
 				}
@@ -329,6 +370,7 @@ func run() error {
 			ready["selected_auth_ids"] = ids
 			ready["selected_auth_count"] = len(ids)
 			allowedAuths.Store(allowed)
+			auxiliaryRoutes.Store(routes)
 		}, OnAfterStart: func(*cliproxy.Service) {
 			if readyError != nil {
 				return
@@ -379,7 +421,8 @@ func run() error {
 		return errors.Join(err, closeAuxiliaryWork(context.Background(), auxiliaryWork, filepath.Join(*state, "capture")),
 			closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")))
 	}
-	err = service.Run(ctx)
+	serviceCtx := helps.WithHTTPAttemptObserver(helps.WithHTTPAuxiliaryWorkScope(ctx, auxiliaryWork), observer)
+	err = service.Run(serviceCtx)
 	if errors.Is(err, context.Canceled) {
 		err = nil
 	}

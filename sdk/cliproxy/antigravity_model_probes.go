@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
@@ -59,12 +60,24 @@ func (s *Service) queueAntigravityModelRefresh(ctx context.Context, auth *coreau
 		return
 	}
 	s.antigravityRefreshPending[auth.ID] = request
+	var releaseWork func()
 	if !running {
+		workCtx, release, errWork := helps.BeginHTTPAuxiliaryWork(ctx)
+		if errWork != nil {
+			delete(s.antigravityRefreshPending, auth.ID)
+			s.antigravityProbeMu.Unlock()
+			return
+		}
+		request.ctx = workCtx
+		releaseWork = release
 		s.antigravityProbeWg.Add(1)
 	}
 	s.antigravityProbeMu.Unlock()
 	if !running {
-		go s.runAntigravityAccountRefresh(auth.ID)
+		go func() {
+			defer releaseWork()
+			s.runAntigravityAccountRefresh(auth.ID)
+		}()
 	}
 }
 

@@ -253,6 +253,37 @@ client permission and cancellation evidence must still come from actual MCP
 calls and immutable artifacts before the live acceptance journal can certify
 them. CPU/output process tests alone are not Code Mode runtime budget proof.
 
+## Synthetic Antigravity SDK integration
+
+The native profile requires explicit OAuth filename/content digest bindings, a
+current access token beyond the executor's five-minute safety window, and an
+existing project. It never refreshes or bootstraps the operator credential.
+Only the selected credentials' exact POST routes for `credits_query` and
+`model_discovery` are admitted as auxiliary operations. Catalog discovery uses
+the SDK's first configured endpoint (daily by default); credits use production
+by default. Both share the physical request budget with inference. Startup
+catalog queries carry actual executor identity and owner settlement evidence.
+Other auxiliary operation names in the evidence schema do not certify OAuth.
+
+Run an actual SDK candidate with a synthetic OAuth file and loopback upstream:
+
+```sh
+GOTOOLCHAIN=go1.26.4 go build -o "$task_validation/live-gateway" ./ops/tool-loading/live-gateway
+"$task_validation/venv/bin/python" ops/tool-loading/sdk_antigravity_probe.py \
+  --gateway-binary "$task_validation/live-gateway" \
+  --output-dir "$task_validation/antigravity-sdk"
+```
+
+Buffered and SSE fixtures perform three inference turns plus one model-catalog
+query and one credits query each. They check client and native terminals, paired
+function-result identities, synthetic usage excluding auxiliary responses,
+nonzero background owner completion, physical attempt sealing, and unchanged
+source credentials/config. Antigravity's pure model-role functionResponse turns
+require a preceding matching call ID/name when checking result replay. Prompt
+text, call arguments and unmatched model-role results cannot supply receipts.
+These fixtures use no real Provider or Coding Agent and establish no context
+savings, pricing, model quality or client permission certification.
+
 ## Scripted native execution boundaries
 
 With the same exact CLI versions and isolated SDK environment:

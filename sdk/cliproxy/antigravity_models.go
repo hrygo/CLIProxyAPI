@@ -17,6 +17,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/proxyutil"
@@ -237,6 +238,13 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 	if len(baseURLs) == 0 {
 		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
 	}
+	// Hold opt-in acceptance ownership until transport and body cleanup finish,
+	// even when a singleflight follower stops waiting for this shared operation.
+	ctx, releaseWork, errWork := helps.BeginHTTPAuxiliaryWork(ctx)
+	if errWork != nil {
+		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
+	}
+	defer releaseWork()
 	client := &http.Client{}
 	transport, _, errProxy := proxyutil.BuildHTTPTransport(proxyURL)
 	if errProxy != nil {
@@ -260,7 +268,7 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("User-Agent", misc.AntigravityUserAgent())
-	resp, errDo := client.Do(req)
+	resp, errDo := helps.WithAntigravityHTTPClientTrace(client, auth, "model_discovery").Do(req)
 	if errDo != nil {
 		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
 	}

@@ -16,6 +16,37 @@ def output(value):
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_antigravity_model_role_result_requires_paired_call_identity(self):
+        def wrapped(value, name="fixture_lookup", response_id="call-1", mixed=False):
+            parts = [{"functionResponse": {"name": name, "id": response_id, "response": {"result": value}}}]
+            if mixed:
+                parts.append({"text": "model text"})
+            return {"request": {"contents": [
+                {"role": "model", "parts": [{"functionCall": {"name": "fixture_lookup", "id": "call-1", "args": {}}}]},
+                {"role": "model", "parts": parts}]}}
+        first = wrapped({"verification_code": "fresh"})
+        second = wrapped({"confirmation_code": confirmation_code("fresh")})
+        self.assertTrue(intermediate_receipt_replayed([first, second], "fresh"))
+        for bad in (wrapped({"verification_code": "fresh"}, name="other"),
+                    wrapped({"verification_code": "fresh"}, response_id="other"),
+                    wrapped({"verification_code": "fresh"}, mixed=True)):
+            self.assertFalse(intermediate_receipt_replayed([bad, second], "fresh"))
+
+    def test_multiround_reads_native_function_responses_without_prompt_or_call_arguments(self):
+        def wrapped(value, role="user", key="functionResponse"):
+            return {"request": {"contents": [{"role": role, "parts": [{key: {
+                "name": "fixture_tool", "response": {"result": json.dumps(value)}}}]}]}}
+        first = wrapped({"verification_code": "fresh"})
+        second = wrapped({"confirmation_code": confirmation_code("fresh")})
+        self.assertTrue(intermediate_receipt_replayed([{}, first, second], "fresh"))
+        self.assertFalse(intermediate_receipt_replayed([second, first], "fresh"))
+        self.assertFalse(intermediate_receipt_replayed([first, second], "other"))
+        for bad in (wrapped({"verification_code": "fresh"}, role="model"),
+                    wrapped({"verification_code": "fresh"}, key="functionCall"),
+                    {"request": {"contents": [{"role": "user", "parts": [{"text": json.dumps({"verification_code": "fresh"})}]}]}},
+                    {"request": {"systemInstruction": {"parts": [{"text": json.dumps({"verification_code": "fresh"})}]}}}):
+            self.assertFalse(intermediate_receipt_replayed([bad, second], "fresh"))
+
     def test_native_schema_does_not_force_the_unavailable_answer(self):
         from jsonschema import Draft202012Validator
         wrong = {"status": "available", "project": "alpha"}

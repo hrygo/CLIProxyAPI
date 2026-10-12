@@ -11,7 +11,7 @@ from typing import Any
 TOKEN_FIELDS = ("input_total", "input_uncached", "cache_read", "cache_write",
                 "output_total", "reasoning_output", "tool_prompt_tokens")
 AUXILIARY_CONTRACT = "antigravity-auxiliary-v1"
-AUXILIARY_OPERATIONS = {"credits_query", "oauth_refresh", "project_discovery", "http_request"}
+AUXILIARY_OPERATIONS = {"credits_query", "oauth_refresh", "project_discovery", "model_discovery", "http_request"}
 CONTRACTS = ("openai-responses-v1", "openai-chat-v1", "anthropic-messages-v1", "gemini-generate-v1", "antigravity-generate-v1", AUXILIARY_CONTRACT)
 
 

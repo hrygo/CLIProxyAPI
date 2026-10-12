@@ -158,8 +158,38 @@ def intermediate_receipt_replayed(bodies, nonce):
         return lookup, confirmed
 
     for body in bodies:
-        results = [item.get("content") for item in body.get("messages", []) if item.get("role") == "tool"]
-        results += [item.get("output") for item in body.get("input", []) if item.get("type") == "function_call_output"]
+        if not isinstance(body, dict):
+            continue
+        def items(value):
+            return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+        results = [item.get("content") for item in items(body.get("messages")) if item.get("role") == "tool"]
+        results += [item.get("output") for item in items(body.get("input")) if item.get("type") == "function_call_output"]
+        request = body.get("request")
+        if isinstance(request, dict):
+            pending_calls = set()
+            for content in items(request.get("contents")):
+                parts = items(content.get("parts"))
+                role = content.get("role")
+                if role == "model":
+                    for part in parts:
+                        call = part.get("functionCall")
+                        if isinstance(call, dict) and isinstance(call.get("id"), str) and call["id"] and isinstance(call.get("name"), str):
+                            pending_calls.add((call["id"], call["name"]))
+                # The Antigravity executor emits pure functionResponse turns
+                # with model role. Require a preceding matching call, rather
+                # than treating arbitrary model text/arguments as a tool result.
+                pure_response = bool(parts) and len(parts) == len(content.get("parts", [])) and all(set(part) == {"functionResponse"} for part in parts)
+                if role != "user" and not (role == "model" and pure_response):
+                    continue
+                for part in parts:
+                    response = part.get("functionResponse")
+                    if isinstance(response, dict) and isinstance(response.get("name"), str) and response["name"].strip():
+                        if role == "model":
+                            call_id = response.get("id")
+                            if not isinstance(call_id, str) or (call_id, response["name"]) not in pending_calls:
+                                continue
+                            pending_calls.remove((call_id, response["name"]))
+                        results.append(response.get("response"))
         lookup, confirmed = receipts(results)
         if seen_lookup and confirmed:
             return True

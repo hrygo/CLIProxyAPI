@@ -27,7 +27,7 @@ def parse_credential_bindings(values, executor):
             raise ValueError("invalid credential binding")
         name_hash, content_hash = value.split(":")
         bindings.append({"name_sha256": name_hash, "content_sha256": content_hash})
-    if bindings and (executor not in {"codex", "meta", "gemini", "claude"}
+    if bindings and (executor not in {"codex", "meta", "gemini", "claude", "antigravity"}
                      or len({binding["name_sha256"] for binding in bindings}) != len(bindings)):
         raise ValueError("invalid native credential selection")
     return bindings
@@ -43,6 +43,8 @@ def validate_profile(profile):
                    or any(not isinstance(digest, str) for digest in value.values()) for value in bindings)):
         raise ValueError("invalid explicit credential bindings")
     parse_credential_bindings([binding["name_sha256"] + ":" + binding["content_sha256"] for binding in bindings], profile["executor"])
+    if profile["executor"] == "antigravity" and (not bindings or profile["contract"] != "antigravity-generate-v1"):
+        raise ValueError("Antigravity requires a bound credential and wrapped wire contract")
 
 
 def validate_ready(ready, pid, port, profile, config_hash):

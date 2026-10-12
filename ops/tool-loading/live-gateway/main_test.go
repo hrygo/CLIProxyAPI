@@ -91,7 +91,7 @@ func TestActualRouteGuardRejectsMismatchBeforeHTTP(t *testing.T) {
 	observer := guardObserver(profile, func(req *http.Request, next http.RoundTripper) (*http.Response, error) {
 		t.Fatal("wrong executor admitted to capture/dispatch")
 		return nil, nil
-	}, func(string) bool { return false })
+	}, func(string) bool { return false }, nil)
 	for _, trial := range []struct{ provider, model string }{{"wrong-provider", "fixture-model"}, {"codex", "wrong-model"}, {"codex", "fixture-model"}} {
 		t.Run(trial.provider+"/"+trial.model, func(t *testing.T) {
 			ctx := helps.WithHTTPAttemptObserver(context.Background(), observer)

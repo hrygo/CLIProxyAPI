@@ -15,6 +15,17 @@ from live_gateway import _ready_http, validate_ready, parse_credential_bindings,
 
 
 class LiveGatewayTests(unittest.TestCase):
+    def test_antigravity_requires_bound_wrapped_profile(self):
+        profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "antigravity",
+                   "contract": "antigravity-generate-v1"}
+        with self.assertRaises(ValueError):
+            validate_profile(profile)
+        bindings = parse_credential_bindings(["a" * 64 + ":" + "b" * 64], "antigravity")
+        validate_profile({**profile, "auth_files": bindings})
+        for contract in ("gemini-generate-v1", "openai-chat-v1"):
+            with self.assertRaises(ValueError):
+                validate_profile({**profile, "auth_files": bindings, "contract": contract})
+
     def test_startup_cli_forwards_explicit_native_file_binding(self):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "run"

@@ -91,7 +91,7 @@ func (j *HTTPAttemptJournal) attemptContract(identity *helps.HTTPAttemptIdentity
 	}
 	if identity.ModelSHA256 == "" {
 		switch identity.Operation {
-		case "credits_query", "oauth_refresh", "project_discovery", "http_request":
+		case "credits_query", "oauth_refresh", "project_discovery", "model_discovery", "http_request":
 			return "antigravity-auxiliary-v1", nil
 		}
 	}

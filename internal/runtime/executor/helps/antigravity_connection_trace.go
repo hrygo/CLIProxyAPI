@@ -28,7 +28,7 @@ func WithAntigravityHTTPClientTrace(client *http.Client, auth *cliproxyauth.Auth
 		base: base, auth: cliproxyauth.Auth{Index: authIndex}, operation: operation,
 	}
 	switch operation {
-	case "credits_query", "oauth_refresh", "project_discovery", "http_request":
+	case "credits_query", "oauth_refresh", "project_discovery", "model_discovery", "http_request":
 		trace.identity = HTTPAttemptIdentity{Executor: "antigravity", Operation: operation}
 		if auth != nil {
 			trace.identity.AuthSHA256 = httpAttemptFingerprint(auth.ID)

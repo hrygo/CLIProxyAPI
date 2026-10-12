@@ -117,6 +117,9 @@ func selectedCredentialPayloads(cfg *config.Config, p liveProfile) (map[string][
 
 func loadSelectedCredentials(cfg *config.Config, p liveProfile) ([]*coreauth.Auth, error) {
 	if len(p.AuthFiles) == 0 {
+		if p.Executor == "antigravity" {
+			return nil, errors.New("Antigravity profile requires explicit credential bindings")
+		}
 		if p.Executor == "codex" || p.Executor == "gemini" || p.Executor == "claude" || p.Executor == "meta" {
 			if !hasNativeAPIKey(cfg, p.Executor) {
 				return nil, errors.New("native OAuth profile requires explicit credential bindings")
@@ -134,6 +137,16 @@ func loadSelectedCredentials(cfg *config.Config, p liveProfile) ([]*coreauth.Aut
 		items, err := synthesizer.SynthesizeAuthFile(ctx, filepath.Join(directory, name), data)
 		if err != nil || len(items) != 1 || items[0] == nil || items[0].Provider != p.Executor || items[0].Disabled {
 			return nil, errors.New("selected credential cannot serve pinned native profile")
+		}
+		if p.Executor == "antigravity" {
+			token, _ := items[0].Metadata["access_token"].(string)
+			project, _ := items[0].Metadata["project_id"].(string)
+			expiry, valid := items[0].ExpirationTime()
+			// Match the executor's five-minute safety window; never bootstrap or
+			// refresh an operator credential in the isolated acceptance process.
+			if strings.TrimSpace(token) == "" || strings.TrimSpace(project) == "" || !valid || !expiry.After(ctx.Now.Add(5*time.Minute)) {
+				return nil, errors.New("Antigravity snapshot needs a current access token and project")
+			}
 		}
 		result = append(result, items[0])
 	}
