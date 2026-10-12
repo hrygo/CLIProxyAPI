@@ -647,7 +647,13 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 			return out
 		}
 		if len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 {
-			return out
+			// A reasoning-only response can end explicitly (including token or
+			// content-filter limits). Preserve that upstream terminal state and
+			// late usage, but never promote an unfinished reasoning stream.
+			_, incomplete := incompleteByFinishReason(st.FinishReason)
+			if len(st.Reasonings) == 0 || (st.FinishReason != "stop" && !incomplete) {
+				return out
+			}
 		}
 		st.CompletedEmitted = true
 		out = append(out, buildResponsesCompletedEvent(st, requestForNamespace, nextSeq))
