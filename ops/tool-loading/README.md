@@ -4,9 +4,49 @@ This directory contains the scoped evidence schema and a synthetic MCP fixture.
 Version-pinned client adapters and a local first-request probe are available.
 Predeclared paired live scheduling and bounded Chat calibration are available;
 the final multi-route matrix and statistical certification remain pending.
+Read-only paired diagnostics are available in `analyze_pairs.py`; their
+conditional bounds never promote a run to a certification label.
 Offline case replay and request-level usage normalization are
 available below. Fixture tests do not certify
 Codex/OpenCode permission handling, model quality, or context savings.
+
+## Paired diagnostic analysis
+
+```sh
+python3 ops/tool-loading/analyze_pairs.py \
+  --journal "$task_validation/live/cases.jsonl" \
+  --plan "$task_validation/live/batch-plan.json" \
+  > "$task_validation/paired-analysis.json"
+```
+
+The supplied plan must validate against the journal. A single run/revision is
+analyzed at a time. Exact scope, cache condition, limits, template, prompt,
+gold and fixture seed must match within each pair; different client versions,
+providers, profiles or revisions are not pooled. Unknown-but-equal scope permits
+explicit descriptive paired input ratios, while the ordinary replay retains its
+`comparable=false` result. Both reports keep `gate_status=unverified`.
+
+All starts, failed cases, unfinished cases, requests and unpaired cases remain
+visible. Missing or unmatched pairs block aggregate benefit statistics; known
+subtotals are never substituted for missing complete-task costs. Negative
+savings remain negative. These metrics are Provider input usage including cached
+input, not bills. First input refers to the first actual observed request.
+
+Repeats are grouped by the predeclared template ID. The quality diagnostic
+uses the negative one-sided exact binomial upper bound on the probability of a
+template cluster containing any eager-success/lazy-failure pair, ignoring
+improvements. This conservatively bounds the equal-template mean of the
+within-template success differences **only under the stated sampling assumptions**.
+Zero observed regressions among three independent clusters still gives a lower
+bound of approximately -0.632; it does not prove non-inferiority.
+
+Benefit diagnostics report the median of within-template paired-savings medians
+and a binomial order-statistic lower bound. Three template clusters have no finite
+one-sided 95% lower bound, regardless of how many times they are repeated.
+The independent, identically sampled representative-cluster and fixed repeat
+design assumptions are unverified by a journal. This module reports conditional
+diagnostics, cannot declare formal gates passed, does not perform a power
+calculation, and does not certify latency, cache effectiveness or billing.
 
 ## Native client isolation and first-request probe
 
