@@ -1,4 +1,4 @@
-"""Explicit upstream wire views for bounded Chat and Responses calibration."""
+"""Explicit Chat, Responses and wrapped Antigravity observation contracts."""
 
 import json
 

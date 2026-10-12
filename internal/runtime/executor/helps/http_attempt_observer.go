@@ -23,10 +23,12 @@ type httpAttemptIdentityKey struct{}
 // HTTPAttemptIdentity names the executor that actually owns the transport.
 // Model and credential record IDs are fingerprints, not exposed identifiers.
 // This does not infer a wire protocol from a provider/model name.
+// Auxiliary operations have a fixed operation and no model fingerprint.
 type HTTPAttemptIdentity struct {
 	Executor    string `json:"executor"`
 	ModelSHA256 string `json:"model_sha256"`
 	AuthSHA256  string `json:"auth_sha256"`
+	Operation   string `json:"operation,omitempty"`
 }
 
 func HTTPAttemptIdentityFromContext(ctx context.Context) *HTTPAttemptIdentity {
@@ -40,15 +42,16 @@ func HTTPAttemptIdentityFromContext(ctx context.Context) *HTTPAttemptIdentity {
 	return &identity
 }
 
-func (r *UsageReporter) httpAttemptIdentity() HTTPAttemptIdentity {
-	fingerprint := func(value string) string {
-		if value == "" {
-			return ""
-		}
-		digest := sha256.Sum256([]byte(value))
-		return hex.EncodeToString(digest[:])
+func httpAttemptFingerprint(value string) string {
+	if value == "" {
+		return ""
 	}
-	return HTTPAttemptIdentity{Executor: r.provider, ModelSHA256: fingerprint(r.model), AuthSHA256: fingerprint(r.authID)}
+	digest := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(digest[:])
+}
+
+func (r *UsageReporter) httpAttemptIdentity() HTTPAttemptIdentity {
+	return HTTPAttemptIdentity{Executor: r.provider, ModelSHA256: httpAttemptFingerprint(r.model), AuthSHA256: httpAttemptFingerprint(r.authID)}
 }
 
 // WithHTTPAttemptObserver attaches observation to one request context. There is
@@ -60,6 +63,34 @@ func WithHTTPAttemptObserver(ctx context.Context, observer HTTPAttemptObserver) 
 	return context.WithValue(ctx, httpAttemptObserverKey{}, observer)
 }
 
+func httpAttemptObserverValue(ctx context.Context) any {
+	if ctx == nil {
+		return nil
+	}
+	value := ctx.Value(httpAttemptObserverKey{})
+	if value == nil {
+		if c, ok := ctx.Value("gin").(*gin.Context); ok && c != nil && c.Request != nil {
+			value = c.Request.Context().Value(httpAttemptObserverKey{})
+		}
+	}
+	return value
+}
+
+// CopyHTTPAttemptObserver copies only the opt-in hook to an independent context.
+// It preserves the destination lifetime and an explicitly disabled observer.
+func CopyHTTPAttemptObserver(dst, src context.Context) context.Context {
+	if dst == nil {
+		dst = context.Background()
+	}
+	if httpAttemptObserverValue(dst) != nil {
+		return dst
+	}
+	if observer, ok := httpAttemptObserverValue(src).(HTTPAttemptObserver); ok {
+		return WithHTTPAttemptObserver(dst, observer)
+	}
+	return dst
+}
+
 type observedRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f observedRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -68,15 +99,8 @@ func (f observedRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, err
 
 func observeHTTPAttempt(req *http.Request, next observedRoundTripFunc, identity func() HTTPAttemptIdentity) (*http.Response, error) {
 	ctx := req.Context()
-	value := ctx.Value(httpAttemptObserverKey{})
-	if value == nil {
-		// HTTP handlers intentionally use a fresh execution parent and attach
-		// Gin separately. Recover only this explicit opt-in hook, preserving
-		// their existing deadline/value isolation and cancellation semantics.
-		if c, ok := ctx.Value("gin").(*gin.Context); ok && c != nil && c.Request != nil {
-			value = c.Request.Context().Value(httpAttemptObserverKey{})
-		}
-	}
+	// HTTP handlers may supply a fresh parent with Gin attached separately.
+	value := httpAttemptObserverValue(ctx)
 	observer, _ := value.(HTTPAttemptObserver)
 	active, _ := ctx.Value(httpAttemptObserverActiveKey{}).(bool)
 	if observer == nil || active {

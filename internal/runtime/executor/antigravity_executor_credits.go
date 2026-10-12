@@ -392,6 +392,7 @@ func (e *AntigravityExecutor) maybeRefreshAntigravityCreditsHint(ctx context.Con
 				refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
 			}
 		}
+		refreshCtx = helps.CopyHTTPAttemptObserver(refreshCtx, ctx)
 		refreshCtx, cancel := context.WithTimeout(refreshCtx, antigravityCreditsHintRefreshTimeout)
 		authCopy := auth.Clone()
 		go func(auth *cliproxyauth.Auth, token string) {
@@ -463,6 +464,7 @@ func (e *AntigravityExecutor) queueAntigravityCreditsRefresh(ctx context.Context
 		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
 			lifecycle = context.WithValue(lifecycle, "cliproxy.roundtripper", rt)
 		}
+		lifecycle = helps.CopyHTTPAttemptObserver(lifecycle, ctx)
 		refreshCtx, cancelRefresh = context.WithTimeout(lifecycle, timeout)
 	} else {
 		// Optional post-refresh work follows its lifecycle without adding a timer.

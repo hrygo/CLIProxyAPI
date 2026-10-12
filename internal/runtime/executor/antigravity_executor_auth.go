@@ -85,6 +85,7 @@ func (e *AntigravityExecutor) ensureAccessToken(ctx context.Context, auth *clipr
 			refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
 		}
 	}
+	refreshCtx = helps.CopyHTTPAttemptObserver(refreshCtx, ctx)
 	if refreshed, handled, err := helps.RefreshAuthViaHome(refreshCtx, e.cfg, auth); handled {
 		if err != nil {
 			return "", nil, err

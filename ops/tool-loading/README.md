@@ -710,6 +710,16 @@ were checked against the [official GenerateContent reference](https://ai.google.
 on 2026-10-13; the private wrapper is established by this repository's executor
 and fixtures, not by that public API reference.
 
+Antigravity's optional HTTP observer now also receives fixed auxiliary operations
+(`credits_query`, `oauth_refresh`, `project_discovery`, `http_request`) with the
+actual executor and credential fingerprint; an auxiliary request has no model
+fingerprint. The existing independent warm-hint/refresh contexts copy only that
+observer, preserving their lifetime and transport selection. Observation runs
+before dispatch, counts redirects and avoids duplicates under nested wrappers.
+No observer is enabled globally. The live profile remains gated: the acceptance
+journal/importer, auxiliary usage accounting and candidate shutdown must support
+these identities before a native live batch is admitted.
+
 The isolated candidate seals `capture/preparation.json` separately from physical
 HTTP attempts and admission diagnostics. Only a typed `ToolCompatibilityError`
 returned at the local preparation boundary produces an entry, containing a

@@ -158,8 +158,8 @@ def _usage(contract, body):
 def _closed_protocol_terminal(contract, body):
     """Prove a self-delimiting terminal, never manufacture transport EOF.
 
-    Closed-response metering is currently scoped to Chat/Responses SSE. Other
-    wire contracts remain unknown until their independent terminal proof exists.
+    Closed-response metering covers Chat/Responses SSE and explicit wrapped
+    Antigravity candidate finishes. Other contracts remain unknown here.
     """
     if contract == "antigravity-generate-v1":
         return antigravity_terminal(body, _json, success=False)
