@@ -39,6 +39,59 @@ task quality, terminal semantics, or token savings. `gate_status` remains
 `unverified`; Provider usage is null. Serialized tool-definition bytes are a
 transport measurement, distinct from model input tokens.
 
+## Opt-in upstream HTTP attempt evidence
+
+`internal/acceptance.HTTPAttemptJournal` and
+`helps.WithHTTPAttemptObserver` provide a request-scoped collector for isolated
+acceptance harnesses. There is no production flag, default observer, or service
+configuration change. Attach the hook to the incoming request context from
+explicit harness middleware. The usage transport recovers that hook from the
+existing Gin context when handlers use a fresh execution parent; it does not
+inherit arbitrary values or deadlines. The selected proxy/TLS transport remains
+in use. Nested usage wrappers produce one observation per physical dispatch.
+
+Starts are synced before transport dispatch. Private request/response bodies
+have exclusive filenames and SHA-256 digests; headers, URLs and transport-error
+messages are excluded. Use only synthetic fixtures. Supply the independently
+verified outbound wire contract and explicit request/body budgets. A missing
+body-copy handle, exhausted attempt budget or failed capture setup prevents
+dispatch. Later capture failures fail the evidence run through `Close`.
+Response capture is bounded without changing bytes delivered to the executor.
+An early close, read error, truncated capture or unfinished start cannot become
+complete usage evidence. HTTP EOF does not establish a legal protocol terminal.
+
+`http_attempts.py` validates sequences, identities, allowlisted metadata, body
+sizes/digests and regular files, rejecting symlink artifacts and duplicate
+finishes. It consolidates supported usage snapshots without summing cumulative
+tokens. Missing/conflicting usage remains null. `import_http_attempts` imports
+all attempts into an already-started `CaseJournal` before the case is finished;
+its post-run records refer to the upstream journal's pre-dispatch evidence.
+Task checks, MCP boundaries, coding results and protocol terminals are separate.
+
+Reproduce real gateway handler → bridge → local HTTP → digest verification:
+
+```sh
+task_http_dir=$(mktemp -d)
+TOOL_LOADING_TEST_HTTP_EVIDENCE_DIR="$task_http_dir/capture" \
+  GOTOOLCHAIN=go1.26.4 go test ./test \
+  -run TestAcceptanceHTTPJournalThroughResponsesHandler -count=1
+PYTHONPATH=ops/tool-loading python3 - "$task_http_dir/capture" <<'PY'
+from pathlib import Path
+import sys
+from http_attempts import read_http_attempts
+records = read_http_attempts(Path(sys.argv[1]))
+assert len(records) == 1
+assert records[0]["raw_usage"] == {"input_tokens": 31, "output_tokens": 2}
+print("local gateway HTTP evidence verified; live certification remains unknown")
+PY
+```
+
+The exported fixture usage above is scripted, not measured Provider tokens.
+The buffered and streaming tests use the actual Responses handler, auth manager,
+Codex executor and bridge with a temporary local upstream. WebSocket traffic,
+other handler/provider routes, real-client live runs, scope fingerprints,
+immutable run export and statistical certification still require integration.
+
 `run_task` bounds the isolated POSIX process group, cancellation and combined
 stored stdout/stderr. It first sends SIGINT to the main CLI and drains capped
 output during a two-second grace period, then terminates its process group.
