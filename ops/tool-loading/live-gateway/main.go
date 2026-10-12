@@ -345,7 +345,9 @@ func run() error {
 	if errors.Is(err, context.Canceled) {
 		err = nil
 	}
-	return errors.Join(err, readyError, journal.Close())
+	// The launcher owns the cleanup budget. Do not reuse the canceled service
+	// context or add a network deadline while asynchronous readers release bodies.
+	return errors.Join(err, readyError, journal.CloseContext(context.Background()))
 }
 
 func main() {

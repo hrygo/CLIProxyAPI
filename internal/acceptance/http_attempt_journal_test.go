@@ -10,10 +10,140 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 )
+
+type observedWaitContext struct {
+	context.Context
+	once    sync.Once
+	waiting chan struct{}
+}
+
+func (c *observedWaitContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.waiting) })
+	return c.Context.Done()
+}
+
+func TestHTTPAttemptJournalCloseContextWaitsForBodyAndFreezesAdmission(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "run")
+	journal, err := NewHTTPAttemptJournal(dir, "openai-chat-v1", 4096, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://fixture.invalid/", strings.NewReader("{}"))
+	dispatches := 0
+	next := attemptTransport(func(*http.Request) (*http.Response, error) {
+		dispatches++
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("unfinished"))}, nil
+	})
+	response, err := journal.Observe(req, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	parent, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ctx := &observedWaitContext{Context: parent, waiting: make(chan struct{})}
+	result := make(chan error, 1)
+	go func() { result <- journal.CloseContext(ctx) }()
+	select {
+	case <-ctx.waiting:
+	case <-parent.Done():
+		t.Fatal("seal never awaited body completion")
+	}
+	select {
+	case err := <-result:
+		t.Fatalf("seal returned before body release: %v", err)
+	default:
+	}
+	if _, err := journal.Observe(req, next); err == nil || dispatches != 1 {
+		t.Fatal("seal admitted another physical dispatch")
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-parent.Done():
+		t.Fatal("seal did not finish after body release")
+	}
+	events := readAttemptEvents(t, dir)
+	if len(events) != 2 || events[1]["outcome"] != "closed" || events[1]["response"].(map[string]any)["complete"] != false {
+		t.Fatal("seal changed the actual partial outcome")
+	}
+}
+
+func TestHTTPAttemptJournalCloseContextCancelledKeepsUnfinishedEvidence(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "run")
+	journal, err := NewHTTPAttemptJournal(dir, "openai-chat-v1", 4096, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://fixture.invalid/", strings.NewReader("{}"))
+	response, err := journal.Observe(req, attemptTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("unfinished"))}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := journal.CloseContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled seal = %v", err)
+	}
+	if events := readAttemptEvents(t, dir); len(events) != 1 {
+		t.Fatal("seal fabricated a finish")
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.CloseContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTPAttemptJournalCloseContextRequiresCloseEvenAfterEOF(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "run")
+	journal, err := NewHTTPAttemptJournal(dir, "openai-chat-v1", 4096, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest(http.MethodPost, "http://fixture.invalid/", strings.NewReader("{}"))
+	response, err := journal.Observe(req, attemptTransport(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("complete bytes"))}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	if _, err := io.ReadAll(response.Body); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.Close(); err == nil {
+		t.Fatal("EOF without body Close was certified as released")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := journal.CloseContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("EOF without body Close was certified as released: %v", err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := journal.CloseContext(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if events := readAttemptEvents(t, dir); len(events) != 2 || events[1]["outcome"] != "eof" {
+		t.Fatal("release rewrote the original EOF evidence")
+	}
+}
 
 func readAttemptEvents(t *testing.T, dir string) []map[string]any {
 	t.Helper()

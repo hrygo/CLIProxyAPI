@@ -57,8 +57,15 @@ verified outbound wire contract and explicit request/body budgets. A missing
 body-copy handle, exhausted attempt budget or failed capture setup prevents
 dispatch. Later capture failures fail the evidence run through `Close`.
 Response capture is bounded without changing bytes delivered to the executor.
-An early close, read error, truncated capture or unfinished start cannot become
-complete usage evidence. HTTP EOF does not establish a legal protocol terminal.
+Transport completeness is never rewritten. A closed Chat/Responses SSE body may
+supply usage only with intact frame boundaries, a verified protocol terminal,
+consistent identity, successful status and no capture truncation. Read errors,
+unfinished starts and unproven terminals retain unknown usage. HTTP EOF does not
+establish a legal protocol terminal or release the underlying response body.
+`CloseContext` freezes admission and waits for actual body close, including after
+EOF. A canceled wait retains unfinished evidence. The isolated live candidate
+uses this barrier after SDK shutdown; the launcher owns its existing 35-second
+cleanup budget and retains a forced exit as failure. No upstream deadline is added.
 
 `http_attempts.py` validates sequences, identities, allowlisted metadata, body
 sizes/digests and regular files, rejecting symlink artifacts and duplicate
@@ -558,9 +565,11 @@ alone never substitutes for a Chat finish reason. Malformed choices fail closed.
 
 Raw first-request input includes background title generation; all such requests
 also remain in whole-task usage. A first agent request is a separate diagnostic,
-not a retroactive replacement for the locked first-request gate. Missing EOF or
-usage remains unknown under the current importer even when a terminal frame was
-observed; protocol-aware closed-response metering needs separate verification.
+not a retroactive replacement for the locked first-request gate. Chat/Responses
+closed-response metering uses independently tested terminal evidence, preserving
+the original `closed` outcome and `complete: false`. Missing usage, unfinished
+requests and unsupported closed wire contracts remain unknown. See the
+[metering and lifecycle report](../../docs/acceptance/2026-10-13-closed-metering-lifecycle_CN.md).
 Credential/account region and full immutable runtime scope remain unknown, so
 pair certification and confidence gates remain unverified. These diagnostics
 must not be pooled as a final-revision sixty-case matrix.

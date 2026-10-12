@@ -3,6 +3,7 @@
 package acceptance
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -40,6 +41,8 @@ type HTTPAttemptJournal struct {
 	sequence    int
 	file        *os.File
 	closed      bool
+	closing     bool
+	idle        chan struct{}
 	err         error
 }
 
@@ -61,7 +64,9 @@ func NewHTTPAttemptJournal(dir, contract string, maxBytes int64, maxAttempts int
 	if err != nil {
 		return nil, fmt.Errorf("create HTTP evidence journal: %w", err)
 	}
-	return &HTTPAttemptJournal{dir: dir, contract: contract, maxBytes: maxBytes, maxAttempts: maxAttempts, file: file}, nil
+	idle := make(chan struct{})
+	close(idle)
+	return &HTTPAttemptJournal{dir: dir, contract: contract, maxBytes: maxBytes, maxAttempts: maxAttempts, file: file, idle: idle}, nil
 }
 
 func (j *HTTPAttemptJournal) appendLocked(event map[string]any) error {
@@ -104,7 +109,7 @@ func (j *HTTPAttemptJournal) Observe(req *http.Request, next http.RoundTripper) 
 		}
 	}
 	j.mu.Lock()
-	if j.closed || j.err != nil || j.attempts >= j.maxAttempts {
+	if j.closed || j.closing || j.err != nil || j.attempts >= j.maxAttempts {
 		j.mu.Unlock()
 		return nil, errors.New("HTTP evidence journal closed, failed or exhausted")
 	}
@@ -131,21 +136,27 @@ func (j *HTTPAttemptJournal) Observe(req *http.Request, next http.RoundTripper) 
 		}
 		return nil, fmt.Errorf("prepare HTTP evidence: %w", err)
 	}
+	if j.active == 0 {
+		j.idle = make(chan struct{})
+	}
 	j.active++
 	j.mu.Unlock()
 	capture := &attemptBody{journal: j, id: id, path: responsePath, file: file, digest: sha256.New()}
 	resp, err := next.RoundTrip(req)
 	if err != nil {
 		capture.finish("transport_error", false)
+		capture.release()
 		return resp, err
 	}
 	if resp == nil {
 		capture.finish("transport_error", false)
+		capture.release()
 		return nil, errors.New("upstream returned no HTTP response")
 	}
 	capture.status = resp.StatusCode
 	if resp.Body == nil || resp.Body == http.NoBody {
 		capture.finish("no_body", true)
+		capture.release()
 		return resp, nil
 	}
 	capture.source = resp.Body
@@ -180,19 +191,38 @@ func (j *HTTPAttemptJournal) Close() error {
 	return j.err
 }
 
+// CloseContext freezes admission and waits for outstanding bodies. Cancellation
+// retains unfinished starts; it does not close bodies or synthesize finishes.
+func (j *HTTPAttemptJournal) CloseContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("missing HTTP evidence close context")
+	}
+	j.mu.Lock()
+	j.closing = true
+	idle := j.idle
+	j.mu.Unlock()
+	select {
+	case <-idle:
+		return j.Close()
+	case <-ctx.Done():
+		return errors.Join(ctx.Err(), j.Close())
+	}
+}
+
 type attemptBody struct {
-	mu      sync.Mutex
-	journal *HTTPAttemptJournal
-	id      string
-	path    string
-	file    *os.File
-	digest  hash.Hash
-	source  io.ReadCloser
-	status  int
-	bytes   int64
-	seen    int64
-	done    bool
-	err     error
+	mu       sync.Mutex
+	journal  *HTTPAttemptJournal
+	id       string
+	path     string
+	file     *os.File
+	digest   hash.Hash
+	source   io.ReadCloser
+	status   int
+	bytes    int64
+	seen     int64
+	done     bool
+	released bool
+	err      error
 }
 
 func (b *attemptBody) Read(p []byte) (int, error) {
@@ -224,7 +254,24 @@ func (b *attemptBody) Close() error {
 	} else {
 		b.finish("closed", false)
 	}
+	b.release()
 	return err
+}
+
+func (b *attemptBody) release() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.released {
+		return
+	}
+	b.released = true
+	j := b.journal
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.active--
+	if j.active == 0 {
+		close(j.idle)
+	}
 }
 
 func (b *attemptBody) finish(outcome string, complete bool) {
@@ -241,7 +288,6 @@ func (b *attemptBody) finish(outcome string, complete bool) {
 	j := b.journal
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.active--
 	j.err = errors.Join(j.err, b.err)
 	_ = j.appendLocked(map[string]any{"event": "request-finished", "request_id": b.id, "contract": j.contract,
 		"outcome": outcome, "status_code": b.status, "observed_bytes": b.seen,

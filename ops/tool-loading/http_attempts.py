@@ -121,6 +121,113 @@ def _usage(contract, body):
     return merged, []
 
 
+def _closed_protocol_terminal(contract, body):
+    """Prove a self-delimiting terminal, never manufacture transport EOF.
+
+    Closed-response metering is currently scoped to Chat/Responses SSE. Other
+    wire contracts remain unknown until their independent terminal proof exists.
+    """
+    if contract not in {"openai-chat-v1", "openai-responses-v1"}:
+        return False
+    try:
+        body.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    body = body.replace(b"\r\n", b"\n")
+    if b"\r" in body or not body.endswith(b"\n\n"):
+        return False
+    payloads = []
+    for frame in body.split(b"\n\n"):
+        data = []
+        event = None
+        for line in frame.split(b"\n"):
+            if not line or line.startswith(b":"):
+                continue
+            field, _, value = line.partition(b":")
+            if field not in {b"data", b"event", b"id", b"retry"}:
+                return False
+            if field == b"data":
+                data.append(value.removeprefix(b" "))
+            elif field == b"event":
+                if event is not None:
+                    return False
+                event = value.removeprefix(b" ")
+            elif field == b"id" and b"\0" in value:
+                return False
+            elif field == b"retry" and not value.removeprefix(b" ").isdigit():
+                return False
+        if data:
+            raw = b"\n".join(data)
+            if raw == b"[DONE]":
+                if event not in (None, b"", b"message"):
+                    return False
+                payloads.append("done")
+            else:
+                try:
+                    value = _json(raw)
+                except (ValueError, UnicodeDecodeError):
+                    return False
+                if not isinstance(value, dict):
+                    return False
+                if contract == "openai-chat-v1":
+                    if event not in (None, b"", b"message"):
+                        return False
+                elif event not in (None, b"", b"message") and event.decode("utf-8") != value.get("type"):
+                    return False
+                payloads.append(value)
+        elif event not in (None, b"", b"message"):
+            return False
+    if not payloads:
+        return False
+    if contract == "openai-chat-v1":
+        if payloads[-1] != "done" or "done" in payloads[:-1]:
+            return False
+        observed, finished = set(), set()
+        identities = set()
+        reasons = {"stop", "length", "tool_calls", "function_call", "content_filter"}
+        for value in payloads[:-1]:
+            if "error" in value or not isinstance(value.get("choices"), list):
+                return False
+            if "id" in value:
+                if not isinstance(value["id"], str) or not value["id"]:
+                    return False
+                identities.add(value["id"])
+                if len(identities) > 1:
+                    return False
+            for choice in value["choices"]:
+                if not isinstance(choice, dict) or type(choice.get("index")) is not int or choice["index"] < 0:
+                    return False
+                index, reason = choice["index"], choice.get("finish_reason")
+                if index in finished:
+                    return False
+                observed.add(index)
+                if reason is not None:
+                    if not isinstance(reason, str) or reason not in reasons:
+                        return False
+                    finished.add(index)
+        return bool(observed and observed == finished)
+    if payloads[-1] == "done":
+        payloads.pop()
+    if not payloads or any(not isinstance(value, dict) for value in payloads):
+        return False
+    statuses = {"response.completed": "completed", "response.failed": "failed", "response.incomplete": "incomplete"}
+    final = payloads[-1]
+    response = final.get("response")
+    if (not isinstance(final.get("type"), str) or final["type"] not in statuses or not isinstance(response, dict)
+            or response.get("status") != statuses[final["type"]]
+            or not isinstance(response.get("id"), str) or not response["id"]):
+        return False
+    for value in payloads[:-1]:
+        if not isinstance(value.get("type"), str) or value["type"] in statuses or value["type"] == "error":
+            return False
+        parent = value.get("response")
+        if isinstance(parent, dict) and parent.get("id") not in (None, response["id"]):
+            return False
+        if value.get("response_id") not in (None, response["id"]):
+            return False
+    return True
+
+
 def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
     """Require intact journals; absent finishes remain unknown, never zero-cost."""
     directory = Path(directory)
@@ -154,7 +261,8 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
             records[request_id] = {"request_id": request_id, "contract": event["contract"],
                                    "usage_kind": "request-total", "raw_usage": None, "finished": False,
                                    "transport_outcome": "unknown", "executor_identity": identity,
-                                   "journal_version": event["version"], "issues": ["unfinished_http_attempt"]}
+                                   "journal_version": event["version"], "transport_capture_complete": None,
+                                   "usage_evidence": "unknown", "issues": ["unfinished_http_attempt"]}
         elif event.get("event") == "request-finished":
             if (set(event) != common | {"outcome", "status_code", "observed_bytes", "response"}
                     or request_id not in records or records[request_id]["finished"]
@@ -170,8 +278,12 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
             complete = event["response"]["complete"]
             if complete and (event["outcome"] not in {"eof", "no_body"} or event["observed_bytes"] != len(body)):
                 raise ValueError("invalid complete-response assertion")
-            usage, issues = _usage(event["contract"], body) if complete else (None, ["incomplete_response_capture"])
-            records[request_id].update(raw_usage=usage, finished=True, transport_outcome=event["outcome"], issues=issues)
+            terminal = (not complete and event["outcome"] == "closed" and 200 <= event["status_code"] < 300
+                        and event["observed_bytes"] == len(body) and _closed_protocol_terminal(event["contract"], body))
+            usage, issues = _usage(event["contract"], body) if complete or terminal else (None, ["incomplete_response_capture"])
+            basis = ("transport-complete" if complete else "protocol-terminal") if usage is not None else "unknown"
+            records[request_id].update(raw_usage=usage, finished=True, transport_outcome=event["outcome"], issues=issues,
+                                      transport_capture_complete=complete, usage_evidence=basis)
         else:
             raise ValueError("unknown HTTP journal event")
     return list(records.values())

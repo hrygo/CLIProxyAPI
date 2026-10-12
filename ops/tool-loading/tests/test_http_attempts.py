@@ -37,6 +37,87 @@ def evidence(directory, bodies=(None, b'{"usage":{"input_tokens":100,"output_tok
 
 
 class HTTPAttemptsTests(unittest.TestCase):
+    def closed_evidence(self, directory, body, contract="openai-chat-v1", **changes):
+        events = evidence(directory, bodies=(body,), contract=contract)
+        events[-1]["outcome"] = "closed"
+        events[-1]["response"]["complete"] = False
+        events[-1].update(changes)
+        (directory / "attempts.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+        return events
+
+    def test_closed_chat_terminal_supplies_usage_without_fake_eof_or_task_success(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            body = b'data: {"choices":[{"index":0,"finish_reason":"tool_calls"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}\n\ndata: [DONE]\n\n'
+            events = self.closed_evidence(directory, body)
+            record = read_http_attempts(directory)[0]
+            self.assertEqual(record["raw_usage"]["prompt_tokens"], 20)
+            self.assertEqual(record["usage_evidence"], "protocol-terminal")
+            self.assertEqual(record["transport_outcome"], "closed")
+            self.assertFalse(record["transport_capture_complete"])
+            self.assertFalse(events[-1]["response"]["complete"])
+            journal = CaseJournal(directory / "cases.jsonl", "run-closed")
+            case = spec()
+            journal.start_case(case)
+            import_http_attempts(journal, case.case_id, directory)
+            journal.finish_case(case.case_id, checks={**CHECKS, "terminal": False}, boundary_counts=BOUNDARIES, elapsed_ms=12)
+            result = summarize(journal.events)["cases"][0]
+            self.assertEqual(result["usage"]["total_input_tokens"], 20)
+            self.assertFalse(result["safe_task_success"])
+
+    def test_closed_or_capped_stream_cannot_use_done_only_partial_or_extra_frames(self):
+        valid = b'data: {"choices":[{"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":3}}\n\ndata: [DONE]\n\n'
+        invalid = [
+            b'data: {"choices":[],"usage":{"prompt_tokens":20}}\n\ndata: [DONE]\n\n',
+            valid.split(b'data: [DONE]')[0], valid.rstrip(),
+            valid + b'data: {"choices":[]}\n\n', valid + b'data: [DONE]\n\n',
+            valid.replace(b'"stop"', b'null'), valid.replace(b'"index":0', b'"index":true'),
+            valid.replace(b'"finish_reason":"stop"', b'"finish_reason":{}'),
+            valid.replace(b'"choices":[{', b'"choices":null,"unused":[{'),
+            valid.replace(b'"index":0', b'"index":0,"index":1'),
+        ]
+        for body in invalid:
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.closed_evidence(directory, body)
+                self.assertIsNone(read_http_attempts(directory)[0]["raw_usage"])
+        for changes in ({"observed_bytes": len(valid) + 1}, {"outcome": "read_error"}, {"status_code": 500}):
+            with self.subTest(changes=changes), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.closed_evidence(directory, valid, **changes)
+                self.assertIsNone(read_http_attempts(directory)[0]["raw_usage"])
+
+    def test_closed_responses_requires_matching_complete_terminal_object(self):
+        body = b'data: {"type":"response.completed","response":{"id":"resp_fixture","status":"completed","usage":{"input_tokens":20,"output_tokens":3}}}\n\n'
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            self.closed_evidence(directory, body, "openai-responses-v1")
+            self.assertEqual(read_http_attempts(directory)[0]["raw_usage"]["input_tokens"], 20)
+        for bad in (body.rstrip(), body.replace(b'"status":"completed"', b'"status":"in_progress"'), body.replace(b'"id":"resp_fixture",', b'')):
+            with self.subTest(body=bad), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.closed_evidence(directory, bad, "openai-responses-v1")
+                self.assertIsNone(read_http_attempts(directory)[0]["raw_usage"])
+
+    def test_closed_terminal_rejects_conflicting_identity_event_and_invalid_metadata(self):
+        chat = b'data: {"id":"a","choices":[{"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":20}}\n\ndata: [DONE]\n\n'
+        responses = b'data: {"type":"response.completed","response":{"id":"a","status":"completed","usage":{"input_tokens":20}}}\n\n'
+        invalid = [
+            ("openai-chat-v1", b'data: {"id":"b","choices":[{"index":0,"finish_reason":null}]}\n\n' + chat),
+            ("openai-chat-v1", chat.replace(b'"id":"a"', b'"id":{}')),
+            ("openai-chat-v1", b'event: error\n' + chat),
+            ("openai-chat-v1", b': \xff\n\n' + chat),
+            ("openai-chat-v1", chat + b'event: error\n\n'),
+            ("openai-responses-v1", responses.replace(b'"type":"response.completed"', b'"type":{}')),
+            ("openai-responses-v1", b'event: response.failed\n' + responses),
+            ("openai-responses-v1", b'event: error\n' + responses),
+        ]
+        for contract, body in invalid:
+            with self.subTest(contract=contract, body=body), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                self.closed_evidence(directory, body, contract)
+                self.assertIsNone(read_http_attempts(directory)[0]["raw_usage"])
+
     def test_v2_actual_executor_is_required_when_import_scope_is_pinned(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
