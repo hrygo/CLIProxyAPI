@@ -48,3 +48,5 @@
 下一步先用实际配置和选定 route 建立这些指纹并验证真实候选 readiness，随后把已有 native client/MCP CaseJournal 接入同一入口，执行校准批次。最终 60-case、代表性 Coding、质量非劣与收益区间尚未达到；客户端取消/runtime/output 限制仍独立交付。
 
 复现命令见 [验收工具 README](../../ops/tool-loading/README.md)。验收标准见 [完整方案](../superpowers/plans/2026-10-12-cross-provider-tool-loading-completion_CN.md)。本轮无发布、安装、默认配置切换或原服务重启，整体目标继续进行。
+
+后续更新：同日已接入实际客户端与 Provider，结果见 [真实校准报告](2026-10-13-live-calibration-evidence_CN.md)。本文件记录 bootstrap 阶段，其启动观察不重算为真实推理样本。

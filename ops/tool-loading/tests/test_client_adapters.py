@@ -57,6 +57,14 @@ class AdapterTests(unittest.TestCase):
             self.assertTrue(lazy_model.pop("supports_search_tool"))
             self.assertEqual(eager_model, lazy_model)
 
+    def test_nullable_catalog_tool_mode_admits_explicit_direct_profile_without_mutation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            catalog = self.catalog(temporary)
+            catalog["model_metadata"]["tool_mode"] = None
+            prepared = self.prepare("codex", "lazy", catalog)
+            self.assertIsNone(catalog["model_metadata"]["tool_mode"])
+            self.assertEqual(json.loads(prepared.catalog_path.read_text())["models"][0]["tool_mode"], "direct")
+
     def test_opencode_v1_19_uses_code_mode_and_denies_underlying_tool(self):
         with tempfile.TemporaryDirectory() as temporary:
             prepared = self.prepare("opencode", "lazy", self.catalog(temporary, "opencode"),

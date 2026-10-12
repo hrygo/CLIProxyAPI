@@ -191,7 +191,7 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
     if not isinstance(catalog["nonce"], str) or not catalog["nonce"]:
         raise ValueError("a fresh nonce is required")
     metadata = deepcopy(catalog["model_metadata"])
-    if client_id == "codex" and (metadata.get("slug") != catalog["model"] or metadata.get("tool_mode", "direct") != "direct"):
+    if client_id == "codex" and (metadata.get("slug") != catalog["model"] or metadata.get("tool_mode") not in (None, "direct")):
         raise ValueError("selected model metadata must match the direct-mode profile")
     env = {key: os.environ[key] for key in ENV_KEYS if key in os.environ}
     checked = subprocess.run([str(catalog["executable"]), "--version"], env=env,

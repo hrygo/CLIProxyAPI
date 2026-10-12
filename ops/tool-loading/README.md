@@ -515,8 +515,52 @@ sorted credential-ID fingerprints; the launcher validates their set digest.
 Binary digest, readiness, exit code, unchanged-source check, collector artifacts
 and original failed startup records are private evidence. Credential-ID hashes
 do not prove endpoint/account region, credential material or full scope freshness.
-The live case runner still must lock actual client model metadata, immutable
-scope/endpoint manifests, permissions/catalog, cache conditions and template
-schedule, then start each case before invoking this bootstrap and import every
-attempt. The startup-only command and synthetic probe do not contribute to
-sixty live cases, coding success, context savings or confidence intervals.
+The calibration runner below locks selected actual model metadata and starts
+each case before invoking this bootstrap. Immutable scope/endpoint manifests,
+cache conditions and representative template scheduling remain incomplete.
+The startup-only command and synthetic probe do not contribute to sixty live
+cases, coding success, context savings or confidence intervals.
+
+## Real Provider calibration
+
+`live_clients.py` runs installed, version-pinned Codex/OpenCode against the
+read-only SDK candidate and the synthetic MCP catalog. It consumes real Provider
+quota. Declare the exact configured alias, upstream model, executor and full
+endpoint SHA-256; no raw endpoint or credential is exported. The endpoint ID
+is derived and validated instead of manually truncating a digest.
+
+```sh
+"$task_validation/venv/bin/python" ops/tool-loading/live_clients.py \
+  --gateway-binary "$task_validation/tool-loading-live-gateway" \
+  --config "$task_operator_config" --output-dir "$task_validation/calibration" \
+  --gateway-revision "$task_gateway_revision" --endpoint-sha256 "$task_endpoint_sha256" \
+  --client-model "$task_model_id" --upstream-model "$task_upstream_model_id" \
+  --executor "$task_executor_id" --task-seconds 90
+```
+
+Only explicit OpenAI-compatible Chat profiles are currently admitted here.
+Each task is journaled before candidate/client launch, limited to eight physical
+upstream attempts and its declared task time; all failures remain in the replay.
+Client groups and gateway children are isolated and closed after each task.
+The model catalog comes from the actual candidate endpoint; there is no synthetic
+metadata fallback. Codex lazy cases require the catalog's search capability.
+Nullable `tool_mode` admits an explicitly isolated direct profile; a declared
+Code Mode model is rejected. Requested mode still requires actual declaration
+evidence. The OpenCode adapter's explicit context/output limits are preserved
+in its private configuration; they do not certify a model's full capacity.
+
+The task requires a real MCP dispatch, a fresh receipt nonce in the final answer,
+zero forbidden dispatch/effects, released callbacks, legal client and upstream
+terminals, and strict plain JSON. Receipt use is independent from hard formatting:
+a JSON Markdown fence can prove receipt use while failing the format gate. An
+earlier correct message cannot satisfy an incorrect final answer. EOF or `[DONE]`
+alone never substitutes for a Chat finish reason. Malformed choices fail closed.
+
+Raw first-request input includes background title generation; all such requests
+also remain in whole-task usage. A first agent request is a separate diagnostic,
+not a retroactive replacement for the locked first-request gate. Missing EOF or
+usage remains unknown under the current importer even when a terminal frame was
+observed; protocol-aware closed-response metering needs separate verification.
+Credential/account region and full immutable runtime scope remain unknown, so
+pair certification and confidence gates remain unverified. These diagnostics
+must not be pooled as a final-revision sixty-case matrix.
