@@ -1,8 +1,9 @@
 # Tool loading acceptance infrastructure
 
 This directory contains the scoped evidence schema and a synthetic MCP fixture.
-Client adapters, the paired acceptance runner and live certification remain
-pending. Request-level usage normalization is available below. Fixture tests do not certify
+Client adapters, live scheduling, statistical certification and live evidence
+remain pending. Offline case replay and request-level usage normalization are
+available below. Fixture tests do not certify
 Codex/OpenCode permission handling, model quality, or context savings.
 
 ## Isolated dependencies and offline checks
@@ -143,3 +144,55 @@ Contract references verified on 2026-10-12:
 
 Future upstream changes require reviewing these named contracts; a passing
 synthetic decoder test alone does not prove any live route still honors them.
+
+## Intent-to-treat case journal and replay
+
+`run_acceptance.py` currently provides the `CaseSpec`/`CaseJournal` collection
+interface and offline replay. It does not launch Codex, OpenCode, a gateway or
+Provider requests. Client adapters and the final live scheduler remain separate
+work. Each case declares its version/route scope, eager/lazy mode, cache condition,
+prompt fingerprint, template cluster, fixture seed, task limits and gold checks.
+
+An adapter must call `start_case` before launching a task and `start_request`
+before every actual upstream attempt, including gateway retries. Allocate an
+attempt ID before sending; a later Provider response ID cannot prove that an
+interrupted request was counted. Consolidate streaming snapshots before calling
+`record_request` with request-total usage. Finish checks require actual tool/nonce,
+terminal and coding evidence from the adapter; reported booleans alone do not
+certify those observations. Client exit code is only auxiliary evidence.
+
+The single-writer journal is created exclusively with mode 0600, appended and
+flushed/fsynced before returning. An existing path, repeated case/pair-mode,
+request, or finish is rejected. Every started case remains in the denominator;
+unfinished cases are failures. Started requests without settled usage invalidate
+complete task input totals and cannot substantiate success. Budget overruns keep
+all observed requests instead of deleting their costs. Counting an overrun does
+not implement process termination; the client adapter still needs task limits.
+
+One run cannot mix gateway revisions. Open a new run for changed assertions,
+client/fixture contracts or candidates; retain earlier journals. Pair comparison
+requires equal scope except the intentionally changed `client_mode`, plus equal
+prompt, template, fixture seed, limits, permissions and cache condition. Missing
+partners, mismatches or unknown scope produce no saving estimate. Failed pairs
+are retained. Counts and latency observations are grouped by complete route,
+client/version/mode and cache scope; repeated templates remain cluster labels.
+
+```sh
+"$task_validation/venv/bin/python" ops/tool-loading/run_acceptance.py \
+  --replay /path/to/run/events.jsonl > /path/to/run/replay-report.json
+"$task_validation/venv/bin/python" ops/tool-loading/validate_evidence.py \
+  --journal /path/to/run/events.jsonl
+```
+
+The validator checks event ordering, transitions, fields, scope and accounting.
+Truncated, reordered or malformed journals are rejected. Export uses explicit
+fields and counter paths; arbitrary credential/content fields are discarded,
+while malformed counters/cache objects retain a content-free invalid marker.
+Do not encode secrets or personal information in identifiers. Original raw
+Provider captures and their verified artifact digests still need to be connected
+by the real collector; this journal is not a signed or tamper-proof artifact.
+
+Every replay/validation report keeps `gate_status: unverified`. Structure checks
+and descriptive paired savings do not prove 60 live cases, actual permission
+enforcement, non-inferiority, benefit confidence intervals, latency/cost gates or
+deployment readiness. Missing usage never becomes zero or a free failed task.
