@@ -155,6 +155,29 @@ class AdapterTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 client.collect_boundary_events()
 
+    def test_cancel_interrupts_main_client_and_retains_graceful_shutdown_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            code = ("import signal, pathlib, sys\n"
+                    "def stop(*args):\n print('INTERRUPTED', flush=True)\n pathlib.Path('interrupted').write_text('yes')\n sys.exit(0)\n"
+                    "signal.signal(signal.SIGINT, stop)\npathlib.Path('ready').write_text('yes')\nwhile True: pass\n")
+            client = self.process_client(temporary, code)
+            cancelled, observer_stop = threading.Event(), threading.Event()
+            def observe():
+                while not observer_stop.wait(0.005):
+                    if (Path(temporary) / "ready").exists():
+                        cancelled.set()
+                        return
+            observer = threading.Thread(target=observe)
+            observer.start()
+            try:
+                result = client.run_task({"prompt": "fixture", "max_seconds": 3, "max_output_bytes": 4096}, cancel_event=cancelled)
+            finally:
+                observer_stop.set()
+                observer.join()
+            self.assertEqual(result["termination"], "cancelled")
+            self.assertTrue((Path(temporary) / "interrupted").exists())
+            self.assertIn("INTERRUPTED", Path(result["stdout_path"]).read_text())
+
     def test_mode_observation_requires_expected_fixture_declarations_and_entry(self):
         with self.assertRaises(ValueError):
             inspect_tools("unknown-client", "lazy", [])

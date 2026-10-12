@@ -42,6 +42,18 @@ class ScriptTests(unittest.TestCase):
         self.assertIn("tools.fixture.ledger_budget_lookup", call["arguments"]["code"])
         self.assertIn('"beta"', call["arguments"]["code"])
 
+    def test_cancel_targets_cancellable_fixture_and_loop_is_code_mode_only(self):
+        model = ScriptedModel("codex", "eager", "cancel")
+        self.assertEqual(model.next({})["name"], "fixture_wait")
+        model = ScriptedModel("opencode", "lazy", "cancel")
+        model.next({})
+        self.assertIn("tools.fixture.fixture_wait", model.next({})["arguments"]["code"])
+        model = ScriptedModel("opencode", "lazy", "loop")
+        model.next({})
+        self.assertIn("while (true)", model.next({})["arguments"]["code"])
+        with self.assertRaises(ValueError):
+            ScriptedModel("codex", "lazy", "loop")
+
     def test_responses_events_preserve_item_identity_and_legal_terminal(self):
         item = {"type": "function_call", "id": "fc_test", "call_id": "invoke", "name": "ledger_budget_lookup",
                 "namespace": "mcp__fixture", "arguments": '{"project":"alpha"}'}

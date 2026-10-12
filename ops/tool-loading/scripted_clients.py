@@ -59,23 +59,27 @@ def tool_receipt(client, request, call_id="invoke"):
 
 class ScriptedModel:
     def __init__(self, client, mode, scenario):
-        if client not in VERSIONS or mode not in {"eager", "lazy"} or scenario not in {"allow", "client-denied", "invalid", "revoked"}:
+        if client not in VERSIONS or mode not in {"eager", "lazy"} or scenario not in {"allow", "client-denied", "invalid", "revoked", "cancel", "loop", "dispatch-budget", "large-result"}:
             raise ValueError("unknown scripted profile")
+        if scenario in {"loop", "dispatch-budget", "large-result"} and (client, mode) != ("opencode", "lazy"):
+            raise ValueError("this execution probe requires OpenCode Code Mode")
         self.client, self.mode, self.scenario = client, mode, scenario
         self.round = 0
         self.nonce_observed = self.invocation_emitted = False
         self.receipt = None
         self.search_result_has_target = False
+        self.target = "fixture_wait" if scenario == "cancel" else "ledger_budget_lookup"
 
     def next(self, request):
         stage = self.round
         self.round += 1
         if self.mode == "lazy" and stage == 0:
+            query = "fixture wait until cancelled" if self.scenario == "cancel" else "ledger budget remaining alpha verification code"
             if self.client == "codex":
                 return {"type": "tool_search_call", "id": "tsc_search", "call_id": "search", "execution": "client",
-                        "status": "completed", "arguments": {"query": "ledger budget remaining alpha verification code", "limit": 8}}
+                        "status": "completed", "arguments": {"query": query, "limit": 8}}
             return {"type": "function_call", "name": "execute", "call_id": "search",
-                    "arguments": {"code": 'return await tools.$codemode.search({query:"ledger budget alpha verification code",limit:8});'}}
+                    "arguments": {"code": 'return await tools.$codemode.search({query:' + json.dumps(query) + ',limit:8});'}}
         if stage == (1 if self.mode == "lazy" else 0):
             if self.mode == "lazy":
                 if self.client == "codex":
@@ -83,16 +87,23 @@ class ScriptedModel:
                                           if item.get("type") == "tool_search_output" and item.get("call_id") == "search"), None)
                 else:
                     search_result = tool_receipt(self.client, request, "search")
-                self.search_result_has_target = bool(search_result and "ledger_budget_lookup" in json.dumps(search_result))
+                self.search_result_has_target = bool(search_result and self.target in json.dumps(search_result))
             self.invocation_emitted = True
             arguments = {"project": "beta" if self.scenario == "invalid" else "alpha"}
             if self.client == "codex":
-                return {"type": "function_call", "id": "fc_invoke", "call_id": "invoke", "name": "ledger_budget_lookup",
+                return {"type": "function_call", "id": "fc_invoke", "call_id": "invoke", "name": self.target,
                         "namespace": "mcp__fixture", "arguments": json.dumps(arguments)}
             if self.mode == "lazy":
+                code = "return await tools.fixture." + self.target + "(" + json.dumps(arguments) + ");"
+                if self.scenario == "loop":
+                    code = "while (true) {}"
+                elif self.scenario == "dispatch-budget":
+                    code = 'const results=[]; for(let i=0;i<12;i++){results.push(await tools.fixture.ledger_budget_lookup({project:"alpha"}));} return results;'
+                elif self.scenario == "large-result":
+                    code = 'return await tools.fixture.fixture_large_result({project:"alpha",size:1048576});'
                 return {"type": "function_call", "name": "execute", "call_id": "invoke",
-                        "arguments": {"code": "return await tools.fixture.ledger_budget_lookup(" + json.dumps(arguments) + ");"}}
-            return {"type": "function_call", "name": "fixture_ledger_budget_lookup", "call_id": "invoke", "arguments": arguments}
+                        "arguments": {"code": code}}
+            return {"type": "function_call", "name": "fixture_" + self.target, "call_id": "invoke", "arguments": arguments}
         self.receipt = tool_receipt(self.client, request)
         self.nonce_observed = bool(self.receipt and "verification_code" in self.receipt)
         text = ("fixture final: " + str(self.receipt["remaining_budget"]) + " " + self.receipt["verification_code"]
@@ -210,6 +221,8 @@ def run_case(root, client, mode, scenario, *, max_seconds=20):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     nonce = uuid.uuid4().hex
+    cancel_event, stop_observer = threading.Event(), threading.Event()
+    observer = None
     try:
         prepared = prepare_isolated_client(client, mode, {
             "run_dir": root / f"{client}-{mode}-{scenario}", "client_version": VERSIONS[client],
@@ -219,9 +232,26 @@ def run_case(root, client, mode, scenario, *, max_seconds=20):
             "max_dispatches": 8, "max_result_bytes": 65536},
             {"client_denied": ["ledger_budget_lookup"] if scenario == "client-denied" else [], "service_denied": ["fixture_mutation"]})
         write_private(prepared.run_dir / "case-started.json", json.dumps({"client": client, "version": VERSIONS[client], "mode": mode, "scenario": scenario}))
+        if scenario == "cancel":
+            def observe_dispatch():
+                while not stop_observer.wait(0.01):
+                    try:
+                        events = prepared.collect_boundary_events()
+                    except ValueError:
+                        continue
+                    dispatched = next((event for event in events if event["phase"] == "dispatch" and event["tool"] == "fixture_wait"), None)
+                    if dispatched:
+                        write_private(prepared.run_dir / "cancel-requested.json", json.dumps({"after_mcp_sequence": dispatched["sequence"]}))
+                        cancel_event.set()
+                        return
+            observer = threading.Thread(target=observe_dispatch, daemon=True)
+            observer.start()
         result = prepared.run_task({"prompt": "Use the fixture to read alpha remaining budget and verification code.",
-                                    "max_seconds": max_seconds, "max_output_bytes": 1000000})
+                                    "max_seconds": max_seconds, "max_output_bytes": 1000000}, cancel_event=cancel_event)
     finally:
+        stop_observer.set()
+        if observer:
+            observer.join()
         server.shutdown()
         server.server_close()
         thread.join()
@@ -240,7 +270,7 @@ def run_case(root, client, mode, scenario, *, max_seconds=20):
         verified = (verified and dispatches == 1 and receipt_nonce == nonce
                     and any("fixture final: 424242 " + nonce in text for text in observed["final_texts"])
                     and (mode == "eager" or model.search_result_has_target))
-    else:
+    elif scenario in {"client-denied", "invalid", "revoked"}:
         verified = verified and dispatches == 0 and receipt_nonce is None
         if scenario == "client-denied":
             verified = verified and not any(event["phase"] == "request" for event in events)
@@ -252,6 +282,17 @@ def run_case(root, client, mode, scenario, *, max_seconds=20):
                         and (mode == "eager" or model.search_result_has_target))
         if scenario == "invalid":
             verified = verified and any(event.get("reason") == "invalid_arguments" for event in events)
+    elif scenario == "cancel":
+        verified = (service_allowed and model.invocation_emitted and result["termination"] == "cancelled"
+                    and dispatches == 1 and effects == active == 0
+                    and any(event["phase"] == "cancelled" for event in events)
+                    and any(event["phase"] == "released" for event in events))
+    elif scenario == "loop":
+        verified = (verified and dispatches == 0 and any(word in json.dumps(model.receipt).lower() for word in ("budget exceeded", "limit exceeded")))
+    elif scenario == "dispatch-budget":
+        verified = (verified and dispatches == 8 and any(event.get("reason") == "dispatch_budget" for event in events))
+    elif scenario == "large-result":
+        verified = (verified and dispatches == 1 and any(event.get("reason") == "result_budget" for event in events))
     summary = {"client": client, "client_version": VERSIONS[client], "mode": mode, "scenario": scenario,
                "scope": "scripted-local-client-boundary", "requests_received": len(requests), "mcp_dispatches": dispatches,
                "mcp_requests": sum(event["phase"] == "request" for event in events), "effects": effects,
@@ -259,6 +300,7 @@ def run_case(root, client, mode, scenario, *, max_seconds=20):
                "search_result_has_target": model.search_result_has_target if mode == "lazy" else None,
                "legal_client_terminal": observed["legal_terminal"],
                "service_initially_allowed_target": service_allowed,
+               "cancellation_observed": any(event["phase"] == "cancelled" for event in events),
                "provider_input_tokens": None, "gate_status": "unverified", "run_dir": str(prepared.run_dir), **result}
     write_private(prepared.run_dir / "summary.json", json.dumps(summary, indent=2))
     return summary
@@ -269,8 +311,12 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--clients", nargs="+", choices=list(VERSIONS), default=list(VERSIONS))
     parser.add_argument("--modes", nargs="+", choices=["eager", "lazy"], default=["eager", "lazy"])
-    parser.add_argument("--cases", nargs="+", choices=["allow", "client-denied", "invalid", "revoked"], default=["allow", "client-denied", "invalid", "revoked"])
+    parser.add_argument("--cases", nargs="+", choices=["allow", "client-denied", "invalid", "revoked", "cancel", "loop", "dispatch-budget", "large-result"], default=["allow", "client-denied", "invalid", "revoked"])
     args = parser.parse_args()
+    for client in args.clients:
+        for mode in args.modes:
+            for scenario in args.cases:
+                ScriptedModel(client, mode, scenario)
     args.output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     results = []
     for client in args.clients:

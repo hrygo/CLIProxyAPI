@@ -1,0 +1,36 @@
+{
+  "source_url": "https://github.com/anomalyco/opencode/tree/v1.19.0/packages/codemode",
+  "source_tag": "v1.19.0",
+  "files": {
+    "src/codemode.ts": "3879f24437731883f423bf249e8cf13a4fda3f14a354fc42ab390877c53d7d0d",
+    "src/index.ts": "f43389879a95b48396bd46ee10b8d42cdd410216458e05e43ec1f522e8d4cbda",
+    "src/interpreter/model.ts": "985fbdb7c4ebc86a877e5fb45ca34acf7914ad1f407e3637601e80bf183e6628",
+    "src/interpreter/runtime.ts": "7ee1e5c5b9c096b7d6b77e5ee7d3f9604d48e4964a33e40345a48746d08eb053",
+    "src/openapi/index.ts": "bf8ba55b6b2fb43ed4cf0abbb38ad079ea2307471392987e25d8f476b7a090fc",
+    "src/openapi/runtime.ts": "aaf64bec2bccfebc7b52d590683cbdebd2397066659086d480509e1d09498c7d",
+    "src/openapi/spec.ts": "48840fc9c5426a199e18c4136aebc4a693bd4d6c71d78249ea0f9b9468b15ea8",
+    "src/openapi/types.ts": "089c12b6bb79bf9df47b5ed1deb46c2470d1b7ce2b49259351639c21c7dee4f4",
+    "src/stdlib/collections.ts": "489260e62ebaed0da4f4d2dfe840f61104b2ba9ac82b49dc0b8802d6819e2ded",
+    "src/stdlib/console.ts": "c5a93647fc57ce0d4e502c9b9c7a33e717e3e77397236721705eea55f90d7b66",
+    "src/stdlib/date.ts": "013931e7cad8add7ebefe8ba9adca6fb067e5a84b99351375927c449e3d23763",
+    "src/stdlib/json.ts": "2c1de12a6dbc3bdf324d9a71469511ccbafe4a1ef17d1b1f54d4101ab027f03f",
+    "src/stdlib/math.ts": "cd80397a1ee8d106f7c850b5d068884117954d6422ba203da843ba9196c4d554",
+    "src/stdlib/number.ts": "0f257c6b40afce79e0b2ef684d0b0607188ae5b96d927a784945977217101528",
+    "src/stdlib/object.ts": "7caf81d60f974e35ca81e09992a3192a6c19aaed18974141d6c829fce9f1b4c6",
+    "src/stdlib/promise.ts": "ba9f90a9bb9c37feefbbc26b4cc28f259224a26fea193840162841d6fbe89609",
+    "src/stdlib/regexp.ts": "831df9cbf7b6ad3814a99cfaefbc520ba611b9883b6276077aa769383c94fde4",
+    "src/stdlib/string.ts": "8b14f9547ad7213dacca61d21d029adca175c0149d1132ffbcdeea10d12c57d8",
+    "src/stdlib/url.ts": "533a302ee7e8067a402a5b09cc90c75bcb23a5d368a76b86d6a17cfa53bed5f3",
+    "src/stdlib/value.ts": "ab7399b36f12f51f437c81af56e4809ad4cf12cb1bf85563d882c4c248a0fccc",
+    "src/tool-error.ts": "08e7edeb941139666c13f155ba184b9fe29a9d889a16481858a60c48c60bb3d3",
+    "src/tool-runtime.ts": "4b10bd31a9c10104a0248e8f614cb7274c964eb8efddcce749382361bcd65d20",
+    "src/tool-schema.ts": "7d93eac35df2d6b0bd29bc1c944c4d062afc1ff1b5c2b95df0d881ddcd5e748f",
+    "src/tool.ts": "e297f881d51f281d21376ce58cd30909aa0e69f8ec1b722334c09834d6f6a1bd",
+    "src/values.ts": "61069ee6cec59ded1c14f1214d243e91fd59cd27ab78d3851ca2112aade745a9"
+  },
+  "dependencies": {
+    "acorn": "8.15.0",
+    "effect": "4.0.0-beta.83",
+    "typescript": "5.8.2"
+  }
+}

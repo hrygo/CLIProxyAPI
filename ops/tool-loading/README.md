@@ -40,7 +40,11 @@ task quality, terminal semantics, or token savings. `gate_status` remains
 transport measurement, distinct from model input tokens.
 
 `run_task` bounds the isolated POSIX process group, cancellation and combined
-stored stdout/stderr. It terminates its descendants and records exit/budget
+stored stdout/stderr. It first sends SIGINT to the main CLI and drains capped
+output during a two-second grace period, then terminates its process group.
+`forced_process_cleanup` describes whether the main process still needed
+termination after that grace period, not whether every descendant had exited.
+It records exit/budget
 outcomes; a zero process exit never establishes task success. Original-schema,
 client permission and cancellation evidence must still come from actual MCP
 calls and immutable artifacts before the live acceptance journal can certify
@@ -78,9 +82,60 @@ do not test retrieval strategy, coding quality, reliability or token savings.
 Native CLI usage defaults to zero when this fixture omits usage; those values
 are not accepted as measurements. Summary usage remains null, task success is
 unverified and the overall gate stays unverified. Cancellation, dynamic client
-permission changes/index refresh and cumulative Code Mode limits still need
-their own native execution evidence. Formal attempt accounting remains the
+permission changes/index refresh and cumulative Code Mode limits remain
+uncertified. The cancellation and budget probes below retain their failures.
+Formal attempt accounting remains the
 responsibility of the live journal and gateway collector, not this fixture.
+
+## Cancellation and execution-budget diagnostics
+
+Run cancellation after the actual MCP wait dispatch, independently of timing:
+
+```sh
+"$task_validation/venv/bin/python" ops/tool-loading/scripted_clients.py \
+  --output-dir "$task_validation/native-cancel" --cases cancel
+"$task_validation/venv/bin/python" ops/tool-loading/scripted_clients.py \
+  --output-dir "$task_validation/native-limits" --clients opencode --modes lazy \
+  --cases loop dispatch-budget large-result
+```
+
+`cancel` requires actual MCP cancellation/release events and zero active state;
+process death alone does not pass. Missing cleanup events after group termination
+are unverified cleanup, not proof that a resource survived process death.
+The loop probe must return a runtime budget error with a legal client terminal;
+outer process-budget termination is a failed runtime-limit probe. The dispatch
+and large-result probes separately prove the synthetic service's limits,
+not client-wide cumulative limits or Provider request limits.
+
+`client_sdk_probe.mjs` separately exercises the external OpenCode `v1.19.0`
+CodeMode package with explicit limits. `opencode-codemode-source.json` pins all
+25 TypeScript source files and three dependency versions before importing it.
+Use an isolated extraction of the official tag with Bun; never apply changes to
+the installed OpenCode executable or install packages globally. With Bun already
+available, prepare the external package in the temporary validation directory:
+
+```sh
+curl -fL https://codeload.github.com/anomalyco/opencode/tar.gz/refs/tags/v1.19.0 \
+  -o "$task_validation/opencode.tar.gz"
+mkdir "$task_validation/codemode"
+tar -xzf "$task_validation/opencode.tar.gz" --strip-components=3 \
+  -C "$task_validation/codemode" opencode-1.19.0/packages/codemode
+python3 -c 'import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); d=json.loads(p.read_text()); d["dependencies"].update({"effect":"4.0.0-beta.83","typescript":"5.8.2"}); d.pop("devDependencies",None); p.write_text(json.dumps(d))' \
+  "$task_validation/codemode/package.json"
+bun install --cwd "$task_validation/codemode" \
+  --cache-dir "$task_validation/bun-cache" --ignore-scripts
+bun ops/tool-loading/client_sdk_probe.mjs \
+  --sdk-root "$task_validation/codemode" \
+  --output "$task_validation/sdk-summary.json"
+```
+
+The SDK probe currently exits **1**: timeout, call admission and cancellation
+release pass, but a 256-byte serialized value limit produces 348 bytes. This
+negative result is intentional evidence, not a green native-client regression.
+The output path must be fresh. Native clients, gateway/Provider closure and
+usage remain unverified by this SDK probe. See the
+[client cancellation and runtime report](../../docs/acceptance/2026-10-12-client-runtime-limits_CN.md)
+for the separate client delivery and exact evidence scope.
 
 ## Isolated dependencies and offline checks
 

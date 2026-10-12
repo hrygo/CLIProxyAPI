@@ -80,6 +80,25 @@ class PreparedClient:
         started = time.monotonic()
         termination, stored, observed = "exited", 0, 0
         selector = selectors.DefaultSelector()
+        interrupt_sent = forced_cleanup = False
+
+        def pump(wait_seconds):
+            nonlocal stored, observed
+            exceeded = False
+            for key, _ in selector.select(wait_seconds):
+                try:
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                observed += len(chunk)
+                accepted = chunk[:max(0, limit - stored)]
+                key.data.write(accepted)
+                stored += len(accepted)
+                exceeded = exceeded or observed > limit
+            return exceeded
         try:
             for path in output_paths:
                 handle = path.open("xb")
@@ -98,23 +117,24 @@ class PreparedClient:
                 if time.monotonic() - started >= seconds:
                     termination = "process_budget"
                     break
-                for key, _ in selector.select(min(0.05, seconds)):
-                    chunk = os.read(key.fileobj.fileno(), 65536)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    observed += len(chunk)
-                    accepted = chunk[:max(0, limit - stored)]
-                    key.data.write(accepted)
-                    stored += len(accepted)
-                    if observed > limit:
-                        termination = "output_budget"
-                        break
+                if pump(min(0.05, seconds)):
+                    termination = "output_budget"
                 if termination != "exited":
                     break
         finally:
-            selector.close()
             if process is not None:
+                # Interrupt the CLI first so it can cancel pending MCP requests
+                # and emit release events. Keep draining within the same cap.
+                if termination != "exited" and process.poll() is None:
+                    try:
+                        os.kill(process.pid, signal.SIGINT)
+                        interrupt_sent = True
+                    except ProcessLookupError:
+                        pass
+                    graceful_deadline = time.monotonic() + 2
+                    while (selector.get_map() or process.poll() is None) and time.monotonic() < graceful_deadline:
+                        pump(0.05)
+                    forced_cleanup = process.poll() is None
                 # Kill descendants even if the main CLI already exited: an MCP
                 # child may still own a pipe or execution sandbox.
                 try:
@@ -130,14 +150,20 @@ class PreparedClient:
                 except ProcessLookupError:
                     pass
                 process.wait()
+                drain_deadline = time.monotonic() + 0.5
+                while selector.get_map() and time.monotonic() < drain_deadline:
+                    pump(0.01)
                 process.stdout.close()
                 process.stderr.close()
+            selector.close()
             for handle in handles:
                 handle.close()
         return {"exit_code": process.returncode, "termination": termination,
                 "elapsed_seconds": time.monotonic() - started, "stored_output_bytes": stored,
                 "observed_output_bytes": observed, "stdout_path": str(output_paths[0]),
-                "stderr_path": str(output_paths[1]), "task_success_verified": False}
+                "stderr_path": str(output_paths[1]), "graceful_interrupt_sent": interrupt_sent,
+                "forced_process_cleanup": forced_cleanup, "output_truncated": observed > limit,
+                "task_success_verified": False}
 
 
 def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permissions: dict) -> PreparedClient:
