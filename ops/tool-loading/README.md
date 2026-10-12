@@ -409,3 +409,51 @@ Every replay/validation report keeps `gate_status: unverified`. Structure checks
 and descriptive paired savings do not prove 60 live cases, actual permission
 enforcement, non-inferiority, benefit confidence intervals, latency/cost gates or
 deployment readiness. Missing usage never becomes zero or a free failed task.
+
+## Native clients through an isolated fixture gateway
+
+`gateway_clients.py` launches the installed, pinned Codex/OpenCode clients,
+the real gateway handlers/auth manager/executors, a scripted loopback upstream,
+and the actual MCP fixture. This is protocol and evidence-chain verification;
+it is not a live Provider benchmark. It never joins the sixty-case live sample.
+
+```sh
+GOTOOLCHAIN=go1.26.4 go build -o "$task_validation/tool-loading-gateway" ./ops/tool-loading/gateway
+"$task_validation/venv/bin/python" ops/tool-loading/gateway_clients.py \
+  --gateway-binary "$task_validation/tool-loading-gateway" \
+  --output-dir "$task_validation/native-gateway-chat"
+"$task_validation/venv/bin/python" ops/tool-loading/gateway_clients.py \
+  --gateway-binary "$task_validation/tool-loading-gateway" \
+  --executor codex --output-dir "$task_validation/native-gateway-responses"
+```
+
+Use the isolated SDK environment described above and new output directories.
+The launcher filters the child environment, uses synthetic credentials only,
+and checks the actual child PID, loopback address, executor and declared wire
+contract before launching each client. The standalone gateway does not load
+operator configuration or token stores. Always use this launcher; the shared
+API constructor may read management environment settings if invoked directly.
+No candidate is installed, and no existing service or default config is changed.
+
+Every case starts before process launch. Gateway attempt journal v2 includes
+the actual executor and SHA-256 fingerprints of its model and auth record ID;
+empty or missing identity cannot pass the pinned executor import. Historical
+v1 captures remain readable but cannot satisfy this identity check. Executor
+identity does not infer a wire protocol: the isolated constructor pins that
+contract explicitly. Hashes do not constitute full routing/config provenance.
+
+The model fixture selects only actual declarations, learns opaque gateway
+aliases from the returned manifest, and learns the verification nonce only
+from a real MCP result. Success requires that result in the final answer, one
+actual dispatch, legal client terminal, sealed attempt evidence and clean
+gateway exit. OpenCode title requests remain in the request denominator but
+do not advance the scripted tool state, including titles with built-in tools.
+Responses fixtures provide the required usage `total_tokens` field.
+
+Private artifacts include the binary digest, readiness/exit records, native
+client output, MCP events, upstream bodies, attempt journals and case replay.
+Captures are restricted to this synthetic fixture. Scripted counters test
+decoding, not actual Provider tokens; reports retain null measured input and
+`gate_status: unverified`. Serialized tool bytes are a transport metric only.
+Live scope manifests, balanced scheduling and clustered quality/benefit gates
+remain separate work.

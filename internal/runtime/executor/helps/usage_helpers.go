@@ -714,7 +714,7 @@ type usageTTFTRoundTripper struct {
 }
 
 func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	return observeHTTPAttempt(req, t.roundTrip)
+	return observeHTTPAttempt(req, t.roundTrip, t.reporter.httpAttemptIdentity)
 }
 
 func (t usageTTFTRoundTripper) roundTrip(req *http.Request) (*http.Response, error) {

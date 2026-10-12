@@ -132,23 +132,33 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
         event = _json(line)
         common = {"version", "sequence", "event", "request_id", "contract"}
         if (not isinstance(event, dict) or type(event.get("sequence")) is not int or event["sequence"] != sequence
-                or type(event.get("version")) is not int or event["version"] != 1 or event.get("contract") not in CONTRACTS):
+                or type(event.get("version")) is not int or event["version"] not in {1, 2} or event.get("contract") not in CONTRACTS):
             raise ValueError("invalid HTTP journal identity or contract")
         request_id = event.get("request_id")
         if not isinstance(request_id, str) or not re.fullmatch(r"request-[0-9]{6}", request_id):
             raise ValueError("invalid HTTP attempt ID")
         if event.get("event") == "request-started":
-            if set(event) != common | {"request"} or request_id != f"request-{len(records) + 1:06d}":
+            extra = {"executor_identity"} if event["version"] == 2 else set()
+            if set(event) != common | {"request"} | extra or request_id != f"request-{len(records) + 1:06d}":
                 raise ValueError("invalid or duplicated HTTP start")
+            identity = event.get("executor_identity")
+            if identity is not None:
+                if (not isinstance(identity, dict) or set(identity) != {"executor", "model_sha256", "auth_sha256"}
+                        or not isinstance(identity["executor"], str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", identity["executor"])
+                        or any(not isinstance(identity[key], str) or identity[key] != "" and not re.fullmatch(r"[0-9a-f]{64}", identity[key])
+                               for key in ("model_sha256", "auth_sha256"))):
+                    raise ValueError("invalid actual executor identity")
             _artifact(directory, event["request"], request_id + ".body")
             if not event["request"]["complete"]:
                 raise ValueError("HTTP request evidence must be complete before dispatch")
             records[request_id] = {"request_id": request_id, "contract": event["contract"],
                                    "usage_kind": "request-total", "raw_usage": None, "finished": False,
-                                   "transport_outcome": "unknown", "issues": ["unfinished_http_attempt"]}
+                                   "transport_outcome": "unknown", "executor_identity": identity,
+                                   "journal_version": event["version"], "issues": ["unfinished_http_attempt"]}
         elif event.get("event") == "request-finished":
             if (set(event) != common | {"outcome", "status_code", "observed_bytes", "response"}
                     or request_id not in records or records[request_id]["finished"]
+                    or event["version"] != records[request_id]["journal_version"]
                     or event["contract"] != records[request_id]["contract"]
                     or not isinstance(event["outcome"], str) or event["outcome"] not in OUTCOMES or type(event["status_code"]) is not int
                     or event["status_code"] != 0 and not 100 <= event["status_code"] <= 599
@@ -167,7 +177,7 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
     return list(records.values())
 
 
-def import_http_attempts(journal: CaseJournal, case_id: str, directory: Path) -> list[dict[str, Any]]:
+def import_http_attempts(journal: CaseJournal, case_id: str, directory: Path, *, expected_executor: str | None = None) -> list[dict[str, Any]]:
     """Import a sealed snapshot into an already-started, not-yet-finished case.
 
     The upstream journal supplies the pre-dispatch evidence. This post-run import
@@ -175,6 +185,14 @@ def import_http_attempts(journal: CaseJournal, case_id: str, directory: Path) ->
     Reimporting the same snapshot is rejected by CaseJournal's unique-ID rules.
     """
     records = read_http_attempts(directory)
+    if expected_executor is not None:
+        if not isinstance(expected_executor, str) or not expected_executor:
+            raise ValueError("invalid expected executor")
+        for record in records:
+            identity = record["executor_identity"]
+            if (identity is None or identity["executor"] != expected_executor
+                    or not identity["model_sha256"] or not identity["auth_sha256"]):
+                raise ValueError("actual executor does not match the pinned evidence scope")
     for record in records:
         journal.start_request(case_id, record["request_id"], record["contract"])
         if record["finished"]:

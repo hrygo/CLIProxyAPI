@@ -14,6 +14,10 @@ import (
 func TestHTTPAttemptObserverRunsBeforeDispatchAndRetainsRetries(t *testing.T) {
 	var events []string
 	ctx := WithHTTPAttemptObserver(context.Background(), func(req *http.Request, next http.RoundTripper) (*http.Response, error) {
+		identity := HTTPAttemptIdentityFromContext(req.Context())
+		if identity == nil || identity.Executor != "fixture" || len(identity.ModelSHA256) != 64 || identity.AuthSHA256 != "" {
+			t.Fatalf("missing or incorrect actual executor identity: %+v", identity)
+		}
 		events = append(events, "start")
 		resp, err := next.RoundTrip(req)
 		if err != nil {

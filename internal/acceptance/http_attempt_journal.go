@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 )
 
 type bodyArtifact struct {
@@ -65,7 +67,7 @@ func NewHTTPAttemptJournal(dir, contract string, maxBytes int64, maxAttempts int
 func (j *HTTPAttemptJournal) appendLocked(event map[string]any) error {
 	j.sequence++
 	event["sequence"] = j.sequence
-	event["version"] = 1
+	event["version"] = 2
 	data, err := json.Marshal(event)
 	if err == nil {
 		_, err = j.file.Write(append(data, '\n'))
@@ -118,7 +120,8 @@ func (j *HTTPAttemptJournal) Observe(req *http.Request, next http.RoundTripper) 
 	if err == nil {
 		digest := sha256.Sum256(request)
 		err = j.appendLocked(map[string]any{"event": "request-started", "request_id": id, "contract": j.contract,
-			"request": bodyArtifact{requestPath, hex.EncodeToString(digest[:]), int64(len(request)), true}})
+			"executor_identity": helps.HTTPAttemptIdentityFromContext(req.Context()),
+			"request":           bodyArtifact{requestPath, hex.EncodeToString(digest[:]), int64(len(request)), true}})
 	}
 	if err != nil {
 		j.err = errors.Join(j.err, err)

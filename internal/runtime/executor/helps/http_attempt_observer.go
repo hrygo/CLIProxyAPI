@@ -2,6 +2,8 @@ package helps
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -16,6 +18,38 @@ type HTTPAttemptObserver func(req *http.Request, next http.RoundTripper) (*http.
 
 type httpAttemptObserverKey struct{}
 type httpAttemptObserverActiveKey struct{}
+type httpAttemptIdentityKey struct{}
+
+// HTTPAttemptIdentity names the executor that actually owns the transport.
+// Model and credential record IDs are fingerprints, not exposed identifiers.
+// This does not infer a wire protocol from a provider/model name.
+type HTTPAttemptIdentity struct {
+	Executor    string `json:"executor"`
+	ModelSHA256 string `json:"model_sha256"`
+	AuthSHA256  string `json:"auth_sha256"`
+}
+
+func HTTPAttemptIdentityFromContext(ctx context.Context) *HTTPAttemptIdentity {
+	if ctx == nil {
+		return nil
+	}
+	identity, ok := ctx.Value(httpAttemptIdentityKey{}).(HTTPAttemptIdentity)
+	if !ok {
+		return nil
+	}
+	return &identity
+}
+
+func (r *UsageReporter) httpAttemptIdentity() HTTPAttemptIdentity {
+	fingerprint := func(value string) string {
+		if value == "" {
+			return ""
+		}
+		digest := sha256.Sum256([]byte(value))
+		return hex.EncodeToString(digest[:])
+	}
+	return HTTPAttemptIdentity{Executor: r.provider, ModelSHA256: fingerprint(r.model), AuthSHA256: fingerprint(r.authID)}
+}
 
 // WithHTTPAttemptObserver attaches observation to one request context. There is
 // no global configuration or default observer; nil disables inherited observation.
@@ -32,7 +66,7 @@ func (f observedRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, err
 	return f(req)
 }
 
-func observeHTTPAttempt(req *http.Request, next observedRoundTripFunc) (*http.Response, error) {
+func observeHTTPAttempt(req *http.Request, next observedRoundTripFunc, identity func() HTTPAttemptIdentity) (*http.Response, error) {
 	ctx := req.Context()
 	value := ctx.Value(httpAttemptObserverKey{})
 	if value == nil {
@@ -50,6 +84,7 @@ func observeHTTPAttempt(req *http.Request, next observedRoundTripFunc) (*http.Re
 	}
 	// Nested usage wrappers still dispatch once; retries and redirects receive
 	// their own outer observation, since the caller's context is not modified.
+	ctx = context.WithValue(ctx, httpAttemptIdentityKey{}, identity())
 	observed := req.WithContext(context.WithValue(ctx, httpAttemptObserverActiveKey{}, true))
 	return observer(observed, next)
 }

@@ -37,6 +37,33 @@ def evidence(directory, bodies=(None, b'{"usage":{"input_tokens":100,"output_tok
 
 
 class HTTPAttemptsTests(unittest.TestCase):
+    def test_v2_actual_executor_is_required_when_import_scope_is_pinned(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            events = evidence(directory, bodies=(b'{"usage":{"input_tokens":10}}',))
+            for event in events:
+                event["version"] = 2
+            events[0]["executor_identity"] = {"executor": "codex", "model_sha256": "a" * 64, "auth_sha256": "b" * 64}
+            (directory / "attempts.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+            journal = CaseJournal(directory / "cases.jsonl", "run-v2")
+            case = spec()
+            journal.start_case(case)
+            with self.assertRaises(ValueError):
+                import_http_attempts(journal, case.case_id, directory, expected_executor="gemini")
+            self.assertEqual(len(journal.events), 1)
+            records = import_http_attempts(journal, case.case_id, directory, expected_executor="codex")
+            self.assertEqual(records[0]["executor_identity"]["executor"], "codex")
+
+    def test_v1_and_missing_identity_cannot_obtain_pinned_scope(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            evidence(directory, bodies=(b'{"usage":{"input_tokens":10}}',))
+            journal = CaseJournal(directory / "cases.jsonl", "run-v1")
+            case = spec()
+            journal.start_case(case)
+            with self.assertRaises(ValueError):
+                import_http_attempts(journal, case.case_id, directory, expected_executor="codex")
+
     def test_unfinished_and_known_retry_import_without_zero_filling(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
