@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from live_clients import select_model_metadata, result_checks, chat_terminal, endpoint_id, make_case_spec, run_case, main, http_failure_class
 from batch_plan import build_plan, fingerprint_materials
 from run_acceptance import CaseJournal, summarize
+from test_preparation_evidence import empty_preparation
 
 
 class LiveClientTests(unittest.TestCase):
@@ -56,16 +57,36 @@ class LiveClientTests(unittest.TestCase):
             self.assertIn("http_attempt_budget_exhausted", result["issues"])
             self.assertEqual(summarize(journal.events)["started_cases"], 1)
             self.assertFalse(result["safe_task_success"])
+            # A preparation rejection must not require an outbound HTTP error
+            # or a physical-attempt admission denial to be attributed locally.
+            state = json.loads((capture / "admission.json").read_text())
+            state["budget_rejections"] = 0
+            (capture / "admission.json").write_text(json.dumps(state))
+            (capture / "preparation.json").write_text(json.dumps({**empty_preparation(), "failures": [
+                {"request_sequence": 1, "phase": "prepare", "reason": "declaration_budget", "status_code": 413}]}))
+            second_root = root / "local-preparation"
+            second_root.mkdir()
+            second_journal = CaseJournal(second_root / "cases.jsonl", "run-preparation-budget")
+            with patch("live_clients.shutil.which", return_value=str(executable)), patch("live_clients.candidate_process", candidate), \
+                    patch("live_clients.fetch_model_metadata", return_value={}), patch("live_clients.prepare_isolated_client", return_value=prepared):
+                second = run_case(second_root, second_journal, executable, config, profile, "codex", "eager", "a" * 40, "ep_" + "b" * 32, 90)
+            self.assertEqual(second["failure_class"], "budget")
+            self.assertEqual(second["upstream_attempts"], 8)
+            self.assertEqual(second["usage"]["total_input_tokens"], 160)
+            self.assertIn("responses_tools_prepare_rejected", second["issues"])
 
     def test_http_failure_class_separates_budget_evidence_and_provider(self):
         state = {"budget_rejections": 0, "closed_rejections": 0, "failed_rejections": 0, "journal_failed": False}
         records = [{"http_status_code": 429}]
-        self.assertEqual(http_failure_class(state, records), "provider")
-        self.assertEqual(http_failure_class({**state, "budget_rejections": 1}, records), "budget")
+        self.assertEqual(http_failure_class(state, records, empty_preparation()), "provider")
+        self.assertEqual(http_failure_class({**state, "budget_rejections": 1}, records, empty_preparation()), "budget")
         for changed in ({"closed_rejections": 1}, {"failed_rejections": 1}, {"journal_failed": True}):
-            self.assertEqual(http_failure_class({**state, **changed}, records), "framework")
-        self.assertEqual(http_failure_class(None, records), "framework")
-        self.assertIsNone(http_failure_class(state, [{"http_status_code": 200}] * 8))
+            self.assertEqual(http_failure_class({**state, **changed}, records, empty_preparation()), "framework")
+        self.assertEqual(http_failure_class(None, records, empty_preparation()), "framework")
+        self.assertIsNone(http_failure_class(state, [{"http_status_code": 200}] * 8, empty_preparation()))
+        self.assertEqual(http_failure_class(state, [{"http_status_code": 200}], None), "framework")
+        preparation = {**empty_preparation(), "failures": [{"request_sequence": 1, "phase": "prepare", "reason": "declaration_budget", "status_code": 413}]}
+        self.assertEqual(http_failure_class(state, [{"http_status_code": 200}], preparation), "budget")
 
     def test_native_structured_response_needs_actual_terminal_and_exact_gold(self):
         result = {"client_output_profile": "opencode-http-session-v1", "protocol_terminal_verified": True,

@@ -24,6 +24,7 @@ from catalog_fixture import build_catalog, digest
 from batch_plan import build_plan, write_plan, fingerprint_materials, verify_materials, BatchBudget, audit_plan
 from client_adapters import VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
 from http_attempts import import_http_attempts, read_admission_diagnostics
+from preparation_evidence import read_preparation_diagnostics, preparation_failure_class
 from live_gateway import candidate_process, parse_credential_bindings, validate_profile
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
 from scripted_clients import client_result
@@ -104,12 +105,15 @@ def chat_terminal(body):
     return successful_terminal("openai-chat-v1", body)
 
 
-def http_failure_class(admission, attempts):
+def http_failure_class(admission, attempts, preparation):
     """Classify verified local denials before actual upstream HTTP error statuses."""
     if admission is None or admission["journal_failed"] or admission["closed_rejections"] or admission["failed_rejections"]:
         return "framework"
     if admission["budget_rejections"]:
         return "budget"
+    local = preparation_failure_class(preparation)
+    if local is not None:
+        return local
     if any(type(attempt.get("http_status_code")) is int and attempt["http_status_code"] >= 400 for attempt in attempts):
         return "provider"
     return None
@@ -142,6 +146,8 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
                                  for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py")
                                  + (("coding_tasks.py",) if task.coding_task is not None else ())},
                      "coding_task": task.coding_task,
+                     "isolation_version": 5,
+                     "preparation_diagnostic_version": 1,
                      "credential_selection": profile.get("auth_files", []),
                      "structured_output": structured_output,
                      "session_title_policy": ("not-applicable" if client == "codex" else "automatic") if opencode_title is None
@@ -163,6 +169,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     checks = dict.fromkeys(("answer", "dispatch", "nonce", "code", "format", "terminal"))
     boundaries = dict.fromkeys(("mcp_attempts", "dispatch", "forbidden_dispatch", "forbidden_effect", "active"))
     capture, prepared, process, admission, code_outcome = None, None, None, None, None
+    preparation = None
     issues, attempts = [], []
     failure, effective, declaration_bytes = "framework", False, []
     stage = "candidate_start"
@@ -260,11 +267,14 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             terminals = [successful_terminal(attempt["contract"], (capture / ("response-" + attempt["request_id"][8:] + ".body")).read_bytes()) for attempt in attempts]
             checks["terminal"] = bool(checks["terminal"] and terminals and all(terminals))
             admission = read_admission_diagnostics(capture, max_attempts=spec.limits["max_requests"], request_count=len(attempts))
-            local_failure = http_failure_class(admission, attempts)
+            preparation = read_preparation_diagnostics(capture)
+            local_failure = http_failure_class(admission, attempts, preparation)
             if local_failure is not None:
                 failure = local_failure
                 checks["answer"] = False
                 issues.append("http_admission_diagnostic_missing" if admission is None else
+                              "preparation_diagnostic_missing" if preparation is None else
+                              "responses_tools_prepare_rejected" if preparation["failures"] else
                               "http_attempt_budget_exhausted" if local_failure == "budget" else
                               "upstream_http_error" if local_failure == "provider" else "http_evidence_admission_failed")
         except (OSError, ValueError):
@@ -281,6 +291,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
               "effective_mode_observed": effective, "declaration_bytes": declaration_bytes, "usage": case["usage"],
               "failure_class": case["failure_class"], "gate_status": "unverified"}
     result["admission_diagnostics"] = admission
+    result["preparation_diagnostics"] = preparation
     if task.coding_task is not None:
         result["code_outcome"] = code_outcome
     write_private(case_root / "summary.json", json.dumps(result, indent=2))

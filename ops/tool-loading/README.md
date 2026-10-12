@@ -672,7 +672,8 @@ An explicit OAuth selection excludes configured API-key accounts for that
 executor. The original files are checked against their bound content after
 the candidate stops. Source configuration and credentials are never written
 by the snapshot store; credentials are not copied to disk or command arguments.
-Isolation readiness version 4 rejects older candidates lacking these rules.
+Isolation readiness version 5 includes the credential rules and requires
+trusted preparation diagnostics; older candidates cannot be used for a new run.
 
 `live_clients.py` supports native `codex`/`meta` via the explicit
 `openai-responses-v1` wire view. Namespace leaves, Lite historical
@@ -689,6 +690,25 @@ which does not make the task successful. Antigravity, Gemini CLI/plugin and AI S
 routes still need independent bootstrap, transport capture and wire gates;
 this runner does not guess that they use the ordinary Gemini HTTP executor.
 Offline bootstrap checks do not certify real Provider availability or quality.
+
+The isolated candidate seals `capture/preparation.json` separately from physical
+HTTP attempts and admission diagnostics. Only a typed `ToolCompatibilityError`
+returned at the local preparation boundary produces an entry, containing a
+request sequence, fixed reason, phase and status code. It never stores the error
+message, schemas, arguments or credential identifiers. The HTTP execution context
+preserves the optional observer even when a handler supplies a separate parent
+context. Buffered, streaming and token-count entry points share this observation.
+
+The reader requires sealed evidence with no active requests or recorder failure;
+missing evidence remains unknown and fails the new calibration. A known local
+declaration/attempt/shared-capacity rejection is classified as budget, other known
+preparation failures as protocol with their exact reason retained, and an unknown
+reason as framework. Upstream error text or JSON code cannot impersonate a typed
+preparation diagnostic. Early handler validation, route-guard errors and failures
+after preparation are outside this recorder's scope and retain their other evidence
+or unknown classification. Local rejections do not become synthetic HTTP attempts
+and do not erase previously incurred usage. Older runs cannot be retrospectively
+reclassified without the recorded boundary evidence.
 
 ```sh
 GOTOOLCHAIN=go1.26.4 go build -o "$task_validation/tool-loading-live-gateway" ./ops/tool-loading/live-gateway

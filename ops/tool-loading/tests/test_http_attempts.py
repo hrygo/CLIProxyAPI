@@ -20,6 +20,8 @@ def artifact(directory, name, body, complete=True):
 
 
 def evidence(directory, bodies=(None, b'{"usage":{"input_tokens":100,"output_tokens":5}}'), contract="openai-responses-v1"):
+    (directory / "preparation.json").write_text(json.dumps({"version": 1, "requests_seen": 1,
+        "active_requests": 0, "sealed": True, "failed": False, "failures": []}))
     events = []
     for number, body in enumerate(bodies, 1):
         request_id = f"request-{number:06d}"

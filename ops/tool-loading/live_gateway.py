@@ -59,7 +59,7 @@ def validate_ready(ready, pid, port, profile, config_hash):
     if (type(ready["version"]) is not int or ready["version"] != 1 or ready["scope"] != "isolated-live-candidate"
             or type(ready["pid"]) is not int or ready["pid"] != pid or ready["profile"] != profile
             or ready["source_config_sha256"] != config_hash
-            or type(ready["isolation_version"]) is not int or ready["isolation_version"] != 4 or ready["credential_refresh_disabled"] is not True
+            or type(ready["isolation_version"]) is not int or ready["isolation_version"] != 5 or ready["credential_refresh_disabled"] is not True
             or type(ready["selected_auth_count"]) is not int or ready["selected_auth_count"] < 1
             or not isinstance(ready["ready_nonce"], str) or not 1 <= len(ready["ready_nonce"]) <= 128
             or address.scheme != "http" or address.hostname != "127.0.0.1" or address.port != port
