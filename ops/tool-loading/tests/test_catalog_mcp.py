@@ -17,6 +17,30 @@ from catalog_fixture import CatalogFixture, create_server
 
 
 class MCPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stdio_dependent_confirmation_uses_receipt_and_rechecks_permission(self):
+        from catalog_fixture import confirmation_code
+        with tempfile.TemporaryDirectory() as temporary:
+            events, policy = Path(temporary) / "events.jsonl", Path(temporary) / "permissions.json"
+            policy.write_text(json.dumps({"generation": 1, "denied": ["fixture_mutation"]}))
+            parameters = StdioServerParameters(command=sys.executable, args=[
+                str(Path(__file__).resolve().parents[1] / "catalog_fixture.py"),
+                "--nonce", "actual-mcp-receipt", "--events", str(events), "--permissions", str(policy)])
+            async with stdio_client(parameters) as (read, write):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    self.assertIn("ledger_budget_confirm", {tool.name for tool in (await session.list_tools()).tools})
+                    early = await session.call_tool("ledger_budget_confirm", {"project": "alpha", "verification_code": "actual-mcp-receipt"})
+                    self.assertEqual(early.structuredContent["error"], "missing_lookup")
+                    receipt = await session.call_tool("ledger_budget_lookup", {"project": "alpha"})
+                    confirmed = await session.call_tool("ledger_budget_confirm", {"project": "alpha", "verification_code": receipt.structuredContent["verification_code"]})
+                    self.assertEqual(confirmed.structuredContent["confirmation_code"], confirmation_code("actual-mcp-receipt"))
+                    policy.write_text(json.dumps({"generation": 2, "denied": ["fixture_mutation", "ledger_budget_confirm"]}))
+                    revoked = await session.call_tool("ledger_budget_confirm", {"project": "alpha", "verification_code": "actual-mcp-receipt"})
+                    self.assertEqual(revoked.structuredContent["error"], "permission_denied")
+            records = [json.loads(line) for line in events.read_text().splitlines()]
+            self.assertEqual([event["tool"] for event in records if event["phase"] == "dispatch"], ["ledger_budget_lookup", "ledger_budget_confirm"])
+            self.assertEqual((records[-1]["effect_count"], records[-1]["active_count"]), (0, 0))
+
     async def test_stdio_initialize_list_validate_revoke_and_record(self):
         with tempfile.TemporaryDirectory() as temporary:
             events = Path(temporary) / "events.jsonl"

@@ -14,6 +14,36 @@ from run_acceptance import CaseJournal, summarize
 
 
 class LiveClientTests(unittest.TestCase):
+    def test_main_predeclares_all_three_scenarios_and_runs_matching_gold(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary, config, executable = (root / name for name in ("gateway", "config", "client"))
+            for path in (binary, config, executable): path.write_bytes(b"synthetic-file")
+            output, observed = root / "run", []
+            def task(root, journal, *args, specification, scenario, **kwargs):
+                from task_scenarios import get_scenario
+                self.assertEqual(specification.template_id, get_scenario(scenario).template_id)
+                observed.append((scenario, specification.mode))
+                journal.start_case(specification)
+                checks = {field: False for field in ("answer", "dispatch", "nonce", "code", "format", "terminal")}
+                counts = {field: 0 for field in ("mcp_attempts", "dispatch", "forbidden_dispatch", "forbidden_effect", "active")}
+                journal.finish_case(specification.case_id, checks=checks, boundary_counts=counts, elapsed_ms=1, failure_class="framework")
+                return {"safe_task_success": False, "upstream_attempts": 0, "issues": ["no_gateway_attempt_capture"], "boundary_counts": counts}
+            argv = ["live_clients.py", "--gateway-binary", str(binary), "--config", str(config), "--output-dir", str(output),
+                    "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
+                    "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "codex",
+                    "--scenarios", "lookup", "unavailable", "multitool"]
+            with patch("live_clients.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+                    patch("live_clients.run_case", side_effect=task), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
+                main()
+            self.assertEqual(set(observed), {(scenario, mode) for scenario in ("lookup", "unavailable", "multitool") for mode in ("eager", "lazy")})
+            plan = json.loads((output / "batch-plan.json").read_text())
+            self.assertEqual(len(plan["cases"]), 6)
+            audit = json.loads((output / "batch-audit.json").read_text())
+            self.assertEqual(audit["started_cases"], 6)
+            self.assertEqual(audit["safe_successes"], 0)
+            self.assertEqual(json.loads((output / "summary.json").read_text())["batch_stop_reason"], "complete")
+
     def test_client_preparation_keeps_executable_after_spec_extraction(self):
         from types import SimpleNamespace
         from unittest.mock import Mock

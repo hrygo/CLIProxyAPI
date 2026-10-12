@@ -17,7 +17,7 @@ class CatalogTests(unittest.TestCase):
         fixture.list_tools()
         event = next(event for event in fixture.events if event["phase"] == "catalog")
         self.assertTrue(event["ledger_allowed"])
-        self.assertEqual(event["exposed_count"], 66)
+        self.assertEqual(event["exposed_count"], 67)
         self.assertEqual(event["dispatch_count"], 0)
         fixture.set_denied({"fixture_mutation", "ledger_budget_lookup"})
         fixture.list_tools()
@@ -48,6 +48,29 @@ class CatalogTests(unittest.TestCase):
 
 
 class ExecutionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_confirmation_requires_successful_lookup_and_actual_receipt_before_dispatch(self):
+        from catalog_fixture import confirmation_code
+        fixture = CatalogFixture("fresh-receipt")
+        arguments = {"project": "alpha", "verification_code": "fresh-receipt"}
+        early = await fixture.call("ledger_budget_confirm", arguments)
+        self.assertEqual(early["value"]["error"], "missing_lookup")
+        self.assertEqual(fixture.dispatch_count, 0)
+        await fixture.call("ledger_budget_lookup", {"project": "alpha"})
+        wrong = await fixture.call("ledger_budget_confirm", {**arguments, "verification_code": "guessed"})
+        self.assertEqual(wrong["value"]["error"], "invalid_receipt")
+        self.assertEqual(fixture.dispatch_count, 1)
+        confirmed = await fixture.call("ledger_budget_confirm", arguments)
+        self.assertEqual(confirmed["value"]["confirmation_code"], confirmation_code("fresh-receipt"))
+        self.assertEqual((fixture.dispatch_count, fixture.active_count, fixture.effect_count), (2, 0, 0))
+
+    async def test_confirmation_cannot_use_denied_or_oversized_lookup(self):
+        for fixture in (CatalogFixture("n" * 300, max_result_bytes=256),
+                        CatalogFixture("fresh", denied={"ledger_budget_lookup", "fixture_mutation"})):
+            self.assertTrue((await fixture.call("ledger_budget_lookup", {"project": "alpha"}))["isError"])
+            confirmed = await fixture.call("ledger_budget_confirm", {"project": "alpha", "verification_code": fixture.nonce})
+            self.assertEqual(confirmed["value"]["error"], "missing_lookup")
+            self.assertEqual(fixture.active_count, 0)
+
     async def test_success_records_attempt_dispatch_completion_and_release(self):
         fixture = CatalogFixture("fresh-nonce")
         result = await fixture.call("ledger_budget_lookup", {"project": "alpha"})

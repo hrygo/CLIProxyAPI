@@ -28,6 +28,10 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+def confirmation_code(nonce: str) -> str:
+    return hashlib.sha256(("confirmed:" + nonce).encode()).hexdigest()
+
+
 def mcp_result(value: dict[str, Any], is_error: bool = False) -> dict[str, Any]:
     return {"isError": is_error, "structuredContent": value,
             "content": [{"type": "text", "text": json.dumps(value)}]}
@@ -61,6 +65,13 @@ def build_catalog() -> list[dict[str, Any]]:
             schema["required"].append("size")
         tools.append({"name": name, "description": description, "inputSchema": schema,
                       "annotations": {"readOnlyHint": name != "fixture_mutation", "destructiveHint": name == "fixture_mutation"}})
+    tools.append({"name": "ledger_budget_confirm",
+                  "description": "Confirm the alpha ledger budget after its lookup completed. Pass the actual verification_code returned by ledger_budget_lookup; returns a separate confirmation_code.",
+                  "inputSchema": {"type": "object", "properties": {
+                      "project": {"type": "string", "const": "alpha"},
+                      "verification_code": {"type": "string", "minLength": 1, "maxLength": 1024}},
+                      "required": ["project", "verification_code"], "additionalProperties": False},
+                  "annotations": {"readOnlyHint": True, "destructiveHint": False}})
     return tools
 
 
@@ -87,6 +98,7 @@ class CatalogFixture:
         self.policy_file, self.event_file = policy_file, event_file
         self.max_dispatches, self.max_result_bytes = max_dispatches, max_result_bytes
         self.dispatch_count = self.effect_count = self.active_count = self.attempt_count = 0
+        self.ledger_completed = False
         self.events: deque[dict[str, Any]] = deque(maxlen=256)
         self.event_sequence = 0
         self.started, self.wait_gate, self.released = asyncio.Event(), asyncio.Event(), asyncio.Event()
@@ -168,6 +180,11 @@ class CatalogFixture:
             return self._reject(name, "permission_denied")
         if not self.validators[name].is_valid(arguments):
             return self._reject(name, "invalid_arguments")
+        if name == "ledger_budget_confirm":
+            if not self.ledger_completed:
+                return self._reject(name, "missing_lookup")
+            if arguments["verification_code"] != self.nonce:
+                return self._reject(name, "invalid_receipt")
         if self.dispatch_count >= self.max_dispatches:
             return self._reject(name, "dispatch_budget")
         self.dispatch_count += 1
@@ -185,6 +202,8 @@ class CatalogFixture:
                 value["data"] = "x" * arguments["size"]
             elif name == "ledger_budget_lookup":
                 value.update(remaining_budget=424242, verification_code=self.nonce)
+            elif name == "ledger_budget_confirm":
+                value.update(confirmation_code=confirmation_code(self.nonce))
             elif name == "fixture_mutation":
                 self.effect_count += 1
                 value["effect_count"] = self.effect_count
@@ -192,6 +211,8 @@ class CatalogFixture:
                 value["collection"] = name
             if len(canonical_bytes(mcp_result(value))) > self.max_result_bytes:
                 return self._reject(name, "result_budget")
+            if name == "ledger_budget_lookup":
+                self.ledger_completed = True
             self._record("completed", name, result_sha256=digest(value))
             return {"isError": False, "value": value}
         except asyncio.CancelledError:

@@ -189,7 +189,7 @@ class AdapterTests(unittest.TestCase):
     def test_mode_observation_requires_expected_fixture_declarations_and_entry(self):
         with self.assertRaises(ValueError):
             inspect_tools("unknown-client", "lazy", [])
-        namespace = {"type": "namespace", "name": "mcp__fixture", "tools": [{}] * 66}
+        namespace = {"type": "namespace", "name": "mcp__fixture", "tools": [{}] * 67}
         search = {"type": "tool_search"}
         execute = {"type": "function", "function": {"name": "execute"}}
         self.assertTrue(inspect_tools("codex", "eager", [namespace])["mode_observed"])

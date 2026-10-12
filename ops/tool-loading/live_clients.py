@@ -26,9 +26,9 @@ from http_attempts import import_http_attempts
 from live_gateway import candidate_process
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
 from scripted_clients import client_result
+from task_scenarios import SCENARIOS, get_scenario, answer_matches, dispatch_matches, intermediate_receipt_replayed
 
-PROMPT = ('Read the remaining budget and verification code for project alpha from the fixture tools. '
-          'Return only a JSON object with remaining_budget and verification_code from the actual tool result.')
+PROMPT = get_scenario("lookup").prompt
 PERMISSIONS = {"client_denied": [], "service_denied": ["fixture_mutation"]}
 
 
@@ -66,7 +66,7 @@ def fetch_model_metadata(ready, model, client, mode):
         connection.close()
 
 
-def result_checks(client, raw, nonce):
+def result_checks(client, raw, nonce, *, scenario="lookup"):
     observed = client_result(client, raw)
     values = []
     plain_json = False
@@ -83,10 +83,8 @@ def result_checks(client, raw, nonce):
                 except ValueError:
                     pass
     answer = values[-1] if values and isinstance(values[-1], dict) else {}
-    exact = set(answer) == {"remaining_budget", "verification_code"}
-    matched = exact and type(answer.get("remaining_budget")) is int and answer["remaining_budget"] == 424242
-    receipt = exact and answer.get("verification_code") == nonce
-    return {"answer": bool(matched and receipt), "dispatch": None, "nonce": bool(receipt), "code": None,
+    matched, receipt, exact = answer_matches(scenario, answer, nonce)
+    return {"answer": matched, "dispatch": None, "nonce": receipt, "code": None,
             "format": bool(observed["parse_complete"] and plain_json and exact), "terminal": observed["legal_terminal"]}
 
 
@@ -114,8 +112,11 @@ def chat_terminal(body):
     return bool(reasons and all(isinstance(reason, str) and reason in {"stop", "tool_calls", "function_call"} for reason in reasons))
 
 
-def make_case_spec(config, profile, client, mode, revision, endpoint, seconds):
+def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *, scenario="lookup"):
+    task = get_scenario(scenario)
     pair = client + "-" + profile["client_model"]
+    if scenario != "lookup":
+        pair += "-" + scenario
     case_id = pair + "-" + mode
     executable = Path(shutil.which(client) or client).resolve()
     scope = dict(gateway_revision=revision, policy_generation=hashlib.sha256(config.read_bytes()).hexdigest(),
@@ -125,15 +126,15 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds):
                  upstream_format="openai", endpoint_id=endpoint, transport="http-sse", region_id="unknown",
                  catalog_hash=digest(build_catalog()), fixture_hash=hashlib.sha256(Path(__file__).with_name("catalog_fixture.py").read_bytes()).hexdigest(),
                  permission_hash=digest(PERMISSIONS))
-    return CaseSpec(case_id, pair, "ledger-json-lookup", mode, "unknown", scope, hashlib.sha256(PROMPT.encode()).hexdigest(),
-                    "live-calibration-1", {"max_requests": 8, "max_dispatches": 8, "task_seconds": seconds},
-                    {"requires_dispatch": True, "requires_nonce": True, "requires_code": False, "format_required": True})
+    return CaseSpec(case_id, pair, task.template_id, mode, "unknown", scope, hashlib.sha256(task.prompt.encode()).hexdigest(),
+                    "live-calibration-2", {"max_requests": 8, "max_dispatches": 8, "task_seconds": seconds}, task.gold)
 
 
 def run_case(root, journal, binary, config, profile, client, mode, revision, endpoint, seconds, *,
-             specification=None, locked_plan=None, material_paths=None):
+             specification=None, locked_plan=None, material_paths=None, scenario="lookup"):
+    task = get_scenario(scenario)
     started = time.monotonic()
-    spec = specification or make_case_spec(config, profile, client, mode, revision, endpoint, seconds)
+    spec = specification or make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario)
     case_id = spec.case_id
     journal.start_case(spec)
     case_root = root / case_id
@@ -149,7 +150,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             stage = "material_validation"
             verify_materials(locked_plan, material_paths)
             stage = "scope_validation"
-            if asdict(spec) != asdict(make_case_spec(config, profile, client, mode, revision, endpoint, seconds)):
+            if asdict(spec) != asdict(make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario)):
                 raise ValueError("actual task inputs differ from predeclared case")
         stage = "candidate_start"
         with candidate_process(binary, config, case_root, profile, max_attempts=spec.limits["max_requests"]) as (ready, capture):
@@ -162,20 +163,22 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             prepared = prepare_isolated_client(client, mode, {
                 "run_dir": case_root / "client", "client_version": VERSIONS[client], "executable": str(executable),
                 "fixture_python": sys.executable, "model": profile["client_model"], "model_metadata": metadata,
-                "base_url": ready["base_url"], "nonce": nonce, "max_dispatches": 8, "max_result_bytes": 65536}, PERMISSIONS)
+                "base_url": ready["base_url"], "nonce": nonce, "max_dispatches": spec.limits["max_dispatches"], "max_result_bytes": 65536}, PERMISSIONS)
             remaining = seconds - (time.monotonic() - started)
             if remaining <= 0:
                 raise ValueError("task budget exhausted before client launch")
             stage = "client_execution"
-            process = prepared.run_task({"prompt": PROMPT, "max_seconds": remaining, "max_output_bytes": 2 * 1024 * 1024})
-            checks = result_checks(client, Path(process["stdout_path"]).read_text(), nonce)
+            process = prepared.run_task({"prompt": task.prompt, "max_seconds": remaining, "max_output_bytes": 2 * 1024 * 1024})
+            checks = result_checks(client, Path(process["stdout_path"]).read_text(), nonce, scenario=scenario)
             events = prepared.collect_boundary_events()
             if events:
                 boundaries.update(mcp_attempts=sum(event["phase"] == "request" for event in events),
                     dispatch=sum(event["phase"] == "dispatch" for event in events),
                     forbidden_dispatch=sum(event["phase"] == "dispatch" and event["tool"] == "fixture_mutation" for event in events),
                     forbidden_effect=max(event["effect_count"] for event in events), active=events[-1]["active_count"])
-                checks["dispatch"] = any(event["phase"] == "dispatch" and event["tool"] == "ledger_budget_lookup" for event in events)
+                checks["dispatch"] = dispatch_matches(scenario, events)
+                if not task.requires_dispatch:
+                    checks["answer"] = bool(checks["answer"] and checks["dispatch"])
             failure = "model"
             if process["termination"] != "exited" or process["exit_code"] != 0:
                 checks["answer"] = False
@@ -192,6 +195,9 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
         try:
             attempts = import_http_attempts(journal, case_id, capture, expected_executor=profile["executor"])
             bodies = [json.loads((capture / (attempt["request_id"] + ".body")).read_bytes()) for attempt in attempts]
+            if scenario == "multitool" and prepared is not None and not intermediate_receipt_replayed(bodies, nonce):
+                checks["dispatch"] = False
+                issues.append("intermediate_receipt_not_replayed")
             declarations = [body.get("tools", []) for body in bodies if body.get("tools")]
             declaration_bytes = [len(json.dumps(tools, separators=(",", ":")).encode()) for tools in declarations]
             if declarations:
@@ -228,6 +234,7 @@ def main():
         parser.add_argument("--" + name, required=True)
     parser.add_argument("--clients", nargs="+", choices=list(VERSIONS), default=list(VERSIONS))
     parser.add_argument("--modes", nargs="+", choices=["eager", "lazy"], default=["eager", "lazy"])
+    parser.add_argument("--scenarios", nargs="+", choices=list(SCENARIOS), default=["lookup"])
     parser.add_argument("--task-seconds", type=int, default=90)
     parser.add_argument("--schedule-seed", default="calibration-order-1")
     parser.add_argument("--batch-max-requests", type=int)
@@ -235,8 +242,8 @@ def main():
     args = parser.parse_args()
     if not 10 <= args.task_seconds <= 300 or not args.executor.startswith("openai-compatible-"):
         parser.error("bounded Chat calibration only")
-    if len(set(args.clients)) != len(args.clients) or len(set(args.modes)) != len(args.modes):
-        parser.error("duplicate client or mode")
+    if any(len(set(values)) != len(values) for values in (args.clients, args.modes, args.scenarios)):
+        parser.error("duplicate client, mode, or scenario")
     paired = set(args.modes) == {"eager", "lazy"}
     if not paired and (args.batch_max_requests is not None or args.batch_max_dispatches is not None):
         parser.error("batch reservations require paired modes")
@@ -254,8 +261,8 @@ def main():
     locked_plan, material_paths, budget = None, None, None
     stop_reason = "interrupted" if paired else "diagnostic-only"
     try:
-        cases = [make_case_spec(args.config.resolve(), profile, client, mode, args.gateway_revision, endpoint, args.task_seconds)
-                 for client in args.clients for mode in args.modes]
+        cases = [make_case_spec(args.config.resolve(), profile, client, mode, args.gateway_revision, endpoint, args.task_seconds, scenario=scenario)
+                 for client in args.clients for scenario in args.scenarios for mode in args.modes]
         if paired:
             material_paths = {"gateway-binary": args.gateway_binary.resolve(), "source-config": args.config.resolve(),
                               "harness-python": Path(sys.executable).resolve()}
@@ -274,9 +281,10 @@ def main():
                 stop_reason = budget.stop_reason
                 break
             selected = CaseSpec(**declaration)
+            scenario = next(name for name, task in SCENARIOS.items() if task.template_id == selected.template_id)
             result = run_case(root, journal, args.gateway_binary.resolve(), args.config.resolve(), profile,
                               selected.scope["client"], selected.mode, args.gateway_revision, endpoint, args.task_seconds,
-                              specification=selected, locked_plan=locked_plan, material_paths=material_paths)
+                              specification=selected, locked_plan=locked_plan, material_paths=material_paths, scenario=scenario)
             results.append(result)
             print(json.dumps(result), flush=True)
             if budget is not None:

@@ -9,22 +9,23 @@ import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from catalog_fixture import canonical_bytes
+from catalog_fixture import build_catalog, canonical_bytes
 from client_adapters import VERSIONS, prepare_isolated_client, synthetic_codex_model, write_private
 
 
 def inspect_tools(client: str, mode: str, tools: list[dict]) -> dict:
     if client not in VERSIONS or mode not in {"eager", "lazy"}:
         raise ValueError("unknown probe client or mode")
+    expected = sum(tool["name"] != "fixture_mutation" for tool in build_catalog())
     if client == "codex":
         namespace = next((tool for tool in tools if tool.get("name") == "mcp__fixture"), {})
         fixture_count = len(namespace.get("tools", []))
         search = any(tool.get("type") == "tool_search" for tool in tools)
-        valid = fixture_count == 66 and not search if mode == "eager" else fixture_count == 0 and search
+        valid = fixture_count == expected and not search if mode == "eager" else fixture_count == 0 and search
     else:
         fixture_count = sum(tool.get("function", {}).get("name", "").startswith("fixture_") for tool in tools)
         search = any(tool.get("function", {}).get("name") == "execute" for tool in tools)
-        valid = fixture_count == 66 and not search if mode == "eager" else fixture_count == 0 and search and len(tools) == 1
+        valid = fixture_count == expected and not search if mode == "eager" else fixture_count == 0 and search and len(tools) == 1
     return {"fixture_declarations": fixture_count, "discovery_entry": search,
             "mode_observed": bool(valid), "tool_definition_bytes": len(canonical_bytes(tools))}
 

@@ -2,7 +2,8 @@
 
 This directory contains the scoped evidence schema and a synthetic MCP fixture.
 Version-pinned client adapters and a local first-request probe are available.
-Live scheduling, statistical certification and live evidence remain pending.
+Predeclared paired live scheduling and bounded Chat calibration are available;
+the final multi-route matrix and statistical certification remain pending.
 Offline case replay and request-level usage normalization are
 available below. Fixture tests do not certify
 Codex/OpenCode permission handling, model quality, or context savings.
@@ -252,8 +253,9 @@ enter the Go server or modify the system Python environment.
 
 ## Catalog and execution boundaries
 
-The registered catalog contains 67 synthetic tools: 64 inventory/ledger tools,
-one mutation-counter tool, one cancellable wait and one large-result tool.
+The registered catalog contains 68 synthetic tools: 64 inventory/ledger tools,
+one mutation-counter tool, one cancellable wait, one large-result tool, and a
+dependent ledger confirmation tool. Default service filtering exposes 67.
 `QUERY_GROUND_TRUTH` identifies expected tools for representative English and
 Chinese queries; it is a retrieval oracle, not a replacement search engine.
 The complete registered catalog has a stable hash independent of the nonce.
@@ -272,6 +274,35 @@ Default `fixture_mutation` permission is denied. Even when explicitly allowed,
 it changes only an in-memory counter; no production filesystem or service is
 modified. A successful ledger call returns the run's synthetic verification
 nonce. The acceptance runner must check that the client actually uses it.
+
+## Fixed live task scenarios
+
+`live_clients.py --scenarios lookup unavailable multitool` predeclares three
+templates per client in both modes. The default remains the lookup calibration.
+Each template has a distinct pair ID and prompt hash, with identical gold and
+limits within the eager/lazy pair. This expands the executable task set, not
+the set of certified Provider routes. The runner still accepts only explicitly
+identified Chat routes, and every gate remains `unverified`.
+
+`lookup` requires exactly one completed/released ledger dispatch and its fresh
+receipt in plain final JSON. `unavailable` asks for project omega, which no
+fixture schema admits; it requires a catalog observation, zero dispatches, and
+exact unavailable JSON. This is a no-supported-tool outcome, not proof that the
+client's search API returned an empty list. The model must not substitute alpha.
+
+`multitool` requires lookup completion followed by a separate confirmation
+execution using its actual receipt. The fixture rejects confirmation before a
+successful lookup or with a wrong receipt before dispatch. The final JSON must
+use both receipt values. Outbound history must first contain the lookup result
+without a confirmation result, then include confirmation in a later request.
+Two calls inside one Code Mode execution do not prove this multi-round case.
+Tool-result wrappers are decoded; user/system/assistant text and call arguments
+cannot supply the intermediate receipt evidence. Extra dispatches or missing
+completion/release events fail the task gold.
+
+An installed CLI's first-request probe derives its expected exposed tool count
+from the current catalog. Catalog changes invalidate previous scope fingerprints;
+do not pool earlier calibration runs into a final-version matrix.
 
 ## Launching an isolated fixture
 

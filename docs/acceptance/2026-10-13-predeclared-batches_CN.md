@@ -25,3 +25,17 @@
 完整不可变 scope 仍缺实际 model metadata 与已安装依赖内容、OAuth material、account/region 和缓存控制。当前 live CLI 仍只覆盖一个 lookup 模板和显式 Chat profile；三场景、全部路由、真实客户端负例、Coding 与聚类统计尚未完成。文件摘要检查也不构成任意运行时状态已经冻结的证明。
 
 未发布、未改默认配置、未重启原服务；后续固定候选在线结果应独立记录，不能用这 60 个合成槽位替代。
+
+## 固定候选在线复核
+
+随后用干净候选 `c6818d5e0aef1f1701aea7155477804e8be28218`，在 Codex CLI `0.160.0` / `qwen-ds41-flash` → `deepseek-v4.1-flash` / `openai-compatible-qwen` 路由完成 eager/lazy 配对。计划摘要 `9a3216fe4762c98710664f99aa5bd4513c4a1f89ae7239fd7fbec414f0fadb75`，实际顺序 eager→lazy，与事前计划一致。
+
+实测 2/2 严格通过、5 次上游请求、2 次 MCP dispatch、禁止执行/副作用 0、任务结束 active 0。两候选均退出 0，source config 摘要保持不变。计划绑定与 journal 校验通过；审计记录实际开始 2、未完成 0、未开始 0，预算 16/16 内实际请求 5、dispatch 2。region/cache scope 仍未知，整体 gate 仍 `unverified`。
+
+| 实测 Provider input（含 cache） | eager | lazy | 减少 |
+| --- | ---: | ---: | ---: |
+| 首次请求 | 53,770 | 12,263 | 77.19% |
+| 峰值请求 | 53,926 | 19,092 | 64.60% |
+| 全任务 | 107,696 | 50,271 | 53.32% |
+
+cache read 分别为 53,248 / 24,960 tokens；cache write 和账单成本未知。这是一对单工具模板，不给置信区间或可靠率认证，也不计为最终 60-case 矩阵。原始证据位于 `.omo/tool-loading-completion/t6-live-qwen-locked-batch/`，离线校验结果另存 `t6-live-qwen-locked-batch-validation.json`。
