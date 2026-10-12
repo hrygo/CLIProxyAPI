@@ -434,6 +434,7 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 		var param any
 		var streamUsage helps.StreamUsageBuffer
 		var seenDone bool
+		var seenResponsesTerminal bool
 		var streamFailed bool
 		var streamAborted bool
 		var upstreamEvent string
@@ -495,6 +496,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			streamLine := append([]byte("data: "), dataPayload...)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, opts.OriginalRequest, translated, streamLine, &param, claudeInputTokens)
 			for i := range chunks {
+				if responseFormat == sdktranslator.FormatOpenAIResponse && helps.HasResponsesTerminalEvent(chunks[i]) {
+					seenResponsesTerminal = true
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():
@@ -504,6 +508,9 @@ func (e *OpenAICompatExecutor) ExecuteStream(ctx context.Context, auth *cliproxy
 			}
 			if isDone {
 				seenDone = true
+				if responseFormat == sdktranslator.FormatOpenAIResponse && !seenResponsesTerminal {
+					publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream [DONE] arrived without a complete Responses terminal event"}, false)
+				}
 				return true
 			}
 			return false

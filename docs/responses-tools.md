@@ -309,6 +309,17 @@ argument delta and done events, `output_item.done`, and the terminal
 tracking key, so the existing `call_id` and `output_index` consistency checks
 keep comparing what the upstream actually sent.
 
+For Chat-to-Responses streaming, the OpenAI-compatible executor requires both
+the upstream `[DONE]` marker and a translated `response.completed` or
+`response.incomplete` event with the matching response status. `[DONE]` alone
+does not complete an unfinished tool call. If conversion cannot produce a
+legal terminal event, the executor reports a 502 stream error without
+synthesizing arguments or completion. An explicit source finish reason may
+still carry invalid model-generated arguments; the execution endpoint must
+validate those arguments before dispatch. A complete call item and a complete
+response are separate boundaries: a disconnect after an exposed call must not
+replay that call on another credential.
+
 Native WebSocket duplex connections repair every successor `response.create`,
 `response.append`, and `response.steer` frame, not only the first request: those
 frames never pass through the Manager. A frame that cannot be repaired is
