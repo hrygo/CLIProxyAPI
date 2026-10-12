@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from catalog_fixture import confirmation_code
-from task_scenarios import get_scenario, dispatch_matches, intermediate_receipt_replayed
+from task_scenarios import get_scenario, output_schema, dispatch_matches, intermediate_receipt_replayed
 from live_clients import make_case_spec, result_checks
 
 
@@ -16,6 +16,37 @@ def output(value):
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_output_schema_constrains_shape_without_leaking_golden_receipts(self):
+        from jsonschema import Draft202012Validator
+        for name in ("lookup", "unavailable", "multitool"):
+            schema = output_schema(name)
+            Draft202012Validator.check_schema(schema)
+            self.assertFalse(schema["additionalProperties"])
+            self.assertEqual(set(schema["required"]), set(schema["properties"]))
+            self.assertNotIn("424242", json.dumps(schema))
+            self.assertNotIn("confirmation_code", json.dumps(schema) if name != "multitool" else "")
+        schema = output_schema("lookup")
+        self.assertFalse(Draft202012Validator(schema).is_valid({"remaining_budget": True, "verification_code": "x"}))
+        schema["properties"]["remaining_budget"]["type"] = "string"
+        self.assertEqual(output_schema("lookup")["properties"]["remaining_budget"]["type"], "integer")
+
+    def test_structured_profile_has_distinct_scope_but_identical_prompt_and_gold(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config, executable = Path(temporary) / "config", Path(temporary) / "client"
+            config.write_bytes(b"fixture-config")
+            executable.write_bytes(b"fixture-client")
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture"}
+            with patch("live_clients.shutil.which", return_value=str(executable)):
+                default = make_case_spec(config, profile, "codex", "eager", "a" * 40, "ep_" + "b" * 32, 90)
+                eager, lazy = [make_case_spec(config, profile, "codex", mode, "a" * 40, "ep_" + "b" * 32, 90,
+                                              structured_output=True) for mode in ("eager", "lazy")]
+            self.assertEqual(default.gold, eager.gold)
+            self.assertEqual(default.prompt_hash, eager.prompt_hash)
+            self.assertNotEqual(default.scope["fixture_hash"], eager.scope["fixture_hash"])
+            self.assertNotEqual(default.pair_id, eager.pair_id)
+            self.assertEqual(eager.scope["fixture_hash"], lazy.scope["fixture_hash"])
+            self.assertEqual(eager.pair_id, lazy.pair_id)
+
     def test_title_policy_has_distinct_fixture_scope_without_changing_task_gold(self):
         with tempfile.TemporaryDirectory() as temporary:
             config, executable = Path(temporary) / "config", Path(temporary) / "client"

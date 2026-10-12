@@ -11,9 +11,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from catalog_fixture import build_catalog, canonical_bytes
 from client_adapters import VERSIONS, prepare_isolated_client, synthetic_codex_model, write_private, validate_session_title
+from task_scenarios import output_schema
 
 
-def inspect_tools(client: str, mode: str, tools: list[dict]) -> dict:
+def inspect_tools(client: str, mode: str, tools: list[dict], *, structured_output=False) -> dict:
     if client not in VERSIONS or mode not in {"eager", "lazy"}:
         raise ValueError("unknown probe client or mode")
     expected = sum(tool["name"] != "fixture_mutation" for tool in build_catalog())
@@ -25,12 +26,12 @@ def inspect_tools(client: str, mode: str, tools: list[dict]) -> dict:
     else:
         fixture_count = sum(tool.get("function", {}).get("name", "").startswith("fixture_") for tool in tools)
         search = any(tool.get("function", {}).get("name") == "execute" for tool in tools)
-        valid = fixture_count == expected and not search if mode == "eager" else fixture_count == 0 and search and len(tools) == 1
+        valid = fixture_count == expected and not search if mode == "eager" else fixture_count == 0 and search and len(tools) == 1 + int(structured_output)
     return {"fixture_declarations": fixture_count, "discovery_entry": search,
             "mode_observed": bool(valid), "tool_definition_bytes": len(canonical_bytes(tools))}
 
 
-def probe(root: Path, client: str, mode: str, process_seconds: float = 20, *, opencode_title=None) -> dict:
+def probe(root: Path, client: str, mode: str, process_seconds: float = 20, *, opencode_title=None, structured_output=False) -> dict:
     if opencode_title is not None:
         if client != "opencode":
             raise ValueError("explicit title requires an OpenCode probe")
@@ -65,6 +66,8 @@ def probe(root: Path, client: str, mode: str, process_seconds: float = 20, *, op
             "max_dispatches": 8, "max_result_bytes": 65536}
         if opencode_title is not None:
             client_inputs["session_title"] = opencode_title
+        if structured_output:
+            client_inputs["output_schema"] = output_schema("lookup")
         prepared = prepare_isolated_client(client, mode, client_inputs,
             {"client_denied": [], "service_denied": ["fixture_mutation"]})
         result = prepared.run_task({"prompt": "Use the fixture to read alpha remaining budget and verification code.",
@@ -75,8 +78,17 @@ def probe(root: Path, client: str, mode: str, process_seconds: float = 20, *, op
         thread.join()
     write_private(prepared.run_dir / "requests.json", json.dumps(requests))
     task_request = next((request["body"] for request in requests if "tools" in request["body"]), None)
-    observation = inspect_tools(client, mode, task_request["tools"]) if task_request else {
+    observation = inspect_tools(client, mode, task_request["tools"], structured_output=structured_output) if task_request else {
         "mode_observed": False, "fixture_declarations": None, "tool_definition_bytes": None}
+    if structured_output:
+        if client == "codex":
+            declared = (task_request or {}).get("text", {}).get("format", {})
+            output_observed = declared.get("type") == "json_schema" and declared.get("schema") == output_schema("lookup")
+        else:
+            declared = next((tool.get("function", {}) for tool in (task_request or {}).get("tools", [])
+                             if tool.get("function", {}).get("name") == "StructuredOutput"), {})
+            output_observed = declared.get("parameters") == output_schema("lookup") and (task_request or {}).get("tool_choice") == "required"
+        observation["output_constraint_observed"] = output_observed
     return {"client": client, "client_version": VERSIONS[client], "mode": mode,
             "requests_received": len(requests), "upstream_attempts_started": None,
             "requests_without_tools": sum("tools" not in request["body"] for request in requests),
@@ -89,6 +101,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--opencode-title")
+    parser.add_argument("--structured-output", action="store_true")
     args = parser.parse_args()
     if args.opencode_title is not None:
         try:
@@ -100,11 +113,12 @@ def main() -> None:
     results = []
     for client in VERSIONS:
         for mode in ("eager", "lazy"):
-            result = probe(root, client, mode, opencode_title=args.opencode_title if client == "opencode" else None)
+            result = probe(root, client, mode, opencode_title=args.opencode_title if client == "opencode" else None,
+                           structured_output=args.structured_output)
             results.append(result)
             print(json.dumps(result), flush=True)
     write_private(root / "summary.json", json.dumps({"gate_status": "unverified", "cases": results}, indent=2))
-    if not all(result["mode_observed"] for result in results):
+    if not all(result["mode_observed"] and (not args.structured_output or result.get("output_constraint_observed")) for result in results):
         raise SystemExit(1)
 
 

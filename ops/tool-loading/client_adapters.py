@@ -17,6 +17,9 @@ import subprocess
 import time
 from urllib.parse import urlsplit
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+
 from catalog_fixture import build_catalog, digest
 
 VERSIONS = {"codex": "0.160.0", "opencode": "1.19.0"}
@@ -27,6 +30,33 @@ def validate_session_title(value):
     if (not isinstance(value, str) or not value.strip() or len(value) > 128
             or any(ord(character) < 32 or ord(character) == 127 for character in value)):
         raise ValueError("invalid explicit session title")
+    return value
+
+
+def validate_output_schema(value):
+    try:
+        if (not isinstance(value, dict) or value.get("type") != "object"
+                or value.get("additionalProperties") is not False or not isinstance(value.get("properties"), dict)
+                or not isinstance(value.get("required"), list)
+                or any(not isinstance(key, str) for key in value["required"])
+                or len(set(value["required"])) != len(value["required"])
+                or set(value["required"]) != set(value["properties"])):
+            raise ValueError("a strict object output schema is required")
+        encoded = json.dumps(value, allow_nan=False).encode()
+        if len(encoded) > 16384:
+            raise ValueError("output schema exceeds the local budget")
+        stack = [value]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                if "$ref" in node or "$dynamicRef" in node:
+                    raise ValueError("output schemas must be self-contained")
+                stack.extend(node.values())
+            elif isinstance(node, list):
+                stack.extend(node)
+        Draft202012Validator.check_schema(value)
+    except (SchemaError, TypeError, RecursionError) as error:
+        raise ValueError("invalid output schema") from error
     return value
 
 
@@ -60,6 +90,8 @@ class PreparedClient:
     events_path: Path
     permission_hash: str
     catalog_hash: str
+    output_schema: dict | None = None
+    session_title: str | None = None
 
     def collect_boundary_events(self) -> list[dict]:
         if not self.events_path.exists():
@@ -75,6 +107,10 @@ class PreparedClient:
 
     def run_task(self, case_spec: dict, *, cancel_event=None) -> dict:
         """Run only the isolated process group; process exit is not task success."""
+        if self.client_id == "opencode" and self.output_schema is not None:
+            from opencode_server_adapter import run_server_task
+            return run_server_task(self, {**case_spec, "output_schema": self.output_schema,
+                                         "session_title": self.session_title}, cancel_event=cancel_event)
         seconds, limit = case_spec["max_seconds"], case_spec["max_output_bytes"]
         if (type(seconds) not in {int, float} or not 0 < seconds < float("inf")
                 or type(limit) is not int or limit < 1 or not isinstance(case_spec["prompt"], str)):
@@ -180,12 +216,14 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
         raise ValueError("unsupported client version")
     allowed = {"run_dir", "client_version", "executable", "model", "base_url", "fixture_python",
                "model_metadata", "nonce", "max_dispatches", "max_result_bytes"}
-    if set(catalog) - {"session_title"} != allowed:
+    if set(catalog) - {"session_title", "output_schema"} != allowed:
         raise ValueError("missing or unknown adapter configuration keys")
     if "session_title" in catalog:
         if client_id != "opencode":
             raise ValueError("explicit session title is supported only by OpenCode")
         validate_session_title(catalog["session_title"])
+    if "output_schema" in catalog:
+        validate_output_schema(catalog["output_schema"])
     url = urlsplit(catalog["base_url"])
     if (url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}
             or url.username or url.password or url.query or url.fragment or url.path.rstrip("/") != "/v1"):
@@ -260,6 +298,10 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
         write_private(config_path, "\n".join(overrides) + "\n")
         command += ["exec", "--strict-config", "--ignore-user-config", "--ignore-rules", "--skip-git-repo-check",
                     "--ephemeral", "--json", "--color", "never", "-s", "read-only", "-C", str(workspace), "-m", catalog["model"]]
+        if "output_schema" in catalog:
+            schema_path = root / "output-schema.json"
+            write_private(schema_path, json.dumps(catalog["output_schema"], allow_nan=False))
+            command += ["--output-schema", str(schema_path)]
         for override in overrides:
             command += ["-c", override]
         expected_mode = "tool-search" if mode == "lazy" else "direct"
@@ -276,6 +318,8 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
                     "OPENCODE_DISABLE_EXTERNAL_SKILLS": "true", "OPENCODE_DISABLE_CLAUDE_CODE": "true",
                     "OPENCODE_EXPERIMENTAL_CODE_MODE": "true" if mode == "lazy" else "false"})
         rules = {"*": "deny", "fixture_*": "allow", "execute": "allow"}
+        if "output_schema" in catalog:
+            rules["StructuredOutput"] = "allow"
         rules.update({"fixture_" + name: "deny" for name in normalized_permissions["client_denied"]})
         config = {"model": "acceptance/" + catalog["model"], "autoupdate": False, "plugin": [],
                   "provider": {"acceptance": {"npm": "@ai-sdk/openai-compatible",
@@ -287,5 +331,7 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
         if "session_title" in catalog:
             command += ["--title", catalog["session_title"]]
         expected_mode = "code-mode" if mode == "lazy" else "direct"
+    permission_material = {"denials": normalized_permissions, "native_structured_output": True} if "output_schema" in catalog else normalized_permissions
     return PreparedClient(client_id, VERSIONS[client_id], expected_mode, command, env, root,
-                          config_path, catalog_path, events, digest(normalized_permissions), digest(build_catalog()))
+                          config_path, catalog_path, events, digest(permission_material), digest(build_catalog()),
+                          deepcopy(catalog.get("output_schema")), catalog.get("session_title"))

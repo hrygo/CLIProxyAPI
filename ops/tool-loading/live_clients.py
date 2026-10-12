@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -26,7 +27,8 @@ from http_attempts import import_http_attempts
 from live_gateway import candidate_process
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
 from scripted_clients import client_result
-from task_scenarios import SCENARIOS, get_scenario, answer_matches, dispatch_matches, intermediate_receipt_replayed
+from task_scenarios import SCENARIOS, get_scenario, output_schema, answer_matches, dispatch_matches, intermediate_receipt_replayed
+from jsonschema import Draft202012Validator
 
 PROMPT = get_scenario("lookup").prompt
 PERMISSIONS = {"client_denied": [], "service_denied": ["fixture_mutation"]}
@@ -66,7 +68,16 @@ def fetch_model_metadata(ready, model, client, mode):
         connection.close()
 
 
-def result_checks(client, raw, nonce, *, scenario="lookup"):
+def result_checks(client, raw, nonce, *, scenario="lookup", native_result=None):
+    if native_result is not None:
+        legal = (client == "opencode" and native_result.get("client_output_profile") == "opencode-http-session-v1"
+                 and native_result.get("protocol_terminal_verified") is True
+                 and native_result.get("protocol_terminal_status") == "completed")
+        value = native_result.get("structured_output")
+        valid = isinstance(value, dict) and Draft202012Validator(output_schema(scenario)).is_valid(value)
+        matched, receipt, exact = answer_matches(scenario, value, nonce)
+        return {"answer": bool(legal and matched), "dispatch": None, "nonce": receipt, "code": None,
+                "format": bool(legal and valid and exact), "terminal": legal}
     observed = client_result(client, raw)
     values = []
     plain_json = False
@@ -112,8 +123,10 @@ def chat_terminal(body):
     return bool(reasons and all(isinstance(reason, str) and reason in {"stop", "tool_calls", "function_call"} for reason in reasons))
 
 
-def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *, scenario="lookup", opencode_title=None):
+def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *, scenario="lookup", opencode_title=None, structured_output=False):
     task = get_scenario(scenario)
+    if type(structured_output) is not bool:
+        raise ValueError("structured output profile must be explicit boolean")
     if opencode_title is not None:
         if client != "opencode":
             raise ValueError("explicit session title is supported only by OpenCode")
@@ -121,6 +134,8 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
     pair = client + "-" + profile["client_model"]
     if scenario != "lookup":
         pair += "-" + scenario
+    if structured_output:
+        pair += "-native-json-schema"
     if opencode_title is not None:
         pair += "-fixed-title-" + hashlib.sha256(opencode_title.encode()).hexdigest()[:16]
     case_id = pair + "-" + mode
@@ -132,19 +147,20 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
                  upstream_format="openai", endpoint_id=endpoint, transport="http-sse", region_id="unknown",
                  catalog_hash=digest(build_catalog()), fixture_hash=digest({
                      "sources": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                                 for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py")},
+                                 for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py")},
+                     "structured_output": structured_output,
                      "session_title_policy": ("not-applicable" if client == "codex" else "automatic") if opencode_title is None
                                              else hashlib.sha256(opencode_title.encode()).hexdigest()}),
-                 permission_hash=digest(PERMISSIONS))
+                 permission_hash=digest({"denials": PERMISSIONS, "native_structured_output": True} if structured_output else PERMISSIONS))
     return CaseSpec(case_id, pair, task.template_id, mode, "unknown", scope, hashlib.sha256(task.prompt.encode()).hexdigest(),
                     "live-calibration-2", {"max_requests": 8, "max_dispatches": 8, "task_seconds": seconds}, task.gold)
 
 
 def run_case(root, journal, binary, config, profile, client, mode, revision, endpoint, seconds, *,
-             specification=None, locked_plan=None, material_paths=None, scenario="lookup", opencode_title=None):
+             specification=None, locked_plan=None, material_paths=None, scenario="lookup", opencode_title=None, structured_output=False):
     task = get_scenario(scenario)
     started = time.monotonic()
-    spec = specification or make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario, opencode_title=opencode_title)
+    spec = specification or make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario, opencode_title=opencode_title, structured_output=structured_output)
     case_id = spec.case_id
     journal.start_case(spec)
     case_root = root / case_id
@@ -160,7 +176,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             stage = "material_validation"
             verify_materials(locked_plan, material_paths)
             stage = "scope_validation"
-            if asdict(spec) != asdict(make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario, opencode_title=opencode_title)):
+            if asdict(spec) != asdict(make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario, opencode_title=opencode_title, structured_output=structured_output)):
                 raise ValueError("actual task inputs differ from predeclared case")
         stage = "candidate_start"
         with candidate_process(binary, config, case_root, profile, max_attempts=spec.limits["max_requests"]) as (ready, capture):
@@ -176,13 +192,16 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                 "base_url": ready["base_url"], "nonce": nonce, "max_dispatches": spec.limits["max_dispatches"], "max_result_bytes": 65536}
             if opencode_title is not None:
                 client_inputs["session_title"] = opencode_title
+            if structured_output:
+                client_inputs["output_schema"] = output_schema(scenario)
             prepared = prepare_isolated_client(client, mode, client_inputs, PERMISSIONS)
             remaining = seconds - (time.monotonic() - started)
             if remaining <= 0:
                 raise ValueError("task budget exhausted before client launch")
             stage = "client_execution"
             process = prepared.run_task({"prompt": task.prompt, "max_seconds": remaining, "max_output_bytes": 2 * 1024 * 1024})
-            checks = result_checks(client, Path(process["stdout_path"]).read_text(), nonce, scenario=scenario)
+            checks = result_checks(client, Path(process["stdout_path"]).read_text(), nonce, scenario=scenario,
+                                   native_result=process if structured_output and client == "opencode" else None)
             events = prepared.collect_boundary_events()
             if events:
                 boundaries.update(mcp_attempts=sum(event["phase"] == "request" for event in events),
@@ -193,7 +212,12 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                 if not task.requires_dispatch:
                     checks["answer"] = bool(checks["answer"] and checks["dispatch"])
             failure = "model"
-            if process["termination"] != "exited" or process["exit_code"] != 0:
+            process_ok = process["termination"] == "exited" and process["exit_code"] == 0
+            if structured_output and client == "opencode":
+                process_ok = (process["termination"] == "exited" and process["exit_code"] in (0, -signal.SIGTERM)
+                              and process.get("protocol_terminal_verified") is True
+                              and not process.get("forced_process_cleanup", True))
+            if not process_ok:
                 checks["answer"] = False
                 failure = "budget" if process["termination"] in {"process_budget", "output_budget"} else "framework"
             stage = "candidate_cleanup"
@@ -253,6 +277,7 @@ def main():
     parser.add_argument("--batch-max-requests", type=int)
     parser.add_argument("--batch-max-dispatches", type=int)
     parser.add_argument("--opencode-title", help="explicit task title; automatic-title profile remains the default")
+    parser.add_argument("--structured-output", action="store_true", help="opt-in native JSON-schema output; default profiles remain unchanged")
     args = parser.parse_args()
     if not 10 <= args.task_seconds <= 300 or not args.executor.startswith("openai-compatible-"):
         parser.error("bounded Chat calibration only")
@@ -283,7 +308,7 @@ def main():
     stop_reason = "interrupted" if paired else "diagnostic-only"
     try:
         cases = [make_case_spec(args.config.resolve(), profile, client, mode, args.gateway_revision, endpoint, args.task_seconds,
-                    scenario=scenario, opencode_title=args.opencode_title if client == "opencode" else None)
+                    scenario=scenario, opencode_title=args.opencode_title if client == "opencode" else None, structured_output=args.structured_output)
                  for client in args.clients for scenario in args.scenarios for mode in args.modes]
         if paired:
             material_paths = {"gateway-binary": args.gateway_binary.resolve(), "source-config": args.config.resolve(),
@@ -307,7 +332,8 @@ def main():
             result = run_case(root, journal, args.gateway_binary.resolve(), args.config.resolve(), profile,
                               selected.scope["client"], selected.mode, args.gateway_revision, endpoint, args.task_seconds,
                               specification=selected, locked_plan=locked_plan, material_paths=material_paths, scenario=scenario,
-                              opencode_title=args.opencode_title if selected.scope["client"] == "opencode" else None)
+                              opencode_title=args.opencode_title if selected.scope["client"] == "opencode" else None,
+                              structured_output=args.structured_output)
             results.append(result)
             print(json.dumps(result), flush=True)
             if budget is not None:

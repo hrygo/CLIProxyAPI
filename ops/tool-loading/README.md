@@ -50,6 +50,33 @@ calculation, and does not certify latency, cache effectiveness or billing.
 
 ## Native client isolation and first-request probe
 
+Both clients support an explicit `--structured-output` acceptance profile.
+The gold and prompt are unchanged. Codex receives a private `--output-schema`
+file; OpenCode uses its native HTTP session `format.json_schema` and
+`StructuredOutput` tool. The schema specifies shape, never the positive task's
+budget or fresh receipts. The opt-in policy, permission addition and adapter
+sources enter the locked fixture scope and pair ID. Default CLI profiles remain
+unchanged and must not be pooled with the structured profile.
+
+OpenCode creates a fresh isolated session and sends exactly one synchronous
+prompt request on a bounded background thread, preserving the actual request
+and response. Success requires that response's matching session/assistant,
+parent ID, completed message time, legal finish, idle session, valid structured
+document and exactly one completed `StructuredOutput` call with identical input.
+Shutdown must release the reader thread; forced process cleanup prevents success.
+The normal server shutdown exit (-SIGTERM) is separate from session completion
+and does not certify interruption. Actual MCP dispatch/receipt/gold and all
+upstream terminals are still checked independently.
+
+On the tested OpenCode 1.19.0 build, an asynchronous structured prompt followed
+by reading all messages returns HTTP 400 while encoding the user's output-format
+object. This client history-API gap is retained in the acceptance report; the
+synchronous prompt endpoint returns the actual assistant response without that
+history read. Neither usage nor answer text is synthesized. Native Codex and
+OpenCode first-request constraints can be checked with
+`probe_clients.py --structured-output --opencode-title "Tool loading acceptance"`;
+this local probe intentionally returns HTTP 400 and does not certify execution.
+
 `client_adapters.py` supports exactly Codex CLI `0.160.0` and OpenCode `1.19.0`.
 It checks the installed version before creating artifacts, rejects unknown
 adapter keys/modes and non-loopback endpoints, and never inherits credentials

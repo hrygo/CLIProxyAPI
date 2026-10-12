@@ -16,6 +16,40 @@ from probe_clients import inspect_tools
 
 
 class AdapterTests(unittest.TestCase):
+    def test_native_output_schema_is_explicit_and_default_is_unchanged(self):
+        schema = {"type": "object", "properties": {"receipt": {"type": "string"}},
+                  "required": ["receipt"], "additionalProperties": False}
+        for client in ("codex", "opencode"):
+            with self.subTest(client=client), tempfile.TemporaryDirectory() as temporary:
+                catalog = self.catalog(temporary, client)
+                catalog["output_schema"] = schema
+                prepared = self.prepare(client, "lazy", catalog)
+                self.assertEqual(prepared.output_schema, schema)
+                if client == "codex":
+                    path = Path(prepared.command[prepared.command.index("--output-schema") + 1])
+                    self.assertEqual(json.loads(path.read_text()), schema)
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                else:
+                    self.assertEqual(json.loads(prepared.config_path.read_text())["permission"]["StructuredOutput"], "allow")
+                schema_before = deepcopy(prepared.output_schema)
+                catalog["output_schema"]["properties"]["receipt"]["description"] = "changed caller object"
+                self.assertEqual(prepared.output_schema, schema_before)
+        with tempfile.TemporaryDirectory() as temporary:
+            prepared = self.prepare("codex", "eager", self.catalog(temporary))
+            self.assertNotIn("--output-schema", prepared.command)
+            self.assertIsNone(prepared.output_schema)
+
+    def test_invalid_output_schema_is_rejected_before_artifacts(self):
+        for schema in (None, True, {"type": "invalid"}, {"type": "object"},
+                       {"type": "object", "properties": {"r": {"$ref": "https://fixture.invalid/schema"}},
+                        "required": ["r"], "additionalProperties": False}):
+            with self.subTest(schema=schema), tempfile.TemporaryDirectory() as temporary:
+                catalog = self.catalog(temporary)
+                catalog["output_schema"] = schema
+                with self.assertRaises(ValueError):
+                    self.prepare("codex", "lazy", catalog)
+                self.assertFalse(catalog["run_dir"].exists())
+
     def test_explicit_session_title_is_opencode_only_and_does_not_change_default(self):
         with tempfile.TemporaryDirectory() as temporary:
             default = self.prepare("opencode", "eager", self.catalog(temporary, "opencode"))

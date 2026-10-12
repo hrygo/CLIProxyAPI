@@ -43,6 +43,20 @@ def get_scenario(name):
     return SCENARIOS[name]
 
 
+def output_schema(name):
+    """Declare answer shape without supplying the tool-derived gold values."""
+    get_scenario(name)
+    if name == "unavailable":
+        properties = {"status": {"type": "string", "enum": ["unavailable"]},
+                      "project": {"type": "string", "enum": ["omega"]}}
+    else:
+        properties = {"remaining_budget": {"type": "integer"},
+                      "verification_code": {"type": "string", "minLength": 1}}
+        if name == "multitool":
+            properties["confirmation_code"] = {"type": "string", "minLength": 1}
+    return {"type": "object", "properties": properties, "required": list(properties), "additionalProperties": False}
+
+
 def answer_matches(name, answer, nonce):
     get_scenario(name)
     if not isinstance(answer, dict):
