@@ -10,7 +10,22 @@ from typing import Any
 
 TOKEN_FIELDS = ("input_total", "input_uncached", "cache_read", "cache_write",
                 "output_total", "reasoning_output", "tool_prompt_tokens")
-CONTRACTS = ("openai-responses-v1", "openai-chat-v1", "anthropic-messages-v1", "gemini-generate-v1", "antigravity-generate-v1")
+AUXILIARY_CONTRACT = "antigravity-auxiliary-v1"
+AUXILIARY_OPERATIONS = {"credits_query", "oauth_refresh", "project_discovery", "http_request"}
+CONTRACTS = ("openai-responses-v1", "openai-chat-v1", "anthropic-messages-v1", "gemini-generate-v1", "antigravity-generate-v1", AUXILIARY_CONTRACT)
+
+
+def request_role(request: dict[str, Any]) -> str:
+    """Accept only explicit ancillary contracts; untrusted labels cannot hide input."""
+    if request.get("contract") == AUXILIARY_CONTRACT:
+        if (request.get("role") != "auxiliary" or not isinstance(request.get("operation"), str)
+                or request["operation"] not in AUXILIARY_OPERATIONS
+                or request.get("raw_usage") is not None):
+            raise ValueError("invalid auxiliary request identity or usage")
+        return "auxiliary"
+    if "role" in request or "operation" in request:
+        raise ValueError("model requests cannot claim auxiliary metadata")
+    return "inference"
 
 
 def normalize_usage(provider: str, raw_usage: Any) -> dict[str, Any]:
@@ -47,7 +62,11 @@ def normalize_usage(provider: str, raw_usage: Any) -> dict[str, Any]:
     semantics = "unknown"
     ttl = None
     total = None
-    if provider in ("openai-responses-v1", "openai-chat-v1"):
+    if provider == AUXILIARY_CONTRACT:
+        if raw_usage is not None:
+            raise ValueError("auxiliary traffic has no model usage contract")
+        semantics = "not-model-input"
+    elif provider in ("openai-responses-v1", "openai-chat-v1"):
         semantics = "inclusive"
         is_chat = provider == "openai-chat-v1"
         assign("input_total", "prompt_tokens" if is_chat else "input_tokens")
@@ -114,6 +133,7 @@ def aggregate_usage(requests: list[dict[str, Any]]) -> dict[str, Any]:
     """
     seen = set()
     values = []
+    model_values = []
     for request in requests:
         request_id = request.get("request_id")
         if not isinstance(request_id, str) or not request_id or request_id in seen:
@@ -121,15 +141,24 @@ def aggregate_usage(requests: list[dict[str, Any]]) -> dict[str, Any]:
         if request.get("usage_kind") != "request-total":
             raise ValueError("usage must be consolidated to one request-total per attempt")
         seen.add(request_id)
-        values.append(normalize_usage(request.get("contract"), request.get("raw_usage")))
+        role = request_role(request)
+        value = normalize_usage(request.get("contract"), request.get("raw_usage"))
+        values.append(value)
+        if role == "auxiliary":
+            value.update(role=role, operation=request["operation"])
+        else:
+            model_values.append(value)
 
     def complete_sum(field: str) -> int | None:
-        counts = [value["tokens"][field] if not value["issues"] else None for value in values]
+        counts = [value["tokens"][field] if not value["issues"] else None for value in model_values]
         return sum(counts) if counts and all(count is not None for count in counts) else None
 
-    inputs = [value["tokens"]["input_total"] if not value["issues"] else None for value in values]
+    inputs = [value["tokens"]["input_total"] if not value["issues"] else None for value in model_values]
     known = [count for count in inputs if count is not None]
-    return {"request_count": len(values), "first_input_tokens": inputs[0] if inputs else None,
+    auxiliary_count = len(values) - len(model_values)
+    return {"request_count": len(values), "model_request_count": len(model_values),
+            "auxiliary_request_count": auxiliary_count, "unknown_auxiliary_cost_requests": auxiliary_count,
+            "first_input_tokens": inputs[0] if inputs else None,
             "peak_input_tokens": max(known) if known and len(known) == len(inputs) else None,
             "total_input_tokens": complete_sum("input_total"), "known_total_input_tokens": sum(known) if known else None,
             "unknown_input_requests": len(inputs) - len(known), "total_output_tokens": complete_sum("output_total"),

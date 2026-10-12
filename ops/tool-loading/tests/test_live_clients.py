@@ -15,6 +15,59 @@ from test_preparation_evidence import empty_preparation
 
 
 class LiveClientTests(unittest.TestCase):
+    def test_auxiliary_capture_is_budgeted_without_becoming_model_terminal_or_schema(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from test_auxiliary_accounting import AuxiliaryAccountingTests
+        from test_http_attempts import artifact
+        from test_acceptance import CHECKS
+        from catalog_fixture import digest, build_catalog
+        from live_clients import PERMISSIONS
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable, config, stdout = (root / name for name in ("client", "config", "stdout"))
+            executable.write_bytes(b"synthetic-client")
+            config.write_bytes(b"synthetic-config")
+            stdout.write_text("{}\n")
+            capture = root / "capture"
+            capture.mkdir()
+            AuxiliaryAccountingTests().write_http(capture)
+            events = [json.loads(line) for line in (capture / "attempts.jsonl").read_text().splitlines()]
+            request = {"request": {"tools": [{"functionDeclarations": [{"name": f"fixture_{i}"} for i in range(64)]}]}}
+            events[2]["request"] = artifact(capture, "request-000002.body", json.dumps(request).encode())
+            response = {"response": {"responseId": "fixture-response", "candidates": [{"index": 0, "finishReason": "STOP",
+                "content": {"parts": [{"text": "unavailable"}]}}], "usageMetadata": {"promptTokenCount": 20,
+                "candidatesTokenCount": 3, "thoughtsTokenCount": 2, "totalTokenCount": 25}}}
+            body = json.dumps(response).encode()
+            events[3].update(response=artifact(capture, "response-000002.body", body), observed_bytes=len(body))
+            (capture / "attempts.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+            (capture / "preparation.json").write_text(json.dumps(empty_preparation()))
+            (capture / "auxiliary-work.json").write_text(json.dumps({"version": 1, "started": 1,
+                "completed": 1, "rejected": 0, "active": 0, "sealed": True}))
+            (capture / "admission.json").write_text(json.dumps({"version": 1, "max_attempts": 8,
+                "reserved_attempts": 2, "budget_rejections": 0, "closed_rejections": 0, "failed_rejections": 0,
+                "active_bodies": 0, "journal_closed": True, "journal_failed": False}))
+            @contextmanager
+            def candidate(*args, **kwargs):
+                yield {"base_url": "http://127.0.0.1:1"}, capture
+            prepared = SimpleNamespace(permission_hash=digest(PERMISSIONS), catalog_hash=digest(build_catalog()),
+                run_task=Mock(return_value={"stdout_path": str(stdout), "termination": "exited", "exit_code": 0}),
+                collect_boundary_events=Mock(return_value=[{"phase": "catalog", "active_count": 0, "effect_count": 0}]))
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "antigravity", "contract": "antigravity-generate-v1"}
+            journal = CaseJournal(root / "cases.jsonl", "synthetic-auxiliary-model")
+            with patch("live_clients.shutil.which", return_value=str(executable)), patch("live_clients.candidate_process", candidate), \
+                    patch("live_clients.fetch_model_metadata", return_value={}), patch("live_clients.prepare_isolated_client", return_value=prepared), \
+                    patch("live_clients.result_checks", return_value=dict(CHECKS)):
+                result = run_case(root, journal, executable, config, profile, "codex", "eager", "a" * 40,
+                                  "ep_" + "b" * 32, 90, scenario="unavailable")
+            self.assertEqual(result["issues"], [])
+            self.assertTrue(result["safe_task_success"])
+            self.assertEqual(result["upstream_attempts"], 2)
+            self.assertEqual(result["usage"]["model_request_count"], 1)
+            self.assertEqual(result["usage"]["auxiliary_request_count"], 1)
+            self.assertEqual(result["usage"]["total_input_tokens"], 20)
+            self.assertEqual(len(result["declaration_bytes"]), 1)
+
     def test_run_case_records_local_denials_without_adding_http_attempts(self):
         from types import SimpleNamespace
         from unittest.mock import Mock

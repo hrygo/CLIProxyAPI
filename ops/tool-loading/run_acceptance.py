@@ -13,7 +13,7 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-from normalize_usage import CONTRACTS, aggregate_usage
+from normalize_usage import CONTRACTS, aggregate_usage, request_role
 
 IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+/@()-]{0,159}$")
 HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -66,6 +66,7 @@ def _safe_request(request: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(request, dict) or not _identifier(request.get("request_id")) or request.get("usage_kind") != "request-total":
         raise ValueError("request attempts need an ID and consolidated request-total usage")
     contract = request.get("contract")
+    role = request_role(request)
     contract = contract if contract in CONTRACTS else "unknown"
     paths = {
         "openai-responses-v1": ("input_tokens", "output_tokens", "total_tokens", "input_tokens_details.cached_tokens", "input_tokens_details.cache_write_tokens", "output_tokens_details.reasoning_tokens"),
@@ -74,6 +75,11 @@ def _safe_request(request: dict[str, Any]) -> dict[str, Any]:
         "gemini-generate-v1": ("promptTokenCount", "cachedContentTokenCount", "candidatesTokenCount", "thoughtsTokenCount", "totalTokenCount", "toolUsePromptTokenCount"),
     }
     raw = request.get("raw_usage")
+    paths["antigravity-generate-v1"] = paths["gemini-generate-v1"]
+    if role == "auxiliary":
+        return {"request_id": request["request_id"], "contract": contract,
+                "usage_kind": "request-total", "raw_usage": None,
+                "role": role, "operation": request["operation"]}
     safe = None
     if isinstance(raw, dict) and contract in CONTRACTS:
         safe = {}
@@ -163,7 +169,8 @@ def _replay(events: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
                         raise ValueError("request start is duplicated or already has usage")
                     case["requests"].append(deepcopy(request))
                 else:
-                    if previous is None or request["request_id"] in case["settled"] or previous["contract"] != request["contract"]:
+                    if (previous is None or request["request_id"] in case["settled"]
+                            or any(previous.get(key) != request.get(key) for key in ("contract", "role", "operation"))):
                         raise ValueError("request finish needs a matching unfinished start")
                     previous.update(deepcopy(request))
                     case["settled"].add(request["request_id"])
@@ -205,9 +212,12 @@ class CaseJournal:
     def record_request(self, case_id: str, request: dict[str, Any]) -> None:
         self._append("request_finished", case_id, request=_safe_request(request))
 
-    def start_request(self, case_id: str, request_id: str, contract: str) -> None:
-        self._append("request_started", case_id, request=_safe_request({
-            "request_id": request_id, "contract": contract, "usage_kind": "request-total", "raw_usage": None}))
+    def start_request(self, case_id: str, request_id: str, contract: str, *, role: str | None = None,
+                      operation: str | None = None) -> None:
+        request = {"request_id": request_id, "contract": contract, "usage_kind": "request-total", "raw_usage": None}
+        if role is not None or operation is not None:
+            request.update(role=role, operation=operation)
+        self._append("request_started", case_id, request=_safe_request(request))
 
     def finish_case(self, case_id: str, *, checks: dict[str, bool | None], boundary_counts: dict[str, int | None],
                     elapsed_ms: int | None, failure_class: str = "unknown") -> None:

@@ -23,7 +23,7 @@ import uuid
 from catalog_fixture import build_catalog, digest
 from batch_plan import build_plan, write_plan, fingerprint_materials, verify_materials, BatchBudget, audit_plan
 from client_adapters import VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
-from http_attempts import import_http_attempts, read_admission_diagnostics
+from http_attempts import import_http_attempts, read_admission_diagnostics, read_auxiliary_work_diagnostics
 from preparation_evidence import read_preparation_diagnostics, preparation_failure_class
 from live_gateway import candidate_process, parse_credential_bindings, validate_profile
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
@@ -146,7 +146,7 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
                                  for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py")
                                  + (("coding_tasks.py",) if task.coding_task is not None else ())},
                      "coding_task": task.coding_task,
-                     "isolation_version": 5,
+                     "isolation_version": 6,
                      "preparation_diagnostic_version": 1,
                      "credential_selection": profile.get("auth_files", []),
                      "structured_output": structured_output,
@@ -170,6 +170,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     boundaries = dict.fromkeys(("mcp_attempts", "dispatch", "forbidden_dispatch", "forbidden_effect", "active"))
     capture, prepared, process, admission, code_outcome = None, None, None, None, None
     preparation = None
+    auxiliary_work = None
     issues, attempts = [], []
     failure, effective, declaration_bytes = "framework", False, []
     stage = "candidate_start"
@@ -250,7 +251,11 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     if capture is not None:
         try:
             attempts = import_http_attempts(journal, case_id, capture, expected_executor=profile["executor"])
-            bodies = [json.loads((capture / (attempt["request_id"] + ".body")).read_bytes()) for attempt in attempts]
+            auxiliary_work = read_auxiliary_work_diagnostics(capture)
+            if auxiliary_work is None:
+                raise ValueError("auxiliary work settlement is unverified")
+            model_attempts = [attempt for attempt in attempts if attempt.get("role") != "auxiliary"]
+            bodies = [json.loads((capture / (attempt["request_id"] + ".body")).read_bytes()) for attempt in model_attempts]
             if scenario == "multitool" and prepared is not None and not intermediate_receipt_replayed(bodies, nonce):
                 checks["dispatch"] = False
                 issues.append("intermediate_receipt_not_replayed")
@@ -261,12 +266,12 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                 first = json.dumps(declarations[0])
                 effective = (len(declarations[0]) >= 60 if mode == "eager" else len(declarations[0]) < 60 and
                              ("tool_search" in first if client == "codex" else '"execute"' in first))
-            if not attempts or not effective:
+            if not model_attempts or not effective:
                 checks["answer"] = False
                 issues.append("effective_tool_mode_not_observed")
             terminals = [successful_terminal(attempt["contract"],
                 (capture / ("response-" + attempt["request_id"][8:] + ".body")).read_bytes(),
-                transport_complete=attempt["transport_capture_complete"] is True) for attempt in attempts]
+                transport_complete=attempt["transport_capture_complete"] is True) for attempt in model_attempts]
             checks["terminal"] = bool(checks["terminal"] and terminals and all(terminals))
             admission = read_admission_diagnostics(capture, max_attempts=spec.limits["max_requests"], request_count=len(attempts))
             preparation = read_preparation_diagnostics(capture)
@@ -294,6 +299,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
               "failure_class": case["failure_class"], "gate_status": "unverified"}
     result["admission_diagnostics"] = admission
     result["preparation_diagnostics"] = preparation
+    result["auxiliary_work_diagnostics"] = auxiliary_work
     if task.coding_task is not None:
         result["code_outcome"] = code_outcome
     write_private(case_root / "summary.json", json.dumps(result, indent=2))

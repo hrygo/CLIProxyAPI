@@ -14,7 +14,7 @@ import re
 import stat
 from typing import Any
 
-from normalize_usage import CONTRACTS
+from normalize_usage import CONTRACTS, AUXILIARY_CONTRACT, AUXILIARY_OPERATIONS
 from run_acceptance import CaseJournal
 from antigravity_wire import responses as antigravity_responses, terminal as antigravity_terminal
 
@@ -86,6 +86,21 @@ def read_admission_diagnostics(directory: Path, *, max_attempts: int, request_co
             or state["budget_rejections"] > 0 and state["reserved_attempts"] != max_attempts
             or state["failed_rejections"] > 0 and not state["journal_failed"]):
         raise ValueError("invalid or inconsistent admission diagnostic")
+    return state
+
+
+def read_auxiliary_work_diagnostics(directory: Path) -> dict | None:
+    """Require owner join proof; missing historical snapshots remain unknown."""
+    try:
+        state = _json(_read_file(Path(directory), "auxiliary-work.json", 4096))
+    except FileNotFoundError:
+        return None
+    integers = {"version", "started", "completed", "rejected", "active"}
+    if (not isinstance(state, dict) or set(state) != integers | {"sealed"}
+            or any(type(state[key]) is not int or not 0 <= state[key] <= 2**63 - 1 for key in integers)
+            or state["version"] != 1 or state["sealed"] is not True
+            or state["started"] != state["completed"] or state["active"] != 0 or state["rejected"] != 0):
+        raise ValueError("invalid or incomplete auxiliary HTTP work settlement")
     return state
 
 
@@ -285,12 +300,19 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
             if set(event) != common | {"request"} | extra or request_id != f"request-{len(records) + 1:06d}":
                 raise ValueError("invalid or duplicated HTTP start")
             identity = event.get("executor_identity")
+            auxiliary = event["contract"] == AUXILIARY_CONTRACT
             if identity is not None:
-                if (not isinstance(identity, dict) or set(identity) != {"executor", "model_sha256", "auth_sha256"}
+                identity_fields = {"executor", "model_sha256", "auth_sha256"} | ({"operation"} if auxiliary else set())
+                if (not isinstance(identity, dict) or set(identity) != identity_fields
                         or not isinstance(identity["executor"], str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", identity["executor"])
                         or any(not isinstance(identity[key], str) or identity[key] != "" and not re.fullmatch(r"[0-9a-f]{64}", identity[key])
                                for key in ("model_sha256", "auth_sha256"))):
                     raise ValueError("invalid actual executor identity")
+            if auxiliary and (event["version"] != 2 or identity is None
+                    or identity["executor"] != "antigravity" or not identity["auth_sha256"]
+                    or identity["model_sha256"] != "" or not isinstance(identity["operation"], str)
+                    or identity["operation"] not in AUXILIARY_OPERATIONS):
+                raise ValueError("unbound auxiliary HTTP identity")
             _artifact(directory, event["request"], request_id + ".body")
             if not event["request"]["complete"]:
                 raise ValueError("HTTP request evidence must be complete before dispatch")
@@ -300,6 +322,8 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
                                    "journal_version": event["version"], "transport_capture_complete": None,
                                    "http_status_code": None,
                                    "usage_evidence": "unknown", "issues": ["unfinished_http_attempt"]}
+            if auxiliary:
+                records[request_id].update(role="auxiliary", operation=identity["operation"])
         elif event.get("event") == "request-finished":
             if (set(event) != common | {"outcome", "status_code", "observed_bytes", "response"}
                     or request_id not in records or records[request_id]["finished"]
@@ -317,8 +341,12 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
                 raise ValueError("invalid complete-response assertion")
             terminal = (not complete and event["outcome"] == "closed" and 200 <= event["status_code"] < 300
                         and event["observed_bytes"] == len(body) and _closed_protocol_terminal(event["contract"], body))
-            usage, issues = _usage(event["contract"], body) if complete or terminal else (None, ["incomplete_response_capture"])
-            basis = ("transport-complete" if complete else "protocol-terminal") if usage is not None else "unknown"
+            if event["contract"] == AUXILIARY_CONTRACT:
+                usage, issues = None, ([] if complete else ["incomplete_response_capture"])
+                basis = "not-model-input"
+            else:
+                usage, issues = _usage(event["contract"], body) if complete or terminal else (None, ["incomplete_response_capture"])
+                basis = ("transport-complete" if complete else "protocol-terminal") if usage is not None else "unknown"
             records[request_id].update(raw_usage=usage, finished=True, transport_outcome=event["outcome"], issues=issues,
                                       http_status_code=event["status_code"],
                                       transport_capture_complete=complete, usage_evidence=basis)
@@ -341,10 +369,12 @@ def import_http_attempts(journal: CaseJournal, case_id: str, directory: Path, *,
         for record in records:
             identity = record["executor_identity"]
             if (identity is None or identity["executor"] != expected_executor
-                    or not identity["model_sha256"] or not identity["auth_sha256"]):
+                    or record["contract"] != AUXILIARY_CONTRACT and not identity["model_sha256"]
+                    or not identity["auth_sha256"]):
                 raise ValueError("actual executor does not match the pinned evidence scope")
     for record in records:
-        journal.start_request(case_id, record["request_id"], record["contract"])
+        arguments = {key: record[key] for key in ("role", "operation") if key in record}
+        journal.start_request(case_id, record["request_id"], record["contract"], **arguments)
         if record["finished"]:
             journal.record_request(case_id, record)
     return records

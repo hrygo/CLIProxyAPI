@@ -53,7 +53,7 @@ type HTTPAttemptJournal struct {
 // The caller must pin the actual outbound protocol for this scoped run.
 func NewHTTPAttemptJournal(dir, contract string, maxBytes int64, maxAttempts int) (*HTTPAttemptJournal, error) {
 	switch contract {
-	case "openai-responses-v1", "openai-chat-v1", "anthropic-messages-v1", "gemini-generate-v1":
+	case "openai-responses-v1", "openai-chat-v1", "anthropic-messages-v1", "gemini-generate-v1", "antigravity-generate-v1":
 	default:
 		return nil, errors.New("unsupported HTTP evidence contract")
 	}
@@ -70,6 +70,32 @@ func NewHTTPAttemptJournal(dir, contract string, maxBytes int64, maxAttempts int
 	idle := make(chan struct{})
 	close(idle)
 	return &HTTPAttemptJournal{dir: dir, contract: contract, maxBytes: maxBytes, maxAttempts: maxAttempts, file: file, idle: idle}, nil
+}
+
+func (j *HTTPAttemptJournal) attemptContract(identity *helps.HTTPAttemptIdentity) (string, error) {
+	if j.contract != "antigravity-generate-v1" {
+		if identity != nil && identity.Operation != "" {
+			return "", errors.New("auxiliary operation does not match evidence scope")
+		}
+		return j.contract, nil
+	}
+	validFingerprint := func(value string) bool {
+		decoded, err := hex.DecodeString(value)
+		return err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == value
+	}
+	if identity == nil || identity.Executor != "antigravity" || !validFingerprint(identity.AuthSHA256) {
+		return "", errors.New("missing bound Antigravity executor identity")
+	}
+	if identity.Operation == "" && validFingerprint(identity.ModelSHA256) {
+		return j.contract, nil
+	}
+	if identity.ModelSHA256 == "" {
+		switch identity.Operation {
+		case "credits_query", "oauth_refresh", "project_discovery", "http_request":
+			return "antigravity-auxiliary-v1", nil
+		}
+	}
+	return "", errors.New("invalid Antigravity attempt role")
 }
 
 func (j *HTTPAttemptJournal) appendLocked(event map[string]any) error {
@@ -95,6 +121,11 @@ func (j *HTTPAttemptJournal) appendLocked(event map[string]any) error {
 func (j *HTTPAttemptJournal) Observe(req *http.Request, next http.RoundTripper) (*http.Response, error) {
 	if req == nil || next == nil {
 		return nil, errors.New("missing HTTP evidence request or transport")
+	}
+	identity := helps.HTTPAttemptIdentityFromContext(req.Context())
+	contract, errContract := j.attemptContract(identity)
+	if errContract != nil {
+		return nil, errContract
 	}
 	var request []byte
 	if req.Body != nil && req.Body != http.NoBody {
@@ -138,8 +169,8 @@ func (j *HTTPAttemptJournal) Observe(req *http.Request, next http.RoundTripper) 
 	}
 	if err == nil {
 		digest := sha256.Sum256(request)
-		err = j.appendLocked(map[string]any{"event": "request-started", "request_id": id, "contract": j.contract,
-			"executor_identity": helps.HTTPAttemptIdentityFromContext(req.Context()),
+		err = j.appendLocked(map[string]any{"event": "request-started", "request_id": id, "contract": contract,
+			"executor_identity": identity,
 			"request":           bodyArtifact{requestPath, hex.EncodeToString(digest[:]), int64(len(request)), true}})
 	}
 	if err != nil {
@@ -155,7 +186,7 @@ func (j *HTTPAttemptJournal) Observe(req *http.Request, next http.RoundTripper) 
 	}
 	j.active++
 	j.mu.Unlock()
-	capture := &attemptBody{journal: j, id: id, path: responsePath, file: file, digest: sha256.New()}
+	capture := &attemptBody{journal: j, id: id, contract: contract, path: responsePath, file: file, digest: sha256.New()}
 	resp, err := next.RoundTrip(req)
 	if err != nil {
 		capture.finish("transport_error", false)
@@ -227,6 +258,7 @@ type attemptBody struct {
 	mu       sync.Mutex
 	journal  *HTTPAttemptJournal
 	id       string
+	contract string
 	path     string
 	file     *os.File
 	digest   hash.Hash
@@ -306,7 +338,7 @@ func (b *attemptBody) finish(outcome string, complete bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.err = errors.Join(j.err, b.err)
-	_ = j.appendLocked(map[string]any{"event": "request-finished", "request_id": b.id, "contract": j.contract,
+	_ = j.appendLocked(map[string]any{"event": "request-finished", "request_id": b.id, "contract": b.contract,
 		"outcome": outcome, "status_code": b.status, "observed_bytes": b.seen,
 		"response": bodyArtifact{b.path, hex.EncodeToString(b.digest.Sum(nil)), b.bytes, complete && b.seen == b.bytes}})
 }

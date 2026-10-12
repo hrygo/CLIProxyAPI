@@ -73,12 +73,12 @@ class LiveGatewayTests(unittest.TestCase):
         profile = {"client_model": "fixture", "upstream_model": "fixture-model", "executor": "codex", "contract": "openai-responses-v1"}
         ready = {"version": 1, "scope": "isolated-live-candidate", "pid": 123, "base_url": "http://127.0.0.1:18419/v1",
                  "ready_nonce": "actual-instance", "profile": profile, "source_config_sha256": "a" * 64,
-                 "source_policy_sha256": "b" * 64, "isolation_version": 5, "selected_auth_ids_sha256": hashlib.sha256(('["' + "c" * 64 + '"]').encode()).hexdigest(),
+                 "source_policy_sha256": "b" * 64, "isolation_version": 6, "selected_auth_ids_sha256": hashlib.sha256(('["' + "c" * 64 + '"]').encode()).hexdigest(),
                  "selected_auth_ids": ["c" * 64], "selected_auth_count": 1, "credential_refresh_disabled": True}
         validate_ready(ready, 123, 18419, profile, "a" * 64)
         for field, value in (("pid", 124), ("source_config_sha256", "d" * 64), ("selected_auth_count", 0),
                              ("base_url", "http://example.com:18419/v1"), ("base_url", "http://127.0.0.1:18420/v1"),
-                             ("ready_nonce", ""), ("isolation_version", True), ("isolation_version", 4), ("credential_refresh_disabled", False), ("selected_auth_ids_sha256", "d" * 64)):
+                             ("ready_nonce", ""), ("isolation_version", True), ("isolation_version", 4), ("isolation_version", 5), ("credential_refresh_disabled", False), ("selected_auth_ids_sha256", "d" * 64)):
             with self.subTest(field=field, value=value), self.assertRaises(ValueError):
                 validate_ready({**ready, field: value}, 123, 18419, profile, "a" * 64)
         mutated = copy.deepcopy(ready)

@@ -810,7 +810,10 @@ is derived and validated instead of manually truncating a digest.
   --executor "$task_executor_id" --task-seconds 90
 ```
 
-Only explicit OpenAI-compatible Chat profiles are currently admitted here.
+Explicit OpenAI-compatible Chat and native Codex/Meta Responses profiles are
+admitted here. Wrapped Antigravity observation is tested separately; its live
+candidate profile remains disabled pending route-bound auxiliary admission and
+native result-replay verification.
 Each task is journaled before candidate/client launch, limited to eight physical
 upstream attempts and its declared task time; all failures remain in the replay.
 Client groups and gateway children are isolated and closed after each task.
@@ -877,6 +880,37 @@ an invalid journal. Recorded request count is kept separate from unknown physica
 attempt evidence when a started case has no request records. An audit is always
 `unverified`: it does not lock installed dependency contents, actual model metadata,
 OAuth material, account region, cache conditions or statistical acceptance.
-Planning sixty synthetic slots does not execute sixty real cases. The current
-live CLI still runs one lookup template against an explicit Chat profile; the
-three-scene L2 matrix, all real routes and Coding tasks remain separate work.
+Planning sixty synthetic slots does not execute sixty real cases. The live CLI
+supports lookup, unavailable-tool and multi-tool scenarios plus bounded Coding
+tasks. Existing pilots do not constitute the final-revision sixty-case matrix
+or formal quality and benefit certification.
+
+## Auxiliary HTTP attempts and owner settlement
+
+An Antigravity journal selects `antigravity-auxiliary-v1` only from an actual
+executor identity with a nonempty credential fingerprint, no model fingerprint,
+and a fixed operation (`credits_query`, `oauth_refresh`, `project_discovery` or
+`http_request`). Model calls retain `antigravity-generate-v1`. Each attempt keeps
+the same contract between its durable start and finish. Unbound identities are
+rejected before dispatch; URLs, headers and error prose stay out of exports.
+
+`request_count` and request budgets cover every physical attempt, including
+auxiliary traffic and failed or unfinished attempts. `model_request_count` and
+`auxiliary_request_count` report the split. First, peak and whole-task input
+metrics include every model attempt; ancillary responses cannot inject model
+usage even if their bodies contain token-like fields. Auxiliary tokens remain
+null, and `unknown_auxiliary_cost_requests` preserves unknown billing. Background
+title generation is model inference and remains in input totals.
+
+Candidate isolation version 6 requires `auxiliary-work.json`. The opt-in owner
+registers independent credit-refresh tasks before launching them. After SDK
+shutdown it closes admission, cancels and joins that work, then seals HTTP and
+preparation evidence. The snapshot contains counts only and uses a private,
+exclusive file. Active, rejected or inconsistent work prevents certification;
+missing historical snapshots stay unknown. The launcher retains its cleanup
+budget; no established upstream network timeout is introduced. Production
+requests without an owner scope keep their existing warm-hint lifetime.
+
+See the [auxiliary accounting and settlement report](../../docs/acceptance/2026-10-13-auxiliary-accounting_CN.md)
+for deterministic tests, actual SDK loopback results and remaining native-route
+work. These results do not establish new Provider success rates or token savings.

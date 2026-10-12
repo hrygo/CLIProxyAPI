@@ -288,6 +288,7 @@ func run() error {
 	}
 	cfg := isolateConfig(source, *state, *port)
 	preparation := newPreparationEvidence()
+	auxiliaryWork := helps.NewHTTPAuxiliaryWorkScope()
 	isolateSelectedAPIKeys(cfg, profile)
 	store := newSnapshotStore(auths, profile.Executor)
 	sdkauth.RegisterTokenStore(store)
@@ -296,7 +297,7 @@ func run() error {
 	ready := map[string]any{"version": 1, "scope": "isolated-live-candidate", "pid": os.Getpid(),
 		"base_url": fmt.Sprintf("http://127.0.0.1:%d/v1", *port), "ready_nonce": readyNonce,
 		"profile": profile, "source_config_sha256": fingerprint(raw), "source_policy_sha256": fingerprint(policy),
-		"isolation_version": 5, "credential_refresh_disabled": true}
+		"isolation_version": 6, "credential_refresh_disabled": true}
 	var allowedAuths atomic.Value
 	allowedAuths.Store(map[string]bool{})
 	observer := guardObserver(profile, journal.Observe, func(id string) bool { return allowedAuths.Load().(map[string]bool)[id] })
@@ -370,11 +371,13 @@ func run() error {
 			return
 		}
 		defer finish()
+		requestCtx = helps.WithHTTPAuxiliaryWorkScope(requestCtx, auxiliaryWork)
 		c.Request = c.Request.WithContext(helps.WithHTTPAttemptObserver(requestCtx, observer))
 		c.Next()
 	})).Build()
 	if err != nil {
-		return errors.Join(err, closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")))
+		return errors.Join(err, closeAuxiliaryWork(context.Background(), auxiliaryWork, filepath.Join(*state, "capture")),
+			closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")))
 	}
 	err = service.Run(ctx)
 	if errors.Is(err, context.Canceled) {
@@ -382,7 +385,8 @@ func run() error {
 	}
 	// The launcher owns the cleanup budget. Do not reuse the canceled service
 	// context or add a network deadline while asynchronous readers release bodies.
-	return errors.Join(err, readyError, closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")), verifySelectedCredentialSources(source, profile))
+	return errors.Join(err, readyError, closeAuxiliaryWork(context.Background(), auxiliaryWork, filepath.Join(*state, "capture")),
+		closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")), verifySelectedCredentialSources(source, profile))
 }
 
 func main() {

@@ -59,7 +59,7 @@ def validate_ready(ready, pid, port, profile, config_hash):
     if (type(ready["version"]) is not int or ready["version"] != 1 or ready["scope"] != "isolated-live-candidate"
             or type(ready["pid"]) is not int or ready["pid"] != pid or ready["profile"] != profile
             or ready["source_config_sha256"] != config_hash
-            or type(ready["isolation_version"]) is not int or ready["isolation_version"] != 5 or ready["credential_refresh_disabled"] is not True
+            or type(ready["isolation_version"]) is not int or ready["isolation_version"] != 6 or ready["credential_refresh_disabled"] is not True
             or type(ready["selected_auth_count"]) is not int or ready["selected_auth_count"] < 1
             or not isinstance(ready["ready_nonce"], str) or not 1 <= len(ready["ready_nonce"]) <= 128
             or address.scheme != "http" or address.hostname != "127.0.0.1" or address.port != port
@@ -158,6 +158,9 @@ def candidate_process(binary, config, root, profile, *, max_attempts=16):
             write_private(root / "gateway.exit.json", json.dumps({"exit_code": process.returncode, "source_config_unchanged": unchanged}))
             if process.returncode != 0 or not unchanged:
                 raise ValueError("candidate cleanup or source snapshot verification failed")
+            from http_attempts import read_auxiliary_work_diagnostics
+            if read_auxiliary_work_diagnostics(root / "gateway-state" / "capture") is None:
+                raise ValueError("candidate auxiliary work settlement is unverified")
 
 
 def main():

@@ -78,3 +78,43 @@ func TestAntigravityTimedCreditsQueueCopiesObserverAndJoinsTask(t *testing.T) {
 		t.Fatalf("timed query lost observer: identity=%+v observed=%d", identity, observed.Load())
 	}
 }
+
+func TestAntigravityTimedCreditsQueueOwnerCancelsAndJoinsIndependentTask(t *testing.T) {
+	scope := helps.NewHTTPAuxiliaryWorkScope()
+	reached := make(chan context.Context, 1)
+	release := make(chan struct{})
+	ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		reached <- req.Context()
+		<-release
+		return nil, req.Context().Err()
+	}))
+	ctx = helps.WithHTTPAuxiliaryWorkScope(ctx, scope)
+	auth := &cliproxyauth.Auth{ID: t.Name()}
+	defer antigravityCreditsHintRefreshByID.Delete(auth.ID)
+	exec := NewAntigravityExecutor(&config.Config{})
+	exec.queueAntigravityCreditsRefresh(ctx, auth, "synthetic-access-token", time.Minute)
+	work := <-reached
+	if state := scope.Snapshot(); state.Active != 1 || state.Started != 1 {
+		close(release)
+		t.Fatalf("independent task was not registered: %+v", state)
+	}
+	result := make(chan error, 1)
+	go func() { result <- scope.CloseContext(context.Background()) }()
+	<-work.Done()
+	select {
+	case <-result:
+		t.Error("owner returned before underlying transport released")
+	default:
+	}
+	close(release)
+	if err := <-result; err != nil {
+		t.Fatal(err)
+	}
+	if state := scope.Snapshot(); !state.Sealed || state.Active != 0 || state.Completed != 1 {
+		t.Fatalf("owner failed to join task cleanup: %+v", state)
+	}
+	exec.queueAntigravityCreditsRefresh(ctx, auth, "synthetic-access-token", time.Minute)
+	if state := scope.Snapshot(); state.Started != 1 || state.Rejected != 1 {
+		t.Fatalf("sealed owner admitted more work: %+v", state)
+	}
+}
