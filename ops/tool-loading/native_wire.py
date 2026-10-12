@@ -3,17 +3,24 @@
 import json
 
 from http_attempts import _json, _closed_protocol_terminal
+from antigravity_wire import terminal as antigravity_terminal
 
 
 def wire_contract(executor):
     if executor in {"codex", "meta"}:
         return "openai-responses-v1"
+    if executor == "antigravity":
+        return "antigravity-generate-v1"
     if isinstance(executor, str) and executor.startswith("openai-compatible-"):
         return "openai-chat-v1"
     raise ValueError("executor has no verified live wire view")
 
 
 def _declaration_containers(contract, body):
+    if contract == "antigravity-generate-v1":
+        if not isinstance(body, dict) or not isinstance(body.get("request"), dict):
+            raise ValueError("missing Antigravity request wrapper")
+        return [body["request"].get("tools", [])]
     if contract not in {"openai-chat-v1", "openai-responses-v1"} or not isinstance(body, dict):
         raise ValueError("unsupported request wire")
     containers = [body.get("tools", [])]
@@ -47,7 +54,17 @@ def declarations(contract, body):
                 if len(result) > 10000:
                     raise ValueError("declaration observation budget exceeded")
     for container in _declaration_containers(contract, body):
-        visit(container)
+        if contract == "antigravity-generate-v1":
+            if not isinstance(container, list):
+                raise ValueError("invalid Antigravity tools")
+            for tool in container:
+                if not isinstance(tool, dict):
+                    raise ValueError("invalid Antigravity tool")
+                keys = [key for key in ("functionDeclarations", "function_declarations") if key in tool]
+                for key in keys:
+                    visit(tool[key])
+        else:
+            visit(container)
     return result
 
 
@@ -81,7 +98,9 @@ def _chat_terminal(body):
     return bool(reasons and all(isinstance(reason, str) and reason in {"stop", "tool_calls", "function_call"} for reason in reasons))
 
 
-def successful_terminal(contract, body):
+def successful_terminal(contract, body, *, transport_complete=False):
+    if contract == "antigravity-generate-v1":
+        return antigravity_terminal(body, _json, transport_complete=transport_complete)
     if contract == "openai-chat-v1":
         return _chat_terminal(body)
     if contract != "openai-responses-v1":

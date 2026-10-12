@@ -10,7 +10,7 @@ from typing import Any
 
 TOKEN_FIELDS = ("input_total", "input_uncached", "cache_read", "cache_write",
                 "output_total", "reasoning_output", "tool_prompt_tokens")
-CONTRACTS = ("openai-responses-v1", "openai-chat-v1", "anthropic-messages-v1", "gemini-generate-v1")
+CONTRACTS = ("openai-responses-v1", "openai-chat-v1", "anthropic-messages-v1", "gemini-generate-v1", "antigravity-generate-v1")
 
 
 def normalize_usage(provider: str, raw_usage: Any) -> dict[str, Any]:
@@ -75,7 +75,7 @@ def normalize_usage(provider: str, raw_usage: Any) -> dict[str, Any]:
                 issues.append("incomplete_cache_ttl")
             elif tokens["cache_write"] is not None and sum(ttl.values()) != tokens["cache_write"]:
                 issues.append("inconsistent_cache_ttl")
-    elif provider == "gemini-generate-v1":
+    elif provider in ("gemini-generate-v1", "antigravity-generate-v1"):
         semantics = "inclusive"
         assign("input_total", "promptTokenCount")
         assign("cache_read", "cachedContentTokenCount")

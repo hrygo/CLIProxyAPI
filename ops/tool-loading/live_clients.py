@@ -264,7 +264,9 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             if not attempts or not effective:
                 checks["answer"] = False
                 issues.append("effective_tool_mode_not_observed")
-            terminals = [successful_terminal(attempt["contract"], (capture / ("response-" + attempt["request_id"][8:] + ".body")).read_bytes()) for attempt in attempts]
+            terminals = [successful_terminal(attempt["contract"],
+                (capture / ("response-" + attempt["request_id"][8:] + ".body")).read_bytes(),
+                transport_complete=attempt["transport_capture_complete"] is True) for attempt in attempts]
             checks["terminal"] = bool(checks["terminal"] and terminals and all(terminals))
             admission = read_admission_diagnostics(capture, max_attempts=spec.limits["max_requests"], request_count=len(attempts))
             preparation = read_preparation_diagnostics(capture)

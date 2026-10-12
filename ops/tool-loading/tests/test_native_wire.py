@@ -87,5 +87,66 @@ class NativeWireTests(unittest.TestCase):
             with self.subTest(body=body):
                 self.assertFalse(successful_terminal("openai-chat-v1", body))
 
+    def test_antigravity_wrapped_declarations_include_both_supported_spellings(self):
+        self.assertEqual(wire_contract("antigravity"), "antigravity-generate-v1")
+        one = {"name": "lookup", "parameters": {"type": "OBJECT"}}
+        two = {"name": "confirm", "parameters": {"type": "OBJECT"}}
+        tools = [{"functionDeclarations": [one]}, {"function_declarations": [two]}, {"googleSearch": {}}]
+        body = {"request": {"tools": tools}, "tools": [{"name": "unrelated-wrapper-field"}]}
+        self.assertEqual(declarations("antigravity-generate-v1", body), [one, two])
+        self.assertEqual(declaration_bytes("antigravity-generate-v1", body),
+                         len(json.dumps(tools, separators=(",", ":")).encode()))
+        self.assertEqual(declarations("antigravity-generate-v1", {"request": {"tools": [
+            {"functionDeclarations": [one], "function_declarations": [two]}]}}), [one, two])
+        for malformed in ({"tools": tools}, {"request": None},
+                          {"request": {"tools": "invalid"}},
+                          {"request": {"tools": [{"functionDeclarations": None}]}}):
+            with self.subTest(malformed=malformed), self.assertRaises(ValueError):
+                declarations("antigravity-generate-v1", malformed)
+
+    def test_antigravity_explicit_terminal_requires_consistent_wrapped_candidates(self):
+        def sse(inner):
+            return ("data: " + json.dumps({"response": inner}) + "\n\n").encode()
+        final = {"responseId": "r", "candidates": [{"index": 0, "finishReason": "STOP"}],
+                 "usageMetadata": {"promptTokenCount": 20, "candidatesTokenCount": 3}}
+        self.assertTrue(successful_terminal("antigravity-generate-v1", sse(final)))
+        self.assertTrue(successful_terminal("antigravity-generate-v1", json.dumps({"response": final}).encode()))
+        for bad in (sse({**final, "candidates": [{"finishReason": "MAX_TOKENS"}]}),
+                    sse({**final, "error": {"code": 500}}), sse(final) + sse(final),
+                    sse({"responseId": "other", "candidates": [{"content": {"parts": [{"text": "partial"}]}}]}) + sse(final),
+                    sse(final) + b'data: {"error":{"code":500}}\n\n',
+                    json.dumps(final).encode(), sse(final)[:-1],
+                    sse({**final, "candidates": [{"index": True, "finishReason": "STOP"}]}),
+                    sse({**final, "candidates": [{"finishReason": "FUTURE_UNKNOWN_REASON"}]})):
+            with self.subTest(body=bad):
+                self.assertFalse(successful_terminal("antigravity-generate-v1", bad))
+
+    def test_antigravity_missing_finish_needs_actual_complete_transport_and_usage(self):
+        inner = {"responseId": "r", "candidates": [{"content": {"parts": [
+            {"functionCall": {"name": "lookup", "args": {}}}]}}],
+            "usageMetadata": {"promptTokenCount": 20, "candidatesTokenCount": 3}}
+        body = ("data: " + json.dumps({"response": inner}) + "\n").encode()
+        self.assertFalse(successful_terminal("antigravity-generate-v1", body))
+        self.assertTrue(successful_terminal("antigravity-generate-v1", body, transport_complete=True))
+        for bad in ({**inner, "usageMetadata": None}, {**inner, "candidates": []},
+                    {**inner, "candidates": [{"content": {"parts": []}}]},
+                    {**inner, "usageMetadata": {"promptTokenCount": True, "candidatesTokenCount": 3}}):
+            with self.subTest(inner=bad):
+                payload = ("data: " + json.dumps({"response": bad}) + "\n").encode()
+                self.assertFalse(successful_terminal("antigravity-generate-v1", payload, transport_complete=True))
+
+    def test_antigravity_all_candidates_finish_and_failed_terminal_is_meterable(self):
+        from http_attempts import _closed_protocol_terminal
+        def sse(candidates):
+            return ("data: " + json.dumps({"response": {"responseId": "r", "candidates": candidates}}) + "\n\n").encode()
+        both = sse([{"index": 0, "finishReason": "STOP"}, {"index": 1, "finishReason": "STOP"}])
+        self.assertTrue(successful_terminal("antigravity-generate-v1", both))
+        self.assertFalse(successful_terminal("antigravity-generate-v1", sse([
+            {"index": 0, "finishReason": "STOP"}, {"index": 1, "content": {"parts": [{"text": "partial"}]}}])))
+        failed = sse([{"finishReason": "MAX_TOKENS"}])
+        self.assertFalse(successful_terminal("antigravity-generate-v1", failed))
+        self.assertTrue(_closed_protocol_terminal("antigravity-generate-v1", failed))
+        self.assertFalse(_closed_protocol_terminal("antigravity-generate-v1", sse([{"finishReason": "FUTURE_UNKNOWN_REASON"}])))
+
 
 if __name__=="__main__": unittest.main()

@@ -691,6 +691,25 @@ routes still need independent bootstrap, transport capture and wire gates;
 this runner does not guess that they use the ordinary Gemini HTTP executor.
 Offline bootstrap checks do not certify real Provider availability or quality.
 
+The separate `antigravity-generate-v1` observation contract decodes the executor's
+`request.tools` and wrapped `response.usageMetadata`. Both declaration spellings
+are counted, and repeated cumulative usage is merged rather than summed. Explicit
+candidate finishes require consistent identities and every observed candidate to
+finish; only `STOP` is task success. Unknown reasons, trailing errors and truncated
+captures cannot certify a terminal. A missing finish may use the existing gateway
+healthy-EOF repair scope only when the verified artifact proves complete transport,
+substantive content, a response ID and valid prompt/candidate counters. Closing a
+body or receiving a read error never supplies that EOF evidence.
+
+This is deterministic wire observation support, not an enabled Antigravity live
+profile. The isolated Go route profile still rejects Antigravity until auxiliary
+requests have independent identity, admission, capture and shutdown coverage.
+Token counters follow the inner GenerateContent usage contract; cache-write and
+billing fields that are absent remain unknown. Inner candidate finish semantics
+were checked against the [official GenerateContent reference](https://ai.google.dev/api/generate-content#FinishReason)
+on 2026-10-13; the private wrapper is established by this repository's executor
+and fixtures, not by that public API reference.
+
 The isolated candidate seals `capture/preparation.json` separately from physical
 HTTP attempts and admission diagnostics. Only a typed `ToolCompatibilityError`
 returned at the local preparation boundary produces an entry, containing a

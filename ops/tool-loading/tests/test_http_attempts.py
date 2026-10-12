@@ -259,6 +259,51 @@ class HTTPAttemptsTests(unittest.TestCase):
             self.assertIsNone(record["raw_usage"])
             self.assertIn("conflicting_usage_snapshots", record["issues"])
 
+    def test_antigravity_usage_unwraps_and_merges_without_summing(self):
+        usage = {"promptTokenCount": 20, "candidatesTokenCount": 1}
+        final = {**usage, "candidatesTokenCount": 3, "thoughtsTokenCount": 2, "totalTokenCount": 25}
+        body = b"".join(("data: " + json.dumps({"response": {"usageMetadata": value}}) + "\n\n").encode()
+                        for value in (usage, final))
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            evidence(directory, bodies=(body,), contract="antigravity-generate-v1")
+            record = read_http_attempts(directory)[0]
+            self.assertEqual(record["raw_usage"], final)
+            self.assertEqual(record["usage_evidence"], "transport-complete")
+            from normalize_usage import normalize_usage
+            normalized = normalize_usage(record["contract"], record["raw_usage"])
+            self.assertEqual(normalized["tokens"]["input_total"], 20)
+            self.assertEqual(normalized["tokens"]["output_total"], 5)
+            self.assertFalse(normalized["issues"])
+
+    def test_antigravity_unwrapped_or_conflicting_usage_cannot_be_positive(self):
+        for body in (b'{"usageMetadata":{"promptTokenCount":20}}',
+                     b'data: {"response":{"usageMetadata":{"promptTokenCount":20}}}\n\ndata: {"response":{"usageMetadata":{"promptTokenCount":21}}}\n\n',
+                     b'data: {"response":{"usageMetadata":{"promptTokenCount":20}}}\n\ndata: {"error":{"code":500}}\n\n'):
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                evidence(directory, bodies=(body,), contract="antigravity-generate-v1")
+                record = read_http_attempts(directory)[0]
+                self.assertIsNone(record["raw_usage"])
+                self.assertTrue(record["issues"])
+
+    def test_antigravity_read_error_and_missing_finish_closed_capture_keep_usage_unknown(self):
+        inner = {"responseId": "r", "candidates": [{"content": {"parts": [{"text": "partial"}]}}],
+                 "usageMetadata": {"promptTokenCount": 20, "candidatesTokenCount": 3}}
+        body = ("data: " + json.dumps({"response": inner}) + "\n\n").encode()
+        for outcome in ("closed", "read_error"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                evidence(directory, bodies=(body,), contract="antigravity-generate-v1")
+                events = [json.loads(line) for line in (directory / "attempts.jsonl").read_text().splitlines()]
+                events[-1]["response"]["complete"] = False
+                events[-1]["outcome"] = outcome
+                (directory / "attempts.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
+                record = read_http_attempts(directory)[0]
+                self.assertIsNone(record["raw_usage"])
+                self.assertEqual(record["usage_evidence"], "unknown")
+                self.assertIn("incomplete_response_capture", record["issues"])
+
 
 if __name__ == "__main__":
     unittest.main()

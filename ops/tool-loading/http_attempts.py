@@ -16,6 +16,7 @@ from typing import Any
 
 from normalize_usage import CONTRACTS
 from run_acceptance import CaseJournal
+from antigravity_wire import responses as antigravity_responses, terminal as antigravity_terminal
 
 MAX_BODY = 64 * 1024 * 1024
 MAX_JOURNAL = 16 * 1024 * 1024
@@ -90,6 +91,15 @@ def read_admission_diagnostics(directory: Path, *, max_attempts: int, request_co
 
 def _usage(contract, body):
     issues = []
+    if contract == "antigravity-generate-v1":
+        try:
+            values = antigravity_responses(body, _json, transport_complete=True)
+        except (ValueError, UnicodeDecodeError):
+            return None, ["malformed_usage_source"]
+        # The distinct contract requires the response wrapper; only then does
+        # its inner usage share GenerateContent counter semantics.
+        body = json.dumps(values).encode()
+        contract = "gemini-generate-v1"
     try:
         document = _json(body)
         values = document if isinstance(document, list) else [document]
@@ -151,6 +161,8 @@ def _closed_protocol_terminal(contract, body):
     Closed-response metering is currently scoped to Chat/Responses SSE. Other
     wire contracts remain unknown until their independent terminal proof exists.
     """
+    if contract == "antigravity-generate-v1":
+        return antigravity_terminal(body, _json, success=False)
     if contract not in {"openai-chat-v1", "openai-responses-v1"}:
         return False
     try:
