@@ -221,10 +221,18 @@ Strategy enums:
   `disabled` (explicit client search requests fail with 422, never silently
   dropped).
 - `custom-tools`: `inherit`, `native`, `function` (wrap and restore supported
-  custom calls; multi-output history is rejected),
+  custom calls),
   `strip` (lossy: drops future declarations but keeps convertible history;
   forced calls to stripped tools fail with 422), `reject` (any custom
   contract fails with 422).
+- `custom-output-replay`: `single` (default for adapted history: repeated
+  outputs fail with 422 `unsupported_protocol`) or `multiple` (replay every
+  result without merging). `multiple` requires an explicit route whose
+  `upstream-format` is `codex` or `openai-response`; it never follows a
+  convention automatically. Verify the exact upstream before enabling it:
+  speaking Responses does not prove one-to-many result support. The option
+  preserves each payload, original `call_id`, reversible item identity and
+  global input order, while keeping duplicate-call and orphan-output guards.
 - `custom-grammar`: `reject` (default), `describe` (function mode only:
   folds grammar syntax into the description; sampling constraints are not
   enforced upstream).

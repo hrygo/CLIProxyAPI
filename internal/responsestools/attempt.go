@@ -39,6 +39,9 @@ type Prepared struct {
 // network or tool execution. Unchanged requests return the original slice;
 // native Lite requests may retain state for response-only alias repair.
 func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (Prepared, error) {
+	if err := validateCustomOutputReplayPolicy(policy); err != nil {
+		return Prepared{}, err
+	}
 	originalBody := body
 	// Replayed tool items are repaired before anything else looks at the
 	// request. The migration is pure id bookkeeping, so it must not depend on
@@ -113,7 +116,7 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}
 	if needsCustomHistory {
-		if err := validateCustomHistory(root); err != nil {
+		if err := validateCustomHistory(root, policy.CustomOutputReplay == CustomOutputReplayMultiple); err != nil {
 			return Prepared{}, err
 		}
 	}
@@ -540,7 +543,7 @@ func hasCustomHistory(body []byte) bool {
 	return visit(value)
 }
 
-func validateCustomHistory(root map[string]any) error {
+func validateCustomHistory(root map[string]any, allowMultipleOutputs bool) error {
 	input, ok := root["input"].([]any)
 	if !ok {
 		return nil
@@ -572,9 +575,9 @@ func validateCustomHistory(root map[string]any) error {
 			if _, exists := calls[callID]; !exists {
 				return unprocessableError(ReasonInvalidCustomInput, fmt.Errorf("custom history output has no matching call"))
 			}
-			if _, exists := outputs[callID]; exists {
-				// Custom executions can notify before returning. Function/strip
-				// adaptation cannot preserve every such result item downstream.
+			if _, exists := outputs[callID]; exists && !allowMultipleOutputs {
+				// Custom executions can notify before returning. Adapted routes
+				// require explicit upstream support before replaying every result.
 				return unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("selected route cannot preserve multiple custom outputs for one call_id"))
 			}
 			outputs[callID] = struct{}{}

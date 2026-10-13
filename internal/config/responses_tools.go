@@ -38,11 +38,12 @@ type ResponsesToolsLimits struct {
 
 // ResponsesToolsRoute binds strategies to one exact upstream route.
 type ResponsesToolsRoute struct {
-	Match         ResponsesToolsMatch  `yaml:"match" json:"match"`
-	ClientSearch  string               `yaml:"client-search" json:"client-search"`
-	CustomTools   string               `yaml:"custom-tools" json:"custom-tools"`
-	CustomGrammar string               `yaml:"custom-grammar" json:"custom-grammar"`
-	Schema        ResponsesToolsSchema `yaml:"schema" json:"schema"`
+	Match              ResponsesToolsMatch  `yaml:"match" json:"match"`
+	ClientSearch       string               `yaml:"client-search" json:"client-search"`
+	CustomTools        string               `yaml:"custom-tools" json:"custom-tools"`
+	CustomOutputReplay string               `yaml:"custom-output-replay,omitempty" json:"custom-output-replay,omitempty"`
+	CustomGrammar      string               `yaml:"custom-grammar" json:"custom-grammar"`
+	Schema             ResponsesToolsSchema `yaml:"schema" json:"schema"`
 }
 
 // ResponsesToolsMatch identifies one exact upstream route. All match fields
@@ -139,9 +140,10 @@ func (c ResponsesToolsConfig) Compile() (responsestools.Policy, error) {
 				UpstreamFormat: route.Match.UpstreamFormat,
 				BaseURL:        route.Match.BaseURL,
 			},
-			ClientSearch:  responsestools.ClientSearchMode(route.ClientSearch),
-			CustomTools:   responsestools.CustomToolsMode(route.CustomTools),
-			CustomGrammar: responsestools.CustomGrammarMode(route.CustomGrammar),
+			ClientSearch:       responsestools.ClientSearchMode(route.ClientSearch),
+			CustomTools:        responsestools.CustomToolsMode(route.CustomTools),
+			CustomOutputReplay: responsestools.CustomOutputReplayMode(route.CustomOutputReplay),
+			CustomGrammar:      responsestools.CustomGrammarMode(route.CustomGrammar),
 			Schema: responsestools.SchemaPolicy{
 				SearchRequired: searchRequiredMode(route.Schema.CompleteSearchRequired),
 				LocalRefs:      responsestools.LocalRefsMode(route.Schema.LocalRefs),

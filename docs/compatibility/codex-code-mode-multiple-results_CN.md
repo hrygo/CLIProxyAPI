@@ -1,6 +1,14 @@
 # Codex Code Mode 多输出桥接边界
 
-核验日期：2026-10-13（Asia/Shanghai）。本轮只修正 CLIProxyAPI 的错误分类并补齐回归测试，**没有完成多输出兼容**。原生 Provider 是否接受这类历史仍为未知。
+核验日期：2026-10-13（Asia/Shanghai）。CLIProxyAPI 已提供精确路由的 `custom-output-replay: multiple`，逐项重放原生 Responses 多结果；默认适配仍采用 `single`，拒绝无法保真的多输出。**跨协议及 Muse 多输出兼容尚未完成**，不能将新选项外推为所有 Provider 支持。
+
+## 新增生产能力与真实责任边界
+
+`multiple` 只允许显式匹配 `codex` / `openai-response` 格式的路由，配置编译和直接 `Prepare` 均拒绝非原生格式。请求转换逐项保留结果内容、原 `call_id`、可逆迁移的 item ID 及全局顺序；不合并结果，不伪造调用，不降为 user text。省略选项或显式 `single` 保持原有拒绝行为。配置、身份负例、交错与数组内容回归及 Go 1.26.4 全仓测试、vet、server build 已通过。原生格式是必要条件，真实目标的接受性仍需另验。
+
+T23 对生产候选 `f497d7987b0842335e61623a15958c948bb90217` 的受限协议探测确认：`gpt-6-luna` / Codex 的相邻和交错 `function_call_output` 均得到合法完成事件，模型正确读取全部合成标记；Muse 单结果控制成功，多结果返回 400，明确要求每个 `function_call` 恰好对应一个输出。Muse 还明确只接受 `tool_choice: auto`。这证明 GPT 原生 wire 的接受性及 Muse 的上游限制，尚不证明新增 custom bridge 或真实客户端任务已验收。
+
+探测共保留 7 次物理请求（Codex 4、Muse 3），包括首次响应落盘类型错误及后续排他写入错误；完整上游捕获与候选退出回执已保留，未删除请求或把框架错误改判为客户端成功。材料位于 `.omo/tool-loading-completion/t23-native-multi-output-v1`、`v2`、`v3`；不计算任务通过率、上下文收益或费用节省。尚未扩大试验，默认配置、原服务和凭据刷新均未改变。
 
 ## 实测触发
 
@@ -21,7 +29,7 @@ Codex Code Mode 的通知契约允许额外 `custom_tool_call_output`。每个�
 | [Chat → Codex Responses](../../internal/translator/codex/openai/chat-completions/codex_openai_request.go) | 每个待调用只消费一次；后续匹配不到的 tool message 被跳过 | 额外结果可能丢失 |
 | [Responses → Claude](../../internal/translator/claude/openai/responses/claude_openai-responses_request.go) | 按 raw call ID 预取最后 payload，并只发出一次 tool result | 前面的通知被折叠 |
 
-因此本轮保留拒绝有损转换的行为，将该能力缺口准确报告为 `422 unsupported_protocol`。它是 request-scoped、availability-neutral 的错误；不会产生 outbound body 或 Attempt，也不应触发凭据冷却或账号轮换。重复 call、缺失 `call_id`、孤立 output 和先 output 后 call 仍为 `invalid_custom_input`。`CustomToolsFunction` / `CustomToolsStrip` 路径均覆盖，原生 `ClientSearchNative + CustomToolsInherit` 本地字节透传保持不变。
+因此默认保留拒绝有损转换的行为，将该能力缺口准确报告为 `422 unsupported_protocol`。它是 request-scoped、availability-neutral 的错误；不会产生 outbound body 或 Attempt，也不应触发凭据冷却或账号轮换。重复 call、缺失 `call_id`、孤立 output 和先 output 后 call 仍为 `invalid_custom_input`，显式 `multiple` 也不放宽这些身份规则。`CustomToolsFunction` / `CustomToolsStrip` 默认路径均覆盖，原生 `ClientSearchNative + CustomToolsInherit` 本地字节透传保持不变。
 
 ## 回归与交付边界
 

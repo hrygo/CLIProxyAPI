@@ -1,6 +1,8 @@
 package config
 
 import (
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +10,93 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
 	"gopkg.in/yaml.v3"
 )
+
+func TestResponsesToolsCustomOutputReplayRouteBoundary(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"tools":[{"type":"custom","name":"exec"}],"input":[{"type":"custom_tool_call","id":"ctc_first","call_id":"first","name":"exec","input":"notify(\"notice\")"},{"type":"custom_tool_call_output","id":"ctco_notice","call_id":"first","output":"notice"},{"type":"custom_tool_call","id":"ctc_second","call_id":"second","name":"exec","input":"text(\"side\")"},{"type":"custom_tool_call_output","id":"ctco_side","call_id":"second","output":"side"},{"type":"custom_tool_call_output","id":"ctco_final","call_id":"first","output":[{"type":"input_text","text":"final 漢字"}]}]}`)
+	for _, test := range []struct {
+		name        string
+		format      string
+		mode        string
+		validPolicy bool
+		accept      bool
+	}{
+		{"native multiple", "codex", "multiple", true, true},
+		{"Responses multiple", "openai-response", "multiple", true, true},
+		{"explicit single", "codex", "single", true, false},
+		{"default single", "codex", "", true, false},
+		{"unknown mode", "codex", "aggregate", false, false},
+		{"Chat rejected", "openai", "multiple", false, false},
+		{"Messages rejected", "claude", "multiple", false, false},
+		{"unknown format rejected", "future-format", "multiple", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			document := "routes:\n  - match:\n      provider: codex\n      auth-kind: oauth\n      upstream-model: m\n      upstream-format: " + test.format + "\n    client-search: native\n    custom-tools: function\n"
+			if test.mode != "" {
+				document += "    custom-output-replay: " + test.mode + "\n"
+			}
+			cfg := &Config{}
+			if err := yaml.Unmarshal([]byte(document), &cfg.ResponsesTools); err != nil {
+				t.Fatal(err)
+			}
+			cfg.NormalizeResponsesToolsConfig()
+			policy, err := cfg.ResponsesTools.Compile()
+			if !test.validPolicy {
+				if err == nil {
+					t.Fatal("unsupported replay policy compiled")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			limiter := responsestools.NewLimiter(policy.Limits)
+			prepared, err := responsestools.Prepare(body, policy.Routes[0], policy.Limits, limiter)
+			if !test.accept {
+				var compatibility *responsestools.ToolCompatibilityError
+				if !errors.As(err, &compatibility) || compatibility.Reason != responsestools.ReasonUnsupportedProtocol || prepared.Attempt != nil {
+					t.Fatalf("default policy did not reject unsupported output replay: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.Attempt == nil {
+				t.Fatal("missing custom adaptation")
+			}
+			defer prepared.Attempt.Close()
+			var root map[string]json.RawMessage
+			if err := json.Unmarshal(prepared.Body, &root); err != nil {
+				t.Fatal(err)
+			}
+			var items []map[string]json.RawMessage
+			if err := json.Unmarshal(root["input"], &items); err != nil || len(items) != 5 {
+				t.Fatal("multi-output history changed its length")
+			}
+			for _, expected := range []struct {
+				index  int
+				id     string
+				callID string
+				output string
+			}{
+				{1, `"fco_notice"`, `"first"`, `"notice"`},
+				{3, `"fco_side"`, `"second"`, `"side"`},
+				{4, `"fco_final"`, `"first"`, `[{"text":"final 漢字","type":"input_text"}]`},
+			} {
+				item := items[expected.index]
+				if string(item["type"]) != `"function_call_output"` || string(item["id"]) != expected.id || string(item["call_id"]) != expected.callID || string(item["output"]) != expected.output {
+					t.Fatalf("output content, identity or global order changed at %d: %s", expected.index, root["input"])
+				}
+			}
+			prepared.Attempt.Close()
+			if n, b := limiter.Usage(); n != 0 || b != 0 {
+				t.Fatalf("replay lease leaked: %d/%d", n, b)
+			}
+		})
+	}
+}
 
 func TestResponsesToolsDefaultsFollowConvention(t *testing.T) {
 	cfg := &Config{}
@@ -103,7 +192,8 @@ func TestResponsesToolsYAMLRoundTrip(t *testing.T) {
 		"        upstream-model: m-x\n" +
 		"        upstream-format: codex\n" +
 		"      client-search: bridge\n" +
-		"      custom-tools: function\n"
+		"      custom-tools: function\n" +
+		"      custom-output-replay: multiple\n"
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
@@ -119,7 +209,7 @@ func TestResponsesToolsYAMLRoundTrip(t *testing.T) {
 		t.Fatalf("routes lost")
 	}
 	route := cfg.ResponsesTools.Routes[0]
-	if route.ClientSearch != "bridge" || route.CustomTools != "function" {
+	if route.ClientSearch != "bridge" || route.CustomTools != "function" || route.CustomOutputReplay != "multiple" {
 		t.Fatalf("strategies lost: %+v", route)
 	}
 	if route.CustomGrammar != "" || route.Schema.LocalRefs != "" {
@@ -130,7 +220,8 @@ func TestResponsesToolsYAMLRoundTrip(t *testing.T) {
 		t.Fatalf("clone lost responses-tools")
 	}
 	cloned.ResponsesTools.Routes[0].ClientSearch = "native"
-	if cfg.ResponsesTools.Routes[0].ClientSearch != "bridge" {
+	cloned.ResponsesTools.Routes[0].CustomOutputReplay = "single"
+	if cfg.ResponsesTools.Routes[0].ClientSearch != "bridge" || cfg.ResponsesTools.Routes[0].CustomOutputReplay != "multiple" {
 		t.Fatalf("clone shares route memory")
 	}
 }

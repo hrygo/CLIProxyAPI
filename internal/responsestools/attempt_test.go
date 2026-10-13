@@ -60,15 +60,39 @@ func TestPrepareCustomNotificationsKeepIdentityGuards(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			prepared, err := Prepare([]byte(test.body), bridgeAttemptPolicy(), DefaultLimits(), NewLimiter(DefaultLimits()))
-			var compatibility *ToolCompatibilityError
-			if !errors.As(err, &compatibility) || compatibility.Reason != ReasonInvalidCustomInput {
-				t.Fatalf("reason = %v, want invalid custom input", err)
-			}
-			if prepared.Attempt != nil || len(prepared.Body) != 0 {
-				t.Fatal("invalid custom identity history produced an outbound attempt")
+			multiple := bridgeAttemptPolicy()
+			multiple.Match.UpstreamFormat = "codex"
+			multiple.CustomOutputReplay = CustomOutputReplayMultiple
+			for _, policy := range []RoutePolicy{bridgeAttemptPolicy(), multiple} {
+				prepared, err := Prepare([]byte(test.body), policy, DefaultLimits(), NewLimiter(DefaultLimits()))
+				var compatibility *ToolCompatibilityError
+				if !errors.As(err, &compatibility) || compatibility.Reason != ReasonInvalidCustomInput {
+					t.Fatalf("reason = %v, want invalid custom input", err)
+				}
+				if prepared.Attempt != nil || len(prepared.Body) != 0 {
+					t.Fatal("invalid custom identity history produced an outbound attempt")
+				}
 			}
 		})
+	}
+}
+
+func TestPrepareMultipleCustomOutputsRequiresNativeRoute(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{"", "openai", "claude", "gemini", "unknown"} {
+		policy := bridgeAttemptPolicy()
+		policy.Match.UpstreamFormat = format
+		policy.CustomOutputReplay = CustomOutputReplayMultiple
+		limits := DefaultLimits()
+		limiter := NewLimiter(limits)
+		prepared, err := Prepare([]byte(`{"input":[]}`), policy, limits, limiter)
+		var compatibility *ToolCompatibilityError
+		if !errors.As(err, &compatibility) || compatibility.Reason != ReasonInvalidConfiguration || prepared.Attempt != nil {
+			t.Fatalf("format %q enabled unbound multi-output adaptation: %v", format, err)
+		}
+		if n, b := limiter.Usage(); n != 0 || b != 0 {
+			t.Fatalf("invalid policy reserved state: %d/%d", n, b)
+		}
 	}
 }
 

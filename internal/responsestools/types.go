@@ -64,6 +64,17 @@ const (
 	CustomToolsReject CustomToolsMode = "reject"
 )
 
+// CustomOutputReplayMode controls repeated results from one custom execution.
+type CustomOutputReplayMode string
+
+const (
+	// CustomOutputReplaySingle rejects repeated outputs on adapted routes.
+	CustomOutputReplaySingle CustomOutputReplayMode = "single"
+	// CustomOutputReplayMultiple preserves each output on an explicit native
+	// Responses route whose upstream accepts repeated results.
+	CustomOutputReplayMultiple CustomOutputReplayMode = "multiple"
+)
+
 // CustomGrammarMode controls how grammar payloads are handled in function mode.
 type CustomGrammarMode string
 
@@ -134,11 +145,12 @@ type RouteMatch struct {
 
 // RoutePolicy is one compiled route rule with its tool handling strategies.
 type RoutePolicy struct {
-	Match         RouteMatch
-	ClientSearch  ClientSearchMode
-	CustomTools   CustomToolsMode
-	CustomGrammar CustomGrammarMode
-	Schema        SchemaPolicy
+	Match              RouteMatch
+	ClientSearch       ClientSearchMode
+	CustomTools        CustomToolsMode
+	CustomOutputReplay CustomOutputReplayMode
+	CustomGrammar      CustomGrammarMode
+	Schema             SchemaPolicy
 }
 
 // Limits bounds retained protocol state. All values must be positive; negative
