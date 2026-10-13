@@ -15,6 +15,18 @@ from test_preparation_evidence import empty_preparation
 
 
 class LiveClientTests(unittest.TestCase):
+    def test_antigravity_scope_uses_its_actual_wire_format(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config, executable = root / "config", root / "client"
+            config.write_bytes(b"synthetic-config")
+            executable.write_bytes(b"synthetic-client")
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "antigravity",
+                       "contract": "antigravity-generate-v1", "auth_files": [{"name_sha256": "a" * 64, "content_sha256": "b" * 64}]}
+            with patch("live_clients.shutil.which", return_value=str(executable)):
+                spec = make_case_spec(config, profile, "codex", "lazy", "c" * 40, "ep_" + "d" * 32, 90)
+            self.assertEqual(spec.scope["upstream_format"], "antigravity")
+
     def test_claude_scope_is_explicit_without_expanding_legacy_default_clients(self):
         from client_adapters import VERSIONS, CLAUDE_VERSION
         with tempfile.TemporaryDirectory() as temporary:

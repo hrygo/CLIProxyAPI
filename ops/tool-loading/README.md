@@ -73,6 +73,41 @@ Server-executed Anthropic tool search and arbitrary reference containers are not
 certified by this client-specific bridge. See the dated
 [Claude Code report](../../docs/acceptance/2026-10-13-claude-code-protocol_CN.md).
 
+## One-revision cross-provider live matrix
+
+`live_matrix.py` locks every route/client/profile/scenario pair in one plan,
+one balanced schedule, one physical-request/dispatch budget and one CaseJournal
+before the first candidate launches. Its explicit JSON declaration requires
+`schema_version: 1`, `units`, `task_seconds`, `max_requests`, `max_dispatches`
+and `schedule_seed`. Each unit requires `profile` (client/upstream model,
+executor, explicit wire contract, and optional native credential digest bindings),
+`endpoint_sha256`, `client`, `structured_output`, `opencode_title` (null outside
+the explicit OpenCode title profile), and `scenarios`. Both eager/lazy modes
+are mandatory. Duplicate case identities and unverified wire contracts fail
+preflight; the declaration itself enters the frozen materials.
+
+```sh
+python3 ops/tool-loading/live_matrix.py \
+  --declaration "$task_validation/matrix.json" \
+  --gateway-binary "$task_validation/live-gateway" \
+  --config "$task_operator_config" --gateway-revision "$task_gateway_revision" \
+  --output-dir "$task_validation/matrix-run"
+python3 ops/tool-loading/analyze_pairs.py \
+  --journal "$task_validation/matrix-run/cases.jsonl" \
+  --plan "$task_validation/matrix-run/batch-plan.json"
+```
+
+Use a new private output directory. The matrix declares credentials only with
+filename/content SHA-256 bindings, never token strings or automatic account
+selection. It does not refresh operator credentials or rewrite configuration.
+All model failures, budget exhaustion, retries and unfinished starts stay in
+the journal. Unknown attempt counts keep their reserved ceiling; they never
+refund zero and cannot silently increase the batch. Unstarted planned cases
+are reported after a budget stop. Changes require a new revision/declaration
+and batch rather than appending successes to an old denominator.
+The result remains `unverified` until separate scope, quality and benefit gates
+are proved; reaching sixty starts alone is not certification.
+
 ## Local HTTP admission diagnostics
 
 The isolated `live-gateway` writes private `capture/admission.json` after SDK

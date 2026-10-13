@@ -160,7 +160,9 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
                  client=client, client_version=ADAPTER_VERSIONS[client], client_revision=hashlib.sha256(executable.read_bytes()).hexdigest(),
                  client_mode="direct" if mode == "eager" else "tool-search" if client in {"codex", "claude"} else "code-mode",
                  source_format={"codex": "codex", "opencode": "openai", "claude": "claude"}[client], provider=profile["executor"], model=profile["upstream_model"],
-                 upstream_format="openai" if wire_contract(profile["executor"]) == "openai-chat-v1" else "openai-response", endpoint_id=endpoint, transport="http-sse", region_id="unknown",
+                 upstream_format={"openai-chat-v1": "openai", "openai-responses-v1": "openai-response",
+                                  "antigravity-generate-v1": "antigravity"}[wire_contract(profile["executor"])],
+                 endpoint_id=endpoint, transport="http-sse", region_id="unknown",
                  catalog_hash=digest(build_catalog(task.coding_task)), fixture_hash=digest({
                      "sources": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                                  for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py", "scripted_clients.py", "native_wire.py")
