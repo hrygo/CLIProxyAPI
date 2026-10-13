@@ -61,6 +61,128 @@ func TestDiscoveryLifecycleLatestSchemaPreservesHistory(t *testing.T) {
 	}
 }
 
+func TestPrepareDiscoveredFunctionChoiceMatchesDeclaration(t *testing.T) {
+	t.Parallel()
+	for _, route := range []struct {
+		name   string
+		search ClientSearchMode
+		custom CustomToolsMode
+	}{
+		{"portable native", ClientSearchNative, CustomToolsFunction},
+		{"bridge", ClientSearchBridge, CustomToolsFunction},
+		{"native passthrough", ClientSearchNative, CustomToolsInherit},
+	} {
+		for _, allowed := range []bool{false, true} {
+			name := route.name + "/forced"
+			if allowed {
+				name = route.name + "/allowed"
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				target := map[string]any{"type": "function", "namespace": "fs", "name": "read"}
+				choice := target
+				if allowed {
+					choice = map[string]any{"type": "allowed_tools", "mode": "required", "tools": []any{
+						target,
+						map[string]any{"type": "tool_search"},
+						map[string]any{"type": "function", "name": "eager"},
+						map[string]any{"type": "function", "namespace": "fs", "name": "undiscovered"},
+					}}
+				}
+				body, err := json.Marshal(map[string]any{
+					"tools": []any{
+						map[string]any{"type": "tool_search"},
+						map[string]any{"type": "function", "name": "eager", "parameters": map[string]any{"type": "object"}},
+						map[string]any{"type": "namespace", "name": "fs", "tools": []any{
+							map[string]any{"type": "function", "name": "undiscovered", "defer_loading": true},
+						}},
+					},
+					"tool_choice": choice,
+					"input": []any{
+						map[string]any{"type": "tool_search_call", "call_id": "s1", "arguments": map[string]any{"query": "read"}},
+						map[string]any{"type": "tool_search_output", "call_id": "s1", "tools": []any{
+							map[string]any{"type": "function", "namespace": "fs", "name": "read", "parameters": map[string]any{"type": "object"}},
+						}},
+						map[string]any{"type": "function_call", "namespace": "fs", "name": "read", "call_id": "r1", "arguments": "{}"},
+						map[string]any{"type": "function_call_output", "call_id": "r1", "output": "previous result"},
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				limits := DefaultLimits()
+				limiter := NewLimiter(limits)
+				policy := RoutePolicy{ClientSearch: route.search, CustomTools: route.custom, CustomGrammar: CustomGrammarDescribe}
+				prepared, err := Prepare(body, policy, limits, limiter)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if route.custom == CustomToolsInherit {
+					if string(prepared.Body) != string(body) || prepared.Attempt != nil {
+						t.Fatal("native declaration and choice were adapted")
+					}
+					return
+				}
+				if prepared.Attempt == nil {
+					t.Fatal("missing activation attempt")
+				}
+				defer prepared.Attempt.Close()
+				value, ok := decodeValue(prepared.Body)
+				if !ok {
+					t.Fatal("invalid prepared request")
+				}
+				root := value.(map[string]any)
+				alias := prepared.Attempt.contract.AliasByID[ToolIdentity{Namespace: "fs", Name: "read", Kind: ToolKindFunction}]
+				selected := root["tool_choice"].(map[string]any)
+				if allowed {
+					entries := selected["tools"].([]any)
+					if len(entries) != 4 || selected["mode"] != "required" {
+						t.Fatalf("allowed choice changed its restriction: %v", selected)
+					}
+					search := entries[1].(map[string]any)
+					if route.search == ClientSearchNative && search["type"] != "tool_search" {
+						t.Fatalf("native search choice was bridged: %v", search)
+					}
+					if entries[2].(map[string]any)["name"] != "eager" || entries[3].(map[string]any)["namespace"] != "fs" || entries[3].(map[string]any)["name"] != "undiscovered" {
+						t.Fatal("unactivated choices were rewritten")
+					}
+					selected = entries[0].(map[string]any)
+				}
+				if alias == "" || selected["name"] != alias || selected["namespace"] != nil {
+					t.Fatalf("choice does not select the active declaration %q: %v", alias, selected)
+				}
+				found := false
+				for _, name := range toolNames(root) {
+					found = found || name == alias
+				}
+				input := root["input"].([]any)
+				if !found || input[2].(map[string]any)["name"] != alias || input[3].(map[string]any)["output"] != "previous result" {
+					t.Fatal("declaration, choice and replay disagree")
+				}
+				response, err := json.Marshal(map[string]any{"output": []any{
+					map[string]any{"type": "function_call", "name": alias, "call_id": "r2", "arguments": "{}"},
+				}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				restored, err := prepared.Attempt.RewriteResponse(response)
+				if err != nil {
+					t.Fatal(err)
+				}
+				value, _ = decodeValue(restored)
+				call := value.(map[string]any)["output"].([]any)[0].(map[string]any)
+				if call["namespace"] != "fs" || call["name"] != "read" || call["call_id"] != "r2" {
+					t.Fatalf("selected tool lost client identity: %s", restored)
+				}
+				prepared.Attempt.Close()
+				if n, b := limiter.Usage(); n != 0 || b != 0 {
+					t.Fatalf("lease leaked: %d/%d", n, b)
+				}
+			})
+		}
+	}
+}
+
 func TestDiscoveryLifecycleCumulativeActivation(t *testing.T) {
 	for _, search := range []ClientSearchMode{ClientSearchBridge, ClientSearchNative} {
 		t.Run(string(search), func(t *testing.T) {

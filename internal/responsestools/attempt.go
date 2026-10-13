@@ -290,6 +290,7 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 			return Prepared{}, err
 		}
 		changed = changed || activationChanged
+		changed = rewriteDiscoveredToolChoice(root["tool_choice"], contract) || changed
 		// Portable native routes inject flat function declarations too. Replay
 		// those calls with the same wire aliases, while keeping search history
 		// native and letting the custom adapter handle custom call envelopes.

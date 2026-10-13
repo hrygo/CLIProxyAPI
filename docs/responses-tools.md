@@ -414,6 +414,10 @@ same identity supplies its latest declaration, while earlier calls and results
 remain historical facts. Conflicting definitions within one round fail with
 422 `ambiguous_identity`.
 
+Forced function `tool_choice` and function entries in `allowed_tools` use the
+same activated alias on both paths. Portable native routes keep `tool_search`
+choices native; eager and undiscovered choices are not remapped.
+
 The cumulative active declaration set must fit `max-active-tool-bytes`. If it
 does not, the entire request fails locally with 413 `declaration_budget`, without
 silently dropping older rounds, sending a partial activation, or rotating

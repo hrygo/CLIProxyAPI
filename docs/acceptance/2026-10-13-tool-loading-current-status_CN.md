@@ -12,6 +12,8 @@ T14/T15 真实 Provider 试验使用候选 `4b428edfa70e98df3780f4850ab1d7129b95
 
 T14/T15 live 数据属于 `4b428edf`，T17 属于 `ca0758f4`，T19/T20 属于 `58f5523b`，不同执行候选不能合并认证。T20 已完成当前候选的 60-case 数量覆盖，但只有 41 safe，代表性编码和正式统计仍未认证。此前 50% → 45% 调整保留在历史记录；最新目标以预登记的质量与实际净收益界评价，不能用放宽数字追溯升级认证。
 
+T22 按用户纠偏暂停 Docker/gold runner 扩建，优先修 CLIProxyAPI 生产路径。已复现并修复 portable native 路由的发现工具声明改成别名、`tool_choice` 仍保留原名的问题；直接强制选择和 `allowed_tools` 均与激活声明及调用历史对齐，原生搜索选择不被 bridge 化。Go 1.26.4 定向回归、`internal/responsestools`、`sdk/cliproxy/auth`、`test` 三包完整回归及 server build 通过；本轮没有新增真实 Provider 复测，T19/T20 结果不转移为新源码认证。Code Mode 同一 `call_id` 的多输出仍未实现跨协议兼容。
+
 ## 已取得的证据
 
 | 层次 | 结果 | 实际可证明的范围 |
