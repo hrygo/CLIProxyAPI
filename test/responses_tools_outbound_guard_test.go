@@ -17,77 +17,109 @@ import (
 )
 
 func TestNativeMultipleOutputGuardPreservesPreparedHistory(t *testing.T) {
-	body := []byte(`{"model":"review-model","tools":[{"type":"custom","name":"exec"}],"input":[{"type":"custom_tool_call","id":"ctc_1","call_id":"c1","name":"exec","input":"notify('notice')"},{"type":"custom_tool_call_output","id":"ctco_1","call_id":"c1","output":"notice"},{"type":"custom_tool_call","id":"ctc_2","call_id":"c2","name":"exec","input":"text('side')"},{"type":"custom_tool_call_output","id":"ctco_2","call_id":"c2","output":"side"},{"type":"custom_tool_call_output","id":"ctco_3","call_id":"c1","output":[{"type":"input_text","text":"final"},9007199254740993]}]}`)
-	for _, mutation := range []string{"none", "drop", "duplicate output", "duplicate call", "reorder", "payload", "numeric payload", "result metadata", "item identity", "call identity"} {
-		t.Run(mutation, func(t *testing.T) {
-			server, received := newResponsesToolsProviderServer(t, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_native\",\"status\":\"completed\",\"output\":[]}}\n\n")
-			policy := responsestools.RoutePolicy{
-				Match:        responsestools.RouteMatch{Provider: "codex", AuthKind: "api-key", UpstreamModel: "review-model", UpstreamFormat: "codex", BaseURL: server.URL},
-				ClientSearch: responsestools.ClientSearchNative, CustomTools: responsestools.CustomToolsFunction,
-				CustomOutputReplay: responsestools.CustomOutputReplayMultiple,
+	body := []byte(`{"model":"review-model","tools":[{"type":"custom","name":"exec"},{"type":"function","name":"ping","parameters":{"type":"object"}}],"input":[{"type":"custom_tool_call","id":"ctc_1","call_id":"c1","name":"exec","input":"notify('notice')"},{"type":"custom_tool_call_output","id":"ctco_1","call_id":"c1","output":"notice"},{"type":"custom_tool_call","id":"ctc_2","call_id":"c2","name":"exec","input":"text('side')"},{"type":"custom_tool_call_output","id":"ctco_2","call_id":"c2","output":"side"},{"type":"custom_tool_call_output","id":"ctco_3","call_id":"c1","output":[{"type":"input_text","text":"final"},9007199254740993]},{"type":"function_call","id":"fc_3","call_id":"c3","name":"ping","arguments":""},{"type":"function_call_output","id":"fco_4","call_id":"c3","output":"pong"}]}`)
+	for _, mutation := range []string{"none", "drop", "duplicate output", "duplicate call", "reorder", "payload", "numeric payload", "result metadata", "item identity", "call identity", "call arguments", "missing call arguments", "structured call arguments", "unrelated call arguments"} {
+		for _, stream := range []bool{false, true} {
+			name := mutation + "/execute"
+			if stream {
+				name = mutation + "/stream"
 			}
-			cfg := &config.Config{}
-			cfg.ResponsesTools.Routes = []config.ResponsesToolsRoute{{
-				Match:        config.ResponsesToolsMatch{Provider: "codex", AuthKind: "api-key", UpstreamModel: "review-model", UpstreamFormat: "codex", BaseURL: server.URL},
-				ClientSearch: "native", CustomTools: "function", CustomOutputReplay: "multiple",
-			}}
-			if mutation != "none" {
-				limits := responsestools.DefaultLimits()
-				prepared, err := responsestools.Prepare(body, policy, limits, responsestools.NewLimiter(limits))
-				if err != nil {
+			t.Run(name, func(t *testing.T) {
+				server, received := newResponsesToolsProviderServer(t, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_native\",\"status\":\"completed\",\"output\":[]}}\n\n")
+				policy := responsestools.RoutePolicy{
+					Match:        responsestools.RouteMatch{Provider: "codex", AuthKind: "api-key", UpstreamModel: "review-model", UpstreamFormat: "codex", BaseURL: server.URL},
+					ClientSearch: responsestools.ClientSearchNative, CustomTools: responsestools.CustomToolsFunction,
+					CustomOutputReplay: responsestools.CustomOutputReplayMultiple,
+				}
+				cfg := &config.Config{}
+				cfg.ResponsesTools.Routes = []config.ResponsesToolsRoute{{
+					Match:        config.ResponsesToolsMatch{Provider: "codex", AuthKind: "api-key", UpstreamModel: "review-model", UpstreamFormat: "codex", BaseURL: server.URL},
+					ClientSearch: "native", CustomTools: "function", CustomOutputReplay: "multiple",
+				}}
+				if mutation != "none" {
+					limits := responsestools.DefaultLimits()
+					prepared, err := responsestools.Prepare(body, policy, limits, responsestools.NewLimiter(limits))
+					if err != nil {
+						t.Fatal(err)
+					}
+					prepared.Attempt.Close()
+					decoder := json.NewDecoder(strings.NewReader(string(prepared.Body)))
+					decoder.UseNumber()
+					var root map[string]any
+					if err := decoder.Decode(&root); err != nil {
+						t.Fatal(err)
+					}
+					items := root["input"].([]any)
+					switch mutation {
+					case "drop":
+						items = items[:4]
+					case "duplicate output":
+						items = append(items, items[4])
+					case "duplicate call":
+						items = append(items, items[0])
+					case "reorder":
+						items[1], items[4] = items[4], items[1]
+					case "payload":
+						items[1].(map[string]any)["output"] = "altered result"
+					case "numeric payload":
+						items[4].(map[string]any)["output"].([]any)[1] = json.Number("9007199254740992")
+					case "result metadata":
+						items[4].(map[string]any)["status"] = "incomplete"
+					case "item identity":
+						items[4].(map[string]any)["id"] = "fco_changed"
+					case "call identity":
+						items[4].(map[string]any)["call_id"] = "c2"
+					case "call arguments":
+						items[0].(map[string]any)["arguments"] = `{"input":"text('altered execution')"}`
+					case "missing call arguments":
+						delete(items[0].(map[string]any), "arguments")
+					case "structured call arguments":
+						items[0].(map[string]any)["arguments"] = map[string]any{"input": "notify('notice')"}
+					case "unrelated call arguments":
+						items[5].(map[string]any)["arguments"] = `{"changed":true}`
+					}
+					cfg.Payload.Override = []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "review-model"}}, Params: map[string]any{"input": items}}}
+				}
+				cfg.NormalizeResponsesToolsConfig()
+				if err := cfg.ValidateResponsesToolsConfig(); err != nil {
 					t.Fatal(err)
 				}
-				prepared.Attempt.Close()
-				decoder := json.NewDecoder(strings.NewReader(string(prepared.Body)))
-				decoder.UseNumber()
-				var root map[string]any
-				if err := decoder.Decode(&root); err != nil {
-					t.Fatal(err)
+				manager := auth.NewManager(nil, nil, nil)
+				manager.SetConfig(cfg)
+				manager.SetRetryConfig(0, 0, 0)
+				manager.RegisterExecutor(runtimeexecutor.NewCodexExecutor(cfg))
+				registerResponsesToolsProvider(t, manager, "native-multiple-guard", "codex", "review-model", server.URL)
+				req := executor.Request{Model: "review-model", Payload: body}
+				opts := executor.Options{SourceFormat: translator.FormatOpenAIResponse, OriginalRequest: body, Stream: stream}
+				var err error
+				if stream {
+					var result *executor.StreamResult
+					result, err = manager.ExecuteStream(context.Background(), []string{"codex"}, req, opts)
+					if result != nil {
+						for chunk := range result.Chunks {
+							if chunk.Err != nil {
+								err = chunk.Err
+							}
+						}
+					}
+				} else {
+					_, err = manager.Execute(context.Background(), []string{"codex"}, req, opts)
 				}
-				items := root["input"].([]any)
-				switch mutation {
-				case "drop":
-					items = items[:4]
-				case "duplicate output":
-					items = append(items, items[4])
-				case "duplicate call":
-					items = append(items, items[0])
-				case "reorder":
-					items[1], items[4] = items[4], items[1]
-				case "payload":
-					items[1].(map[string]any)["output"] = "altered result"
-				case "numeric payload":
-					items[4].(map[string]any)["output"].([]any)[1] = json.Number("9007199254740992")
-				case "result metadata":
-					items[4].(map[string]any)["status"] = "incomplete"
-				case "item identity":
-					items[4].(map[string]any)["id"] = "fco_changed"
-				case "call identity":
-					items[4].(map[string]any)["call_id"] = "c2"
+				if mutation == "none" {
+					if err != nil || len(received.get()) == 0 {
+						t.Fatalf("legitimate native multiple outputs rejected at final send: %v", err)
+					}
+					if arguments := gjson.GetBytes(received.get(), "input.5.arguments").String(); arguments != "{}" {
+						t.Fatalf("blank function arguments were not legitimately normalized: %q", arguments)
+					}
+				} else {
+					var rejection interface{ StatusCode() int }
+					if !errors.As(err, &rejection) || rejection.StatusCode() != 422 || len(received.get()) != 0 {
+						t.Fatalf("mutated history dispatched or incorrectly rejected: %v", err)
+					}
 				}
-				cfg.Payload.Override = []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "review-model"}}, Params: map[string]any{"input": items}}}
-			}
-			cfg.NormalizeResponsesToolsConfig()
-			if err := cfg.ValidateResponsesToolsConfig(); err != nil {
-				t.Fatal(err)
-			}
-			manager := auth.NewManager(nil, nil, nil)
-			manager.SetConfig(cfg)
-			manager.SetRetryConfig(0, 0, 0)
-			manager.RegisterExecutor(runtimeexecutor.NewCodexExecutor(cfg))
-			registerResponsesToolsProvider(t, manager, "native-multiple-guard", "codex", "review-model", server.URL)
-			_, err := manager.Execute(context.Background(), []string{"codex"}, executor.Request{Model: "review-model", Payload: body}, executor.Options{SourceFormat: translator.FormatOpenAIResponse, OriginalRequest: body})
-			if mutation == "none" {
-				if err != nil || len(received.get()) == 0 {
-					t.Fatalf("legitimate native multiple outputs rejected at final send: %v", err)
-				}
-			} else {
-				var rejection interface{ StatusCode() int }
-				if !errors.As(err, &rejection) || rejection.StatusCode() != 422 || len(received.get()) != 0 {
-					t.Fatalf("mutated history dispatched or incorrectly rejected: %v", err)
-				}
-			}
-		})
+			})
+		}
 	}
 }
 

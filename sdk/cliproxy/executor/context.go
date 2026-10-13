@@ -102,8 +102,8 @@ type WireContract struct {
 	HistoryCalls []WireToolHistoryReference
 	// MultipleCustomOutputs binds the guard to the explicit native replay policy.
 	MultipleCustomOutputs bool
-	// NativeHistoryEvents protects global order and exact output content without
-	// retaining raw results in the context.
+	// NativeHistoryEvents protects global order and call-input/output content
+	// without retaining raw code, arguments or results in the context.
 	NativeHistoryEvents []WireToolHistoryEvent
 	// ActiveToolBytes is the normalized declaration size after adaptation.
 	ActiveToolBytes int

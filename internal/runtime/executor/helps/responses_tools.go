@@ -134,7 +134,7 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 		if wire.MultipleCustomOutputs {
 			events, err := cliproxyexecutor.NativeWireToolHistoryEvents(payload)
 			if err != nil || !slices.Equal(events, wire.NativeHistoryEvents) {
-				return wireError(http.StatusUnprocessableEntity, "post rule changed native tool result content, identity or order")
+				return wireError(http.StatusUnprocessableEntity, "post rule changed native tool call arguments, result content, identity or order")
 			}
 		}
 		for callID, name := range history.calls {

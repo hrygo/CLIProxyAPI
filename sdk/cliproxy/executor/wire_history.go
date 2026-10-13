@@ -5,18 +5,21 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 )
 
 // WireToolHistoryEvent describes one native history event without its payload.
 type WireToolHistoryEvent struct {
-	Type         string
-	ItemID       string
-	CallID       string
-	OutputSHA256 string
+	Type            string
+	ItemID          string
+	CallID          string
+	CallInputSHA256 string
+	OutputSHA256    string
 }
 
 // NativeWireToolHistoryEvents records native tool-event order, item identities
-// and canonical output hashes. Exact number tokens survive canonicalization.
+// and canonical call-input/output hashes. Exact number tokens survive
+// canonicalization; raw payloads are never retained in the guard context.
 func NativeWireToolHistoryEvents(body []byte) ([]WireToolHistoryEvent, error) {
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(body, &root); err != nil {
@@ -49,27 +52,53 @@ func NativeWireToolHistoryEvents(body []byte) ([]WireToolHistoryEvent, error) {
 		if err := json.Unmarshal(item["call_id"], &event.CallID); err != nil {
 			return nil, err
 		}
-		if event.Type == "function_call_output" || event.Type == "custom_tool_call_output" {
-			{
-				raw, err := json.Marshal(item)
-				if err != nil {
-					return nil, err
+		if event.Type == "function_call" || event.Type == "custom_tool_call" {
+			field := "arguments"
+			if event.Type == "custom_tool_call" {
+				field = "input"
+			}
+			callInput := make(map[string]json.RawMessage, 1)
+			if raw, exists := item[field]; exists {
+				// The Codex translator legitimately normalizes blank function
+				// arguments to "{}". Custom source text is never normalized.
+				var arguments *string
+				if field == "arguments" && json.Unmarshal(raw, &arguments) == nil && arguments != nil && strings.TrimSpace(*arguments) == "" {
+					raw = json.RawMessage(`"{}"`)
 				}
-				decoder := json.NewDecoder(bytes.NewReader(raw))
-				decoder.UseNumber()
-				var output any
-				if err := decoder.Decode(&output); err != nil {
-					return nil, err
-				}
-				canonical, err := json.Marshal(output)
-				if err != nil {
-					return nil, err
-				}
-				digest := sha256.Sum256(canonical)
-				event.OutputSHA256 = hex.EncodeToString(digest[:])
+				callInput[field] = raw
+			}
+			var err error
+			event.CallInputSHA256, err = canonicalWireHistorySHA256(callInput)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			var err error
+			event.OutputSHA256, err = canonicalWireHistorySHA256(item)
+			if err != nil {
+				return nil, err
 			}
 		}
 		events = append(events, event)
 	}
 	return events, nil
+}
+
+func canonicalWireHistorySHA256(item map[string]json.RawMessage) (string, error) {
+	raw, err := json.Marshal(item)
+	if err != nil {
+		return "", err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return "", err
+	}
+	canonical, err := json.Marshal(value)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(canonical)
+	return hex.EncodeToString(digest[:]), nil
 }
