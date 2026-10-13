@@ -22,6 +22,9 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 	if !claudeHasDeferredProtocol(body) {
 		return body, nil
 	}
+	if err := validateCustomArgumentUnicode(string(body)); err != nil {
+		return nil, syntaxError(fmt.Errorf("invalid Anthropic discovery Unicode: %w", err))
+	}
 	value, ok := decodeValue(root["tools"])
 	tools, toolsOK := value.([]any)
 	if !ok || !toolsOK {

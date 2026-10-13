@@ -158,6 +158,38 @@ func TestClaudeDeferredEscapedProtocolMarkers(t *testing.T) {
 	}
 }
 
+func TestClaudeDeferredRejectsLossyUnicode(t *testing.T) {
+	for name, replacement := range map[string]string{
+		"invalid UTF-8":        "look" + string([]byte{0xff}) + "up",
+		"unpaired high UTF-16": `look\ud800up`,
+		"unpaired low UTF-16":  `look\udc00up`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := []byte(strings.ReplaceAll(claudeDeferredFixture, "lookup", replacement))
+			original := append([]byte(nil), body...)
+			prepared, err := PrepareClaudeDeferredTools(body, DefaultLimits())
+			var compat *ToolCompatibilityError
+			if !errors.As(err, &compat) || compat.Reason != ReasonJSONSyntax || compat.StatusCode() != 400 || prepared != nil {
+				t.Fatalf("lossy tool identity admitted: %s %v", prepared, err)
+			}
+			if !bytes.Equal(body, original) {
+				t.Fatal("caller payload mutated")
+			}
+		})
+	}
+	for name, value := range map[string]string{
+		"valid surrogate pair": `\ud83d\ude80`,
+		"escaped literal":      `\\ud800`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := []byte(strings.Replace(claudeDeferredFixture, `"const":"alpha"`, `"const":"`+value+`"`, 1))
+			if _, err := PrepareClaudeDeferredTools(body, DefaultLimits()); err != nil {
+				t.Fatalf("lossless Unicode rejected: %v", err)
+			}
+		})
+	}
+}
+
 func TestClaudeDeferredBudgetsAndPassThrough(t *testing.T) {
 	limits := DefaultLimits()
 	limits.MaxActiveToolBytes = 20

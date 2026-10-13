@@ -97,6 +97,40 @@ func TestClaudeDeferredNativeAndEmergencyGateRemainUntouched(t *testing.T) {
 	}
 }
 
+func TestClaudeDeferredLossyUnicodeNeverReachesExecutor(t *testing.T) {
+	for _, entry := range []string{"execute", "count", "stream"} {
+		t.Run(entry, func(t *testing.T) {
+			mgr := responsesToolsTestManager()
+			exec := &fakeResponsesExecutor{provider: "codex", toFormat: sdktranslator.FormatCodex}
+			body := []byte(strings.ReplaceAll(claudeClientSearchRequest, "lookup", `look\ud800up`))
+			req := cliproxyexecutor.Request{Model: "fixture", Payload: body}
+			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, OriginalRequest: body}
+			auth := &Auth{ID: "fixture", Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth"}}
+			var err error
+			switch entry {
+			case "execute":
+				_, err = mgr.responsesToolsCallWithExecutor(context.Background(), auth, "codex", exec, req, opts,
+					func(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+						return exec.Execute(ctx, auth, req, opts)
+					})
+			case "count":
+				_, err = mgr.responsesToolsCountCall(context.Background(), auth, "codex", exec, req, opts,
+					func(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+						return exec.CountTokens(ctx, auth, req, opts)
+					})
+			case "stream":
+				_, _, err = mgr.responsesToolsStreamCall(context.Background(), auth, "codex", exec, req, opts,
+					func(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+						return exec.ExecuteStream(ctx, auth, req, opts)
+					})
+			}
+			if !responsestools.IsRequestScopedError(err) || len(exec.wire) != 0 {
+				t.Fatalf("invalid Unicode reached executor: err=%v calls=%d", err, len(exec.wire))
+			}
+		})
+	}
+}
+
 func TestClaudeDeferredDisabledRouteRejectsDiscoveryOnly(t *testing.T) {
 	mgr := responsesToolsTestManagerWithClientSearch("disabled")
 	auth := &Auth{Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth"}}
