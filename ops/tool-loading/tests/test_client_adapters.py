@@ -125,15 +125,80 @@ class AdapterTests(unittest.TestCase):
             self.assertEqual((parent / "AGENTS.md").read_text(), "unrelated ancestor instructions")
 
     def catalog(self, root, client="codex"):
-        return {"run_dir": Path(root) / "run", "client_version": "0.160.0" if client == "codex" else "1.19.0",
+        versions = {"codex": "0.160.0", "opencode": "1.19.0", "claude": "2.1.289"}
+        return {"run_dir": Path(root) / "run", "client_version": versions[client],
                 "executable": sys.executable, "model": "fixture-model", "base_url": "http://127.0.0.1:12345/v1",
                 "fixture_python": sys.executable, "model_metadata": synthetic_codex_model("fixture-model"),
                 "nonce": "fresh-nonce", "max_dispatches": 8, "max_result_bytes": 65536}
 
     def prepare(self, client, mode, catalog, permissions=None):
-        output = "codex-cli 0.160.0\n" if client == "codex" else "1.19.0\n"
+        outputs = {"codex": "codex-cli 0.160.0\n", "opencode": "1.19.0\n", "claude": "2.1.289 (Claude Code)\n"}
+        output = outputs[client]
         with patch("client_adapters.subprocess.run", return_value=subprocess.CompletedProcess([], 0, output, "")):
             return prepare_isolated_client(client, mode, catalog, permissions or {"client_denied": [], "service_denied": ["fixture_mutation"]})
+
+    def test_claude_is_explicit_and_does_not_expand_existing_provider_batches(self):
+        from client_adapters import VERSIONS
+        self.assertEqual(set(VERSIONS), {"codex", "opencode"})
+        for mode in ("eager", "lazy"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                catalog = self.catalog(temporary, "claude")
+                prepared = self.prepare("claude", mode, catalog,
+                    {"client_denied": ["ledger_budget_lookup"], "service_denied": ["fixture_mutation"]})
+                env, command = prepared.env, prepared.command
+                self.assertEqual(env["HOME"], str(prepared.run_dir / "claude-home"))
+                self.assertEqual(env["ANTHROPIC_BASE_URL"], "http://127.0.0.1:12345")
+                self.assertEqual(env["ANTHROPIC_API_KEY"], "local-acceptance-placeholder")
+                self.assertEqual(env["ENABLE_TOOL_SEARCH"], "true" if mode == "lazy" else "false")
+                for flag in ("--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"):
+                    self.assertIn(flag, command)
+                self.assertNotIn("--bare", command)
+                self.assertNotIn("CLAUDE_CODE_SIMPLE", env)
+                self.assertEqual(env["CLAUDE_CONFIG_DIR"], str(prepared.run_dir / "claude-config"))
+                self.assertEqual(env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1")
+                self.assertEqual(env["DISABLE_UPDATES"], "1")
+                settings = Path(command[command.index("--settings") + 1])
+                self.assertEqual(json.loads(settings.read_text()), {"disableAllHooks": True})
+                self.assertEqual(command[command.index("--setting-sources") + 1], "")
+                self.assertEqual(command[command.index("--permission-mode") + 1], "dontAsk")
+                self.assertEqual(command[command.index("--permission-prompts") + 1], "none")
+                self.assertEqual(command[command.index("--tools") + 1], "ToolSearch" if mode == "lazy" else "")
+                self.assertNotIn("--dangerously-skip-permissions", command)
+                denied = command[command.index("--disallowedTools") + 1]
+                allowed = command[command.index("--allowedTools") + 1]
+                self.assertEqual(denied, "mcp__fixture__ledger_budget_lookup")
+                self.assertNotIn("mcp__fixture__ledger_budget_lookup", allowed.split(","))
+                self.assertIn("mcp__fixture__ledger_budget_confirm", allowed.split(","))
+                config = json.loads(prepared.config_path.read_text())
+                self.assertEqual(set(config["mcpServers"]), {"fixture"})
+                self.assertIn("--permissions", config["mcpServers"]["fixture"]["args"])
+                self.assertEqual(prepared.expected_mode, "tool-search" if mode == "lazy" else "direct")
+
+    def test_claude_unsupported_output_profile_and_version_fail_before_artifacts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            catalog = self.catalog(temporary, "claude")
+            catalog["output_schema"] = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+            with self.assertRaises(ValueError):
+                self.prepare("claude", "lazy", catalog)
+            self.assertFalse(catalog["run_dir"].exists())
+        with tempfile.TemporaryDirectory() as temporary:
+            catalog = self.catalog(temporary, "claude")
+            with patch("client_adapters.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "2.1.290 (Claude Code)\n", "")):
+                with self.assertRaises(ValueError):
+                    prepare_isolated_client("claude", "lazy", catalog, {"client_denied": [], "service_denied": []})
+            self.assertFalse(catalog["run_dir"].exists())
+
+    def test_claude_does_not_inherit_operator_auth_or_beta_configuration(self):
+        with tempfile.TemporaryDirectory() as temporary, patch.dict("os.environ", {
+            "HOME": "/operator/home", "ANTHROPIC_AUTH_TOKEN": "operator-secret", "ANTHROPIC_API_KEY": "operator-secret",
+            "CLAUDE_CONFIG_DIR": "/operator/config", "CLAUDE_CODE_USE_BEDROCK": "1", "ENABLE_TOOL_SEARCH": "false",
+            "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"}):
+            prepared = self.prepare("claude", "lazy", self.catalog(temporary, "claude"))
+            for name in ("ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"):
+                self.assertNotIn(name, prepared.env)
+            self.assertNotEqual(prepared.env["CLAUDE_CONFIG_DIR"], "/operator/config")
+            self.assertNotIn("operator-secret", json.dumps(prepared.env))
+            self.assertNotIn("operator-secret", prepared.config_path.read_text())
 
     def test_codex_uses_isolated_home_and_real_catalog_gate_not_legacy_flag(self):
         with tempfile.TemporaryDirectory() as temporary:

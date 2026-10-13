@@ -89,6 +89,20 @@ func fingerprint(value []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
+func acceptanceCredentialMatches(authorization, apiKey string) bool {
+	if authorization != "" && authorization != "Bearer local-acceptance-placeholder" {
+		return false
+	}
+	if apiKey != "" && apiKey != "local-acceptance-placeholder" {
+		return false
+	}
+	return authorization != "" || apiKey != ""
+}
+
+func acceptanceInferencePath(path string) bool {
+	return path == "/v1/responses" || path == "/v1/chat/completions" || path == "/v1/messages"
+}
+
 type snapshotStore struct{ auths []*coreauth.Auth }
 
 func cloneMetadataValue(value any) any {
@@ -381,7 +395,7 @@ func run() error {
 		}}).WithServerOptions(api.WithRouterConfigurator(func(_ *gin.Engine, handler *handlers.BaseAPIHandler, _ *config.Config) {
 		manager = handler.AuthManager
 	}), api.WithMiddleware(func(c *gin.Context) {
-		if c.GetHeader("Authorization") != "Bearer local-acceptance-placeholder" {
+		if !acceptanceCredentialMatches(c.GetHeader("Authorization"), c.GetHeader("X-Api-Key")) {
 			c.AbortWithStatus(http.StatusUnauthorized)
 			return
 		}
@@ -394,7 +408,7 @@ func run() error {
 			c.Next()
 			return
 		}
-		if c.Request.Method != http.MethodPost || (c.Request.URL.Path != "/v1/responses" && c.Request.URL.Path != "/v1/chat/completions") {
+		if c.Request.Method != http.MethodPost || !acceptanceInferencePath(c.Request.URL.Path) {
 			c.AbortWithStatus(http.StatusNotFound)
 			return
 		}

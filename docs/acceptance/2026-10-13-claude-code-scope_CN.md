@@ -1,6 +1,7 @@
 # Claude Code 纳入跨 Provider 工具按需加载验收
 
-核验日期：2026-10-13。状态：范围已接受，客户端端到端证据尚未建立。
+核验日期：2026-10-13。状态：范围已接受，已建立客户端/MCP 的脚本化 loopback 协议证据；
+真实 Provider、编码和正式统计验收仍待建立。
 依据用户更新的目标，客户端范围为 Codex、OpenCode、Claude Code 与 MCP；
 完整目标及五项门禁沿用 [完整方案](../superpowers/plans/2026-10-12-cross-provider-tool-loading-completion_CN.md)。
 
@@ -10,7 +11,9 @@
 - 同版本 `--help` 提供 `--bare`、`--setting-sources`、`--strict-mcp-config`、
   `--mcp-config`、`--tools`、`--allowedTools`、`--disallowedTools`、
   `--no-session-persistence`、`--output-format stream-json` 与 `--permission-mode`。
-  `--bare` 帮助说明跳过 hooks、插件同步、后台预取及钥匙串读取；这些开关的组合效果仍需隔离实测。
+  `--bare` 帮助说明跳过 hooks、插件同步、后台预取及钥匙串读取。
+  随后线包实测发现该模式抑制 ToolSearch，即使 `ENABLE_TOOL_SEARCH=true` 仍加载完整目录；
+  当前隔离 adapter 改为独立隔离 home/config、MCP、权限、hooks 与非必要流量，不使用 `--bare`。
 - 官方 MCP 文档说明，非第一方 `ANTHROPIC_BASE_URL` 默认关闭工具检索；
   显式 `ENABLE_TOOL_SEARCH` 可以覆盖这一默认回退，但实验能力总开关与供应商限制仍会影响它。
   `true` 与 `false` 作为候选 eager/lazy 配置，不能直接当成模式生效证据。
@@ -37,6 +40,9 @@
 ## 当前证据与限制
 
 CLI help 原始证据保存在本地 `.omo/tool-loading-completion/t6-claude-help.txt`；
-尚未启动 Claude Code 推理或真实 MCP 验收，无其通过率、上下文节省或账单结论。
+后续已启动 Claude Code 2.1.289 对脚本化本地模型的调用，并真实执行 fixture MCP；
+直接 Messages 与 Gateway→Chat 的 eager/lazy 四例闭环通过。
+详见 [协议实测报告](2026-10-13-claude-code-protocol_CN.md)。
+这不提供真实 Provider 通过率、上下文 token 节省或账单结论。
 SDK native Antigravity 的 loopback 测试只证明 Gateway 集成，不覆盖 Claude Code 客户端。
 没有变更默认配置、注册目录、安装版本或运行服务。

@@ -8,7 +8,47 @@ Read-only paired diagnostics are available in `analyze_pairs.py`; their
 conditional bounds never promote a run to a certification label.
 Offline case replay and request-level usage normalization are
 available below. Fixture tests do not certify
-Codex/OpenCode permission handling, model quality, or context savings.
+Codex/OpenCode/Claude Code permission handling, model quality, or context savings.
+
+## Claude Code protocol probe
+
+`client_adapters.py` additionally admits an explicitly selected Claude Code
+2.1.289 profile. It does not add Claude to existing live batch scheduling:
+Provider usage, coding, permissions and statistical scopes need separate admission.
+The isolated profile uses a fresh home/config directory, explicit MCP, filtered
+environment, exact tool permission rules, no permission bypass and no updates.
+It keeps experimental tool support enabled. `--bare` is deliberately omitted:
+the actual 2.1.289 first-request probe suppressed ToolSearch in that mode even
+with `ENABLE_TOOL_SEARCH=true`.
+
+```sh
+go build -o "$task_validation/live-gateway" ./ops/tool-loading/live-gateway
+python3 ops/tool-loading/claude_client_probe.py \
+  --gateway-binary "$task_validation/live-gateway" \
+  --output-dir "$task_validation/claude-protocol"
+```
+
+Use a Python environment with the existing fixture dependencies. The output
+directory must be new. Four scripted loopback cases run the actual Claude CLI
+and MCP: direct Messages and Messages through the isolated gateway to Chat,
+each in eager/lazy mode. The model learns both receipts only from actual result
+history; a missing signature or discovery result never invents an invocation.
+Private request bodies, process output, MCP events and gateway HTTP admission
+evidence remain local. Declaration byte reductions are transport measurements;
+synthetic token usage and zero-priced fixtures are not Provider benefits.
+The isolated gateway now admits `/v1/messages` with its local API-key placeholder;
+`/v1/messages/count_tokens` remains outside this probe's frontend scope.
+
+For non-Anthropic routes, the core bridge admits only client `ToolSearch`
+references bound to successful preceding calls and effective current schemas.
+It drops unloaded deferred declarations and the placeholder, removes native
+deferral flags, and replays a compact `loaded_tools` manifest. Native Messages
+routes and the disabled responses-tools emergency gate stay unchanged.
+Unknown references, duplicate identities/JSON keys, invalid flags, mixed result
+blocks, excessive depth/bytes and forced unloaded tools fail before dispatch.
+Server-executed Anthropic tool search and arbitrary reference containers are not
+certified by this client-specific bridge. See the dated
+[Claude Code report](../../docs/acceptance/2026-10-13-claude-code-protocol_CN.md).
 
 ## Local HTTP admission diagnostics
 

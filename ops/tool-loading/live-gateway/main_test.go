@@ -146,6 +146,34 @@ func TestSnapshotCannotRefreshSharedOAuthCredentials(t *testing.T) {
 
 type forbiddenTransport struct{}
 
+func TestAcceptanceFrontendIncludesMessagesWithLocalAPIKeyOnly(t *testing.T) {
+	for _, path := range []string{"/v1/responses", "/v1/chat/completions", "/v1/messages"} {
+		if !acceptanceInferencePath(path) {
+			t.Fatalf("isolated frontend missing %s", path)
+		}
+	}
+	for _, path := range []string{"/v1/messages/count_tokens", "/v1/messages/other", "/v0/management/config", "/v1/messages/"} {
+		if acceptanceInferencePath(path) {
+			t.Fatalf("unrequested frontend admitted %s", path)
+		}
+	}
+	for _, trial := range []struct {
+		bearer, key string
+		valid       bool
+	}{
+		{"Bearer local-acceptance-placeholder", "", true},
+		{"", "local-acceptance-placeholder", true},
+		{"Bearer local-acceptance-placeholder", "local-acceptance-placeholder", true},
+		{"Bearer wrong", "local-acceptance-placeholder", false},
+		{"Bearer local-acceptance-placeholder", "wrong", false},
+		{"", "", false},
+	} {
+		if acceptanceCredentialMatches(trial.bearer, trial.key) != trial.valid {
+			t.Fatal("local credential boundary mismatch")
+		}
+	}
+}
+
 func (forbiddenTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	panic("forbidden test dispatch")
 }

@@ -1,5 +1,6 @@
-// Package responsestools carries the Responses client tool protocol handling
-// (tool_search discovery and custom tools) in the CLIProxyAPI core.
+// Package responsestools carries client tool discovery and custom tool protocol
+// handling in the CLIProxyAPI core, including Responses tool_search and the
+// Anthropic ToolSearch request bridge.
 //
 // The package is pure protocol logic: it depends only on the standard library
 // and never on auth, Gin, the plugin host, or network transport. An execution

@@ -71,8 +71,8 @@ func (m *Manager) responsesToolsCallToFormat(
 		return cliproxyexecutor.Response{}, errClaude
 	}
 	// Only Responses-family input targeting a Responses-family downstream
-	// enters adaptation. Anything else (or unknown) passes through unchanged
-	// even when a route matches the model name.
+	// enters the response-restoring attempt below. Claude client discovery
+	// was prepared separately above; other inputs keep their normal executor.
 	if !isResponsesFamily(execOpts.SourceFormat, cliproxyexecutor.ResponseFormatOrSource(execOpts)) {
 		resp, err := call(execCtx, execReq, execOpts)
 		return resp, err

@@ -23,6 +23,9 @@ from jsonschema.exceptions import SchemaError
 from catalog_fixture import build_catalog, digest
 
 VERSIONS = {"codex": "0.160.0", "opencode": "1.19.0"}
+CLAUDE_VERSION = "2.1.289"
+# Keep existing live batches closed until the Anthropic frontend is certified.
+ADAPTER_VERSIONS = {**VERSIONS, "claude": CLAUDE_VERSION}
 ENV_KEYS = ("PATH", "TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR")
 
 
@@ -210,9 +213,9 @@ class PreparedClient:
 
 
 def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permissions: dict) -> PreparedClient:
-    if client_id not in VERSIONS or mode not in {"eager", "lazy"}:
+    if client_id not in ADAPTER_VERSIONS or mode not in {"eager", "lazy"}:
         raise ValueError("unsupported client or mode")
-    if catalog.get("client_version") != VERSIONS[client_id]:
+    if catalog.get("client_version") != ADAPTER_VERSIONS[client_id]:
         raise ValueError("unsupported client version")
     allowed = {"run_dir", "client_version", "executable", "model", "base_url", "fixture_python",
                "model_metadata", "nonce", "max_dispatches", "max_result_bytes"}
@@ -228,6 +231,8 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
             raise ValueError("explicit session title is supported only by OpenCode")
         validate_session_title(catalog["session_title"])
     if "output_schema" in catalog:
+        if client_id == "claude":
+            raise ValueError("Claude structured-output acceptance is not yet supported")
         validate_output_schema(catalog["output_schema"])
     url = urlsplit(catalog["base_url"])
     if (url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}
@@ -250,7 +255,8 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
     env = {key: os.environ[key] for key in ENV_KEYS if key in os.environ}
     checked = subprocess.run([str(catalog["executable"]), "--version"], env=env,
                              capture_output=True, text=True, check=True)
-    expected = ("codex-cli " if client_id == "codex" else "") + VERSIONS[client_id]
+    expected = {"codex": "codex-cli " + VERSIONS["codex"], "opencode": VERSIONS["opencode"],
+                "claude": CLAUDE_VERSION + " (Claude Code)"}[client_id]
     if checked.stdout.strip() != expected:
         raise ValueError("installed client version differs from the declared scope")
     root = Path(catalog["run_dir"]).resolve()
@@ -317,7 +323,7 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
         for override in overrides:
             command += ["-c", override]
         expected_mode = "tool-search" if mode == "lazy" else "direct"
-    else:
+    elif client_id == "opencode":
         for key in ("CONFIG", "DATA", "CACHE", "STATE"):
             directory = root / ("xdg-" + key.lower())
             directory.mkdir(mode=0o700)
@@ -343,8 +349,37 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
         if "session_title" in catalog:
             command += ["--title", catalog["session_title"]]
         expected_mode = "code-mode" if mode == "lazy" else "direct"
+    else:
+        home = root / "claude-home"
+        home.mkdir(mode=0o700)
+        config_dir = root / "claude-config"
+        config_dir.mkdir(mode=0o700)
+        env.update({"HOME": str(home), "CLAUDE_CONFIG_DIR": str(config_dir),
+                    "ANTHROPIC_BASE_URL": catalog["base_url"].rstrip("/")[:-3],
+                    "ANTHROPIC_API_KEY": "local-acceptance-placeholder",
+                    "ENABLE_TOOL_SEARCH": "true" if mode == "lazy" else "false",
+                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "DISABLE_UPDATES": "1",
+                    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1", "ENABLE_CLAUDEAI_MCP_SERVERS": "false"})
+        config_path = root / "mcp.json"
+        write_private(config_path, json.dumps({"mcpServers": {"fixture": {
+            "command": fixture_command[0], "args": fixture_command[1:], "alwaysLoad": False}}}))
+        settings_path = root / "settings.json"
+        write_private(settings_path, json.dumps({"disableAllHooks": True}))
+        allowed_tools = sorted("mcp__fixture__" + name for name in names
+                               if name not in normalized_permissions["client_denied"])
+        denied_tools = sorted("mcp__fixture__" + name for name in normalized_permissions["client_denied"])
+        # Bare/simple mode suppresses ToolSearch even with explicit opt-in on
+        # 2.1.289. Isolate settings, auth, MCP and built-ins independently.
+        command += ["--print", "--verbose", "--output-format", "stream-json", "--setting-sources", "",
+                    "--settings", str(settings_path), "--strict-mcp-config", "--mcp-config", str(config_path),
+                    "--tools", "ToolSearch" if mode == "lazy" else "", "--disable-slash-commands",
+                    "--no-session-persistence", "--permission-mode", "dontAsk", "--permission-prompts", "none",
+                    "--allowedTools", ",".join(allowed_tools), "--model", catalog["model"], "--prompt-suggestions", "false"]
+        if denied_tools:
+            command += ["--disallowedTools", ",".join(denied_tools)]
+        expected_mode = "tool-search" if mode == "lazy" else "direct"
     permission_material = profile_permissions(normalized_permissions, structured_output="output_schema" in catalog, coding_task=coding_task)
-    return PreparedClient(client_id, VERSIONS[client_id], expected_mode, command, env, root,
+    return PreparedClient(client_id, ADAPTER_VERSIONS[client_id], expected_mode, command, env, root,
                           config_path, catalog_path, events, digest(permission_material), digest(build_catalog(coding_task)),
                           deepcopy(catalog.get("output_schema")), catalog.get("session_title"))
 
