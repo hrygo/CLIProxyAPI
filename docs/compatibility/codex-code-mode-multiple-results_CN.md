@@ -26,6 +26,10 @@ T23 总计 9 次物理请求，另保留 `v4` 的两次本地拒绝和上述启�
 
 独立复核文件 `.omo/tool-loading-completion/t24-codex-notify-v1/independent-code-mode-audit.json` 确认：首轮未注入 fixture 参数签名，实际加载并调用三个 coding 工具，未发现 schema 加载前调用；结果历史身份一致。这个复核有独立观测代码摘要，补充解释旧失败，不新增成功案例或可靠率分母。**T24 是一个受限单函数任务的真实客户端闭环证据，没有 eager 配对、代表性 repository 任务或收益置信区间，不能用于宣称净收益或全面认证。** 默认配置及隔离源配置指纹未变，未刷新凭据、未发布、未重启原服务。
 
+## T26：网关参数保护与官方客户端成对复测
+
+T26 已在网关生产候选 `0efa8a28` 增补历史调用参数摘要，关闭结果未变但调用参数被后处理改写仍可发送的缺口；HTTP/SSE 正常路径和 13 类篡改、全仓 Go 测试、vet 与 server build 通过。使用官方 Codex `0.160.0` 取得一个 eager/lazy 通知编码任务对：两臂代码与 11 项独立测试通过，合计 10 次 Provider 请求、6 次 MCP dispatch，通知和最终结果均保留。单组全任务输入减少 68.21%，置信净收益仍未建立。外层汇总脚本排他写入错误导致退出 1，原失败保留，另做独立原始证据核对，没有重跑。详见[生产修复与官方客户端复测](../acceptance/2026-10-13-native-call-input-guard_CN.md)。
+
 ## 实测触发
 
 候选 `4b428edfa70e98df3780f4850ab1d7129b95ed14` 的 [T14 覆盖审计](../acceptance/2026-10-13-primary-60-coverage_CN.md) 保留 Codex / Muse unavailable lazy 的失败：客户端执行 Code Mode `notify(...)` 后，下一次 Responses 请求在 `prepare` 阶段返回 `422 invalid_custom_input`，没有打开该请求的上游连接。捕获到的四个 custom call ID 均不同；触发点是同一次执行产生额外输出及最终输出，共享其 `call_id`，不是 Provider 重复发出同一调用。

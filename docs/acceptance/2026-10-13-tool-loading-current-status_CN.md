@@ -22,6 +22,8 @@ T24 用同一生产候选完成一个真实 Codex 通知编码任务：7 次物�
 
 T25 曾扩展到隔离 Codex 客户端源码修补与构建：底层 request owner 的 scoped 回归通过，但完整运行包下两个 Code Mode 原生取消仍无 MCP 取消通知，且尚未排除默认关闭的 `code_mode_interrupt` 条件。该支线收束，客户端问题保留为能力边界，重新聚焦 CLIProxyAPI 生产修复。未替换客户端、改默认配置或重启原服务；没有新增真实 Provider 或上下文收益认证。局部通过、companion 构建失败和原生失败均见[取消缺口记录](../compatibility/codex-mcp-cancellation-gap_CN.md)。
 
+T26 返回网关生产路径，`0efa8a28` 为原生多结果回填增加调用参数摘要，阻止最终发送前参数被改写、删除或变为对象；正常多结果及无参调用保持兼容。HTTP/SSE 各 13 种篡改均本地拒绝、零 mock 上游请求，全仓 Go 测试、vet 与 build 通过。官方 Codex `0.160.0` / `gpt-6-luna` 在隔离候选完成一个 eager/lazy 通知编码对，两臂代码及 11 项测试通过，共 10 请求、6 MCP dispatch；全任务输入点估计减少 68.21%。外层汇总脚本退出 1 的文件写入错误保留，另做独立证据核对，无 Provider 重跑；单固定模板不认证置信收益。自动审批拒绝远端 push，代码和说明仍为本地待同步。见[本轮生产修复与实测](2026-10-13-native-call-input-guard_CN.md)。
+
 ## 已取得的证据
 
 | 层次 | 结果 | 实际可证明的范围 |
