@@ -71,11 +71,50 @@ def _history_items(bodies):
             yield item
 
 
+def _unqualified_exec_declared(bodies):
+    # Native Lite may omit the namespace in a call. Resolve it only against
+    # one actual initial declaration; never infer identity from the name alone.
+    if not bodies or not isinstance(bodies[0], dict):
+        return False
+    body = bodies[0]
+    containers = [body.get("tools", [])]
+    history = body.get("input")
+    if isinstance(history, list):
+        containers += [item.get("tools") for item in history if isinstance(item, dict) and item.get("type") == "additional_tools"]
+    matches = []
+    def visit(tools, namespace=(), depth=0):
+        if not isinstance(tools, list) or depth > 16:
+            return
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            if tool.get("type") == "namespace":
+                visit(tool.get("tools"), namespace+(tool.get("name"),), depth+1)
+            elif tool.get("name") == "exec":
+                matches.append((namespace, tool))
+    for tools in containers:
+        visit(tools)
+    if len(matches) != 1 or matches[0][0] not in {(), ("functions",)}:
+        return False
+    tool = matches[0][1]
+    form = tool.get("format")
+    return (tool.get("type") == "custom" and isinstance(form, dict)
+            and form.get("type") == "grammar" and form.get("syntax") == "lark"
+            and isinstance(form.get("definition"), str) and bool(form["definition"].strip()))
+
+
+def _exec_call(item, unqualified=False):
+    return (item.get("type") == "custom_tool_call" and item.get("name") == "exec"
+            and (item.get("namespace") == "functions" or unqualified and item.get("namespace") is None)
+            and isinstance(item.get("input"), str))
+
+
 def observe_code_discovery(bodies, *, coding_task=None):
     expected = {tool["name"] for tool in build_catalog(coding_task)}
     seen, discovery_calls = {}, set()
     loaded, invoked, premature = set(), set(), set()
     observed, integrity = False, True
+    unqualified = _unqualified_exec_declared(bodies)
     for item in _history_items(bodies):
         key = (item.get("type"), item["call_id"])
         fingerprint = json.dumps(item, sort_keys=True)
@@ -83,8 +122,7 @@ def observe_code_discovery(bodies, *, coding_task=None):
             integrity = integrity and seen[key] == fingerprint
             continue
         seen[key] = fingerprint
-        if (item.get("type") == "custom_tool_call" and item.get("name") == "exec"
-                and item.get("namespace") == "functions" and isinstance(item.get("input"), str)):
+        if _exec_call(item, unqualified):
             code = item["input"]
             if re.search(r"\bALL_TOOLS\b", code):
                 discovery_calls.add(item["call_id"])
@@ -111,3 +149,25 @@ def observe_hidden_tool_rejection(bodies, target):
             if re.search(r"TypeError: tools\.mcp__fixture_{1,2}"+re.escape(target)+r" is not a function", text):
                 return True
     return False
+
+
+def code_mode_receipt_outputs(bodies):
+    unqualified = _unqualified_exec_declared(bodies)
+    for body in bodies:
+        pending, seen, results = set(), set(), []
+        for item in _history_items([body]):
+            call_id = item["call_id"]
+            if item.get("type") == "custom_tool_call":
+                if call_id in seen:
+                    pending.discard(call_id)
+                    continue
+                seen.add(call_id)
+                if (_exec_call(item, unqualified)
+                        and re.search(r"\btools\.mcp__fixture_{1,2}ledger_budget_(?:lookup|confirm)\s*\(", item["input"])):
+                    pending.add(call_id)
+            elif item.get("type") == "custom_tool_call_output" and call_id in pending:
+                pending.remove(call_id)
+                output = item.get("output")
+                if "Script failed" not in json.dumps(output) and "Script error:" not in json.dumps(output):
+                    results.append(output)
+        yield results

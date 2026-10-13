@@ -133,6 +133,8 @@ def intermediate_receipt_replayed(bodies, nonce):
     """Require two separate outbound histories containing actual tool results."""
     seen_lookup = False
     expected_confirmation = confirmation_code(nonce)
+    from codex_code_mode import code_mode_receipt_outputs
+    custom_outputs = iter(code_mode_receipt_outputs(bodies))
 
     def receipts(value, depth=0):
         if depth > 16:
@@ -169,6 +171,7 @@ def intermediate_receipt_replayed(bodies, nonce):
         return lookup, confirmed
 
     for body in bodies:
+        code_results = next(custom_outputs)
         if not isinstance(body, dict):
             continue
         def items(value):
@@ -198,6 +201,7 @@ def intermediate_receipt_replayed(bodies, nonce):
                             results.extend(block["text"] for block in content if isinstance(block, dict)
                                            and block.get("type") == "text" and isinstance(block.get("text"), str))
         results += [item.get("output") for item in items(body.get("input")) if item.get("type") == "function_call_output"]
+        results += code_results
         request = body.get("request")
         if isinstance(request, dict):
             pending_calls = set()

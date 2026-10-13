@@ -149,6 +149,37 @@ class CodexCodeModeProfileTests(unittest.TestCase):
         for items in ([output], [call,{**output,"call_id":"other"}], [call,{**output,"output":"permission denied"}], [{**call,"namespace":"other"},output]):
             self.assertFalse(observe_hidden_tool_rejection([{"input":items}],"fixture_mutation"))
 
+    def test_unqualified_exec_requires_unique_native_declaration(self):
+        from codex_code_mode import observe_code_discovery
+        exec_tool={"type":"custom","name":"exec","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}
+        search={"type":"custom_tool_call","name":"exec","call_id":"search","input":"text(ALL_TOOLS);"}
+        output={"type":"custom_tool_call_output","call_id":"search","output":"[]"}
+        initial={"input":[{"type":"additional_tools","tools":[{"type":"namespace","name":"functions","tools":[exec_tool]}]}]}
+        self.assertTrue(observe_code_discovery([initial,{"input":[search,output]}])["discovery_result_observed"])
+        self.assertFalse(observe_code_discovery([{"input":[search,output]}])["discovery_result_observed"])
+        ambiguous=deepcopy(initial)
+        ambiguous["input"][0]["tools"].append({"type":"namespace","name":"other","tools":[exec_tool]})
+        self.assertFalse(observe_code_discovery([ambiguous,{"input":[search,output]}])["discovery_result_observed"])
+        self.assertFalse(observe_code_discovery([initial,{"input":[{**search,"namespace":"other"},output]}])["discovery_result_observed"])
+
+    def test_custom_multitool_replay_reads_only_matching_exec_results(self):
+        from task_scenarios import intermediate_receipt_replayed
+        from catalog_fixture import confirmation_code
+        def body(target, value, *, namespace="functions", result_id="invoke"):
+            return {"input":[{"type":"custom_tool_call","name":"exec","namespace":namespace,"call_id":"invoke",
+                              "input":"text(await tools.mcp__fixture__"+target+"({project:'alpha'}));"},
+                             {"type":"custom_tool_call_output","call_id":result_id,"output":[{"type":"input_text","text":json.dumps(value)}]}]}
+        first=body("ledger_budget_lookup",{"verification_code":"fresh"})
+        second=body("ledger_budget_confirm",{"confirmation_code":confirmation_code("fresh")})
+        self.assertTrue(intermediate_receipt_replayed([first,second],"fresh"))
+        self.assertFalse(intermediate_receipt_replayed([second,first],"fresh"))
+        for bad in (body("ledger_budget_lookup",{"verification_code":"fresh"},result_id="other"),
+                    body("ledger_budget_lookup",{"verification_code":"fresh"},namespace="other"),
+                    body("collection_00_read",{"verification_code":"fresh"}),
+                    {"input":[first["input"][1]]},
+                    {"input":[{**first["input"][0],"input":json.dumps({"verification_code":"fresh"})}]}):
+            self.assertFalse(intermediate_receipt_replayed([bad,second],"fresh"))
+
 
 if __name__ == "__main__":
     unittest.main()
