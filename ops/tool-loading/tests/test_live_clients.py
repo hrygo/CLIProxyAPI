@@ -285,7 +285,7 @@ class LiveClientTests(unittest.TestCase):
                     "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
                     "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "codex",
                     "--scenarios", "lookup", "unavailable", "multitool"]
-            with patch("live_clients.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+            with patch("live_clients.sys.argv", argv), patch("live_clients.verify_gateway_revision", return_value="2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15"), patch("live_clients.shutil.which", return_value=str(executable)), \
                     patch("live_clients.run_case", side_effect=task), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
                 main()
             self.assertEqual(set(observed), {(scenario, mode) for scenario in ("lookup", "unavailable", "multitool") for mode in ("eager", "lazy")})
@@ -317,7 +317,7 @@ class LiveClientTests(unittest.TestCase):
             argv = ["live_clients.py", "--gateway-binary", str(binary), "--config", str(config), "--output-dir", str(output),
                     "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
                     "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "claude", "--structured-output"]
-            with patch("live_clients.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+            with patch("live_clients.sys.argv", argv), patch("live_clients.verify_gateway_revision", return_value="2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15"), patch("live_clients.shutil.which", return_value=str(executable)), \
                     patch("live_clients.run_case", side_effect=task), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exit:
                 main()
             self.assertEqual(exit.exception.code, 1)
@@ -381,7 +381,7 @@ class LiveClientTests(unittest.TestCase):
                     "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
                     "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "codex",
                     "--batch-max-requests", "8"]
-            with patch("live_clients.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+            with patch("live_clients.sys.argv", argv), patch("live_clients.verify_gateway_revision", return_value="2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15"), patch("live_clients.shutil.which", return_value=str(executable)), \
                     patch("live_clients.run_case", side_effect=task), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exit:
                 main()
             self.assertEqual(exit.exception.code, 1)
@@ -407,7 +407,7 @@ class LiveClientTests(unittest.TestCase):
             argv = ["live_clients.py", "--gateway-binary", str(binary), "--config", str(config), "--output-dir", str(output),
                     "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
                     "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "codex"]
-            with patch("live_clients.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+            with patch("live_clients.sys.argv", argv), patch("live_clients.verify_gateway_revision", return_value="2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15"), patch("live_clients.shutil.which", return_value=str(executable)), \
                     patch("live_clients.run_case", side_effect=task), self.assertRaises(OSError):
                 main()
             summary = json.loads((output / "summary.json").read_text())
@@ -458,7 +458,7 @@ class LiveClientTests(unittest.TestCase):
             argv = ["live_clients.py", "--gateway-binary", "unused", "--config", "unused", "--output-dir", str(output),
                     "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
                     "--upstream-model", "fixture", "--executor", "codex", "--auth-file-binding", "bad"]
-            with patch("live_clients.sys.argv", argv), patch("live_clients.run_case") as launch, \
+            with patch("live_clients.sys.argv", argv), patch("live_clients.verify_gateway_revision", return_value="2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15"), patch("live_clients.run_case") as launch, \
                     redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exit:
                 main()
             self.assertEqual(exit.exception.code, 2)

@@ -25,7 +25,7 @@ from batch_plan import build_plan, write_plan, fingerprint_materials, verify_mat
 from client_adapters import VERSIONS, ADAPTER_VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
 from http_attempts import import_http_attempts, read_admission_diagnostics, read_auxiliary_work_diagnostics
 from preparation_evidence import read_preparation_diagnostics, preparation_failure_class
-from live_gateway import candidate_process, parse_credential_bindings, validate_profile
+from live_gateway import candidate_process, parse_credential_bindings, validate_profile, verify_gateway_revision
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
 from scripted_clients import client_result, claude_structured_result
 from task_scenarios import SCENARIOS, get_scenario, output_schema, answer_matches, dispatch_matches, intermediate_receipt_replayed
@@ -345,6 +345,10 @@ def main():
     parser.add_argument("--auth-file-binding", action="append", default=[], help="explicit native OAuth filename SHA-256:content SHA-256; repeat up to eight")
     args = parser.parse_args()
     try:
+        binary_digest = verify_gateway_revision(args.gateway_binary, args.gateway_revision)
+    except ValueError:
+        parser.error("clean gateway binary must match the declared revision")
+    try:
         contract = wire_contract(args.executor)
     except ValueError:
         parser.error("executor has no verified live wire view")
@@ -392,7 +396,10 @@ def main():
             material_paths.update({"client-" + client: Path(shutil.which(client) or client).resolve() for client in args.clients})
             material_paths.update({"harness-" + path.name.replace(".", "-"): path for path in Path(__file__).resolve().parent.iterdir()
                                    if path.is_file() and path.suffix in {".py", ".json", ".txt"}})
-            locked_plan = build_plan(run_id, cases, fingerprint_materials(material_paths), args.schedule_seed,
+            materials = fingerprint_materials(material_paths)
+            if materials["gateway-binary"] != binary_digest:
+                raise ValueError("gateway binary changed after revision attestation")
+            locked_plan = build_plan(run_id, cases, materials, args.schedule_seed,
                 len(cases) * 8 if args.batch_max_requests is None else args.batch_max_requests,
                 len(cases) * 8 if args.batch_max_dispatches is None else args.batch_max_dispatches)
             write_plan(root / "batch-plan.json", locked_plan)

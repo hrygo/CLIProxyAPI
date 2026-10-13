@@ -18,6 +18,39 @@ from urllib.parse import urlsplit
 from client_adapters import ENV_KEYS, write_private
 
 
+def verify_gateway_revision(binary, revision):
+    """Attest the clean Go build before any evidence claims its revision."""
+    from batch_plan import fingerprint_materials
+    if not isinstance(revision, str) or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", revision) is None:
+        raise ValueError("complete gateway revision required")
+    binary = Path(binary).resolve()
+    before = fingerprint_materials({"gateway-binary": binary})["gateway-binary"]
+    env = {key: os.environ[key] for key in ENV_KEYS if key in os.environ}
+    # Inspect an existing executable only; never select/download a toolchain or
+    # read the user's persistent Go environment to satisfy a live preflight.
+    env.update(GOTOOLCHAIN="local", GOENV="off", GOWORK="off")
+    try:
+        result = subprocess.run(["go", "version", "-m", str(binary)], env=env, stdin=subprocess.DEVNULL,
+                                capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        raise ValueError("gateway build metadata unavailable") from None
+    if result.returncode != 0 or len(result.stdout) > 1048576:
+        raise ValueError("gateway build metadata unavailable")
+    settings = {}
+    for line in result.stdout.splitlines():
+        columns = line.split("\t")
+        if len(columns) == 3 and columns[1] == "build" and columns[2].startswith("vcs"):
+            key, separator, value = columns[2].partition("=")
+            if not separator or key in settings:
+                raise ValueError("ambiguous gateway build metadata")
+            settings[key] = value
+    if (settings.get("vcs") != "git" or settings.get("vcs.revision") != revision
+            or settings.get("vcs.modified") != "false"
+            or fingerprint_materials({"gateway-binary": binary})["gateway-binary"] != before):
+        raise ValueError("gateway binary is dirty or differs from the declared revision")
+    return before
+
+
 def parse_credential_bindings(values, executor):
     if not isinstance(values, list) or len(values) > 8:
         raise ValueError("credential selection budget exceeded")

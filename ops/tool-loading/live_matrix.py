@@ -19,7 +19,7 @@ from batch_plan import BatchBudget, audit_plan, build_plan, fingerprint_material
 from client_adapters import ADAPTER_VERSIONS, validate_session_title, write_private
 from http_attempts import _json
 from live_clients import endpoint_id, make_case_spec, run_case
-from live_gateway import validate_profile
+from live_gateway import validate_profile, verify_gateway_revision
 from native_wire import wire_contract
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
 from task_scenarios import SCENARIOS
@@ -94,6 +94,7 @@ def main():
     parser.add_argument("--gateway-revision", required=True)
     args = parser.parse_args()
     try:
+        binary_digest = verify_gateway_revision(args.gateway_binary, args.gateway_revision)
         declaration = read_declaration(args.declaration)
         cases, contexts = compile_cases(declaration, args.config.resolve(), args.gateway_revision)
         material_paths = {"gateway-binary": args.gateway_binary.resolve(), "source-config": args.config.resolve(),
@@ -103,7 +104,10 @@ def main():
         material_paths.update({"harness-" + path.name.replace(".", "-"): path for path in Path(__file__).resolve().parent.iterdir()
                                if path.is_file() and path.suffix in {".py", ".json", ".txt"}})
         run_id = "live-matrix-" + uuid.uuid4().hex
-        plan = build_plan(run_id, cases, fingerprint_materials(material_paths), declaration["schedule_seed"],
+        materials = fingerprint_materials(material_paths)
+        if materials["gateway-binary"] != binary_digest:
+            raise ValueError("gateway binary changed after revision attestation")
+        plan = build_plan(run_id, cases, materials, declaration["schedule_seed"],
                           declaration["max_requests"], declaration["max_dispatches"])
     except (OSError, ValueError):
         parser.error("matrix declaration or material preflight failed")

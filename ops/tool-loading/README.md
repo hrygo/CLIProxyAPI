@@ -86,6 +86,15 @@ the explicit OpenCode title profile), and `scenarios`. Both eager/lazy modes
 are mandatory. Duplicate case identities and unverified wire contracts fail
 preflight; the declaration itself enters the frozen materials.
 
+Both live entry points require a local Go executable to inspect the candidate
+with `go version -m`. Before creating cases, the binary must report `vcs=git`,
+the exact declared revision and `vcs.modified=false`. Missing/ambiguous build
+metadata, dirty builds and replacement during inspection fail closed. Inspection
+sets `GOTOOLCHAIN=local` and `GOENV=off`; it does not download a toolchain or
+change persistent Go configuration. The attested binary digest must also match
+the frozen batch materials. Read the full revision with `git rev-parse HEAD`
+after committing the candidate sources; do not reconstruct it from a short SHA.
+
 ```sh
 python3 ops/tool-loading/live_matrix.py \
   --declaration "$task_validation/matrix.json" \

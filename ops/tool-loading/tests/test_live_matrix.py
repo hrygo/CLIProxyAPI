@@ -86,7 +86,7 @@ class LiveMatrixTests(unittest.TestCase):
 
             argv = ["matrix", "--declaration", str(declaration), "--gateway-binary", str(binary),
                     "--config", str(config), "--output-dir", str(output), "--gateway-revision", "a" * 40]
-            with patch("live_matrix.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+            with patch("live_matrix.sys.argv", argv), patch("live_matrix.verify_gateway_revision", return_value="2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15"), patch("live_clients.shutil.which", return_value=str(executable)), \
                     patch("live_matrix.shutil.which", return_value=str(executable)), \
                     patch("live_matrix.run_case", side_effect=task), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exit:
                 main()
@@ -132,7 +132,7 @@ class LiveMatrixTests(unittest.TestCase):
 
             argv = ["matrix", "--declaration", str(declaration), "--gateway-binary", str(binary),
                     "--config", str(config), "--output-dir", str(output), "--gateway-revision", "a" * 40]
-            with patch("live_matrix.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+            with patch("live_matrix.sys.argv", argv), patch("live_matrix.verify_gateway_revision", return_value="2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15"), patch("live_clients.shutil.which", return_value=str(executable)), \
                     patch("live_matrix.shutil.which", return_value=str(executable)), patch("live_matrix.run_case", side_effect=task) as launch, \
                     redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
                 main()
@@ -158,7 +158,7 @@ class LiveMatrixTests(unittest.TestCase):
 
             argv = ["matrix", "--declaration", str(declaration), "--gateway-binary", str(binary),
                     "--config", str(config), "--output-dir", str(output), "--gateway-revision", "a" * 40]
-            with patch("live_matrix.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+            with patch("live_matrix.sys.argv", argv), patch("live_matrix.verify_gateway_revision", return_value="2a3a895e6ffa476f024217471fd61316ab73ef74d8b2ede64aa3a44d5186af15"), patch("live_clients.shutil.which", return_value=str(executable)), \
                     patch("live_matrix.shutil.which", return_value=str(executable)), patch("live_matrix.run_case", side_effect=task), \
                     redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
                 main()
