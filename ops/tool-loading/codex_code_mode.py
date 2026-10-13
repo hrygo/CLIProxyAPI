@@ -2,6 +2,7 @@
 import re
 import json
 from catalog_fixture import build_catalog
+from code_mode_wire import code_mode_entry
 
 
 def requested_codex_mode(client, value=None):
@@ -43,20 +44,18 @@ def _schema_tools(value, expected, depth=0):
     return found
 
 
-def observe_code_mode(tools, mode, *, coding_task=None, client_denied=(), service_denied=()):
-    candidates = [tool for tool in tools if tool.get("name") == "exec" and tool.get("type") == "custom"
-                  and isinstance(tool.get("format"), dict) and tool["format"].get("type") == "grammar"
-                  and tool["format"].get("syntax") == "lark"
-                  and isinstance(tool["format"].get("definition"), str) and tool["format"]["definition"].strip()]
-    if len(candidates) != 1 or not isinstance(candidates[0].get("description"), str):
+def observe_code_mode(tools, mode, *, coding_task=None, client_denied=(), service_denied=(), wire_contract=None):
+    entry = code_mode_entry(tools, wire_contract)
+    if entry is None:
         return {"effective": False, "exec_grammar_observed": False, "nested_fixture_signatures": None}
-    description = candidates[0]["description"]
+    description = entry["description"]
     known = {tool["name"] for tool in build_catalog(coding_task)}
     expected = known - set(client_denied) - set(service_denied)
     observed = _schema_tools(description, known)
     effective = (observed == expected if mode == "eager"
                  else not observed and bool(re.search(r"\bALL_TOOLS\b", description)) if mode == "lazy" else False)
-    return {"effective": bool(effective), "exec_grammar_observed": True,
+    return {"effective": bool(effective), "exec_grammar_observed": not entry["bridge"],
+            "exec_bridge_observed": entry["bridge"], "grammar_fidelity": entry["grammar_fidelity"],
             "nested_fixture_signatures": len(observed)}
 
 

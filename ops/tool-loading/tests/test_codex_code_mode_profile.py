@@ -12,6 +12,75 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 class CodexCodeModeProfileTests(unittest.TestCase):
+    def test_code_mode_entry_retains_actual_declaration_namespace(self):
+        from code_mode_wire import EXEC_ALIAS, normalize_code_mode_wire
+        native={"type":"custom","name":"exec","description":"Run JavaScript code; ALL_TOOLS",
+                "format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}
+        bridge={"type":"function","name":EXEC_ALIAS,"description":"Run JavaScript code; ALL_TOOLS",
+                "parameters":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":False}}
+        def body(tool, namespace):
+            return {"tools":[tool] if namespace is None else [{"type":"namespace","name":namespace,"tools":[tool]}],"input":[]}
+        for namespace in (None,"functions"):
+            self.assertTrue(normalize_code_mode_wire([body(native,namespace)],"openai-responses-v1")["integrity"])
+        self.assertTrue(normalize_code_mode_wire([body(bridge,None)],"openai-responses-v1")["integrity"])
+        for tool, namespace in ((native,"other"),(bridge,"functions"),(bridge,"other"),({**bridge,"namespace":"other"},None)):
+            with self.subTest(namespace=namespace,name=tool["name"]):
+                self.assertFalse(normalize_code_mode_wire([body(tool,namespace)],"openai-responses-v1")["integrity"])
+        self.assertFalse(normalize_code_mode_wire([body(bridge,None),body({**bridge,"parameters":{}},None)],"openai-responses-v1")["integrity"])
+
+    def test_bridge_observation_keeps_grammar_loss_explicit(self):
+        from codex_code_mode import observe_code_mode
+        from catalog_fixture import build_catalog
+        description="Run JavaScript code; ALL_TOOLS\n"+"\n".join("declare const tools: { mcp__fixture__"+t["name"]+"(args: {project: string;}): Promise<unknown>; };" for t in build_catalog() if t["name"]!="fixture_mutation")
+        tool={"type":"function","name":"ccb_af56ab8ec19e8955daac9192a46dce815acb276fab7bb6ac","description":description+'\nsyntax: "lark"\ntype: "grammar"',
+              "parameters":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":False}}
+        result=observe_code_mode([tool],"eager",service_denied=["fixture_mutation"],wire_contract="openai-responses-v1")
+        self.assertTrue(result["effective"])
+        self.assertFalse(result["exec_grammar_observed"])
+        self.assertTrue(result["exec_bridge_observed"])
+        self.assertEqual(result["grammar_fidelity"],"described")
+        self.assertFalse(observe_code_mode([tool],"eager",service_denied=["fixture_mutation"])["effective"])
+        for invalid in ({**tool,"name":"ccb_other"},{**tool,"parameters":{"type":"object"}}):
+            self.assertFalse(observe_code_mode([invalid],"eager",wire_contract="openai-responses-v1")["effective"])
+
+    def test_bridge_history_binds_declared_identity_and_exact_input_wrapper(self):
+        from code_mode_wire import normalize_code_mode_wire
+        from codex_code_mode import observe_code_discovery
+        alias="ccb_af56ab8ec19e8955daac9192a46dce815acb276fab7bb6ac"
+        tool={"type":"function","name":alias,"description":"Run JavaScript code; ALL_TOOLS; syntax: lark; type: grammar",
+              "parameters":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":False}}
+        initial={"tools":[tool],"input":[]}
+        call={"type":"function_call","name":alias,"call_id":"search","arguments":json.dumps({"input":"text(ALL_TOOLS);"})}
+        schema="declare const tools: { mcp__fixture__ledger_budget_lookup(args: {project: string;}): Promise<unknown>; };"
+        output={"type":"function_call_output","call_id":"search","output":schema}
+        bodies=[initial,{"input":[call,output]}]
+        frozen=deepcopy(bodies)
+        view=normalize_code_mode_wire(bodies,"openai-responses-v1")
+        self.assertTrue(view["integrity"])
+        self.assertEqual(bodies,frozen)
+        self.assertEqual(observe_code_discovery(view["bodies"])["loaded_fixture_schema_tools"],["ledger_budget_lookup"])
+        for arguments in ('{"input":"text(ALL_TOOLS);","input":"fake"}', '{"input":null}', '{"input":"text(ALL_TOOLS);","other":1}'):
+            bad={"input":[{**call,"arguments":arguments},output]}
+            self.assertFalse(normalize_code_mode_wire([initial,bad],"openai-responses-v1")["integrity"])
+        unknown=normalize_code_mode_wire([initial,{"input":[{**call,"name":"other"},output]}],"openai-responses-v1")
+        self.assertEqual(observe_code_discovery(unknown["bodies"])["loaded_fixture_schema_tools"],[])
+        self.assertFalse(normalize_code_mode_wire([initial,{"input":[{**call,"namespace":"other"},output]}],"openai-responses-v1")["integrity"])
+
+    def test_chat_exec_view_requires_declared_string_bridge_and_matching_tool_result(self):
+        from code_mode_wire import normalize_code_mode_wire
+        from codex_code_mode import observe_code_discovery
+        function={"name":"exec","description":"Run JavaScript code; ALL_TOOLS",
+                  "parameters":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}}
+        initial={"tools":[{"type":"function","function":function}],"messages":[]}
+        history={"messages":[{"role":"assistant","tool_calls":[{"id":"search","type":"function","function":{"name":"exec","arguments":json.dumps({"input":"text(ALL_TOOLS);"})}}]},
+                             {"role":"tool","tool_call_id":"search","content":"[]"}]}
+        view=normalize_code_mode_wire([initial,history],"openai-chat-v1")
+        self.assertTrue(view["integrity"])
+        self.assertTrue(observe_code_discovery(view["bodies"])["discovery_result_observed"])
+        self.assertNotIn("messages",view["bodies"][1])
+        invalid=deepcopy(history); invalid["messages"][1]["tool_call_id"]="different"
+        self.assertFalse(observe_code_discovery(normalize_code_mode_wire([initial,invalid],"openai-chat-v1")["bodies"])["discovery_result_observed"])
+
     def test_scripted_code_mode_preserves_raw_input_and_receipt_identity(self):
         from scripted_clients import ScriptedModel, response_events, tool_receipt
         model = ScriptedModel("codex", "eager", "allow", codex_tool_mode="code_mode_only")

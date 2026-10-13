@@ -24,6 +24,7 @@ from catalog_fixture import build_catalog, digest
 from batch_plan import build_plan, write_plan, fingerprint_materials, verify_materials, BatchBudget, audit_plan
 from client_adapters import VERSIONS, ADAPTER_VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
 from codex_code_mode import requested_codex_mode, metadata_admits_mode, observe_code_mode, observe_code_discovery
+from code_mode_wire import normalize_code_mode_wire
 from http_attempts import import_http_attempts, read_admission_diagnostics, read_auxiliary_work_diagnostics
 from preparation_evidence import read_preparation_diagnostics, preparation_failure_class
 from live_gateway import CandidateFailure, candidate_process, parse_credential_bindings, validate_profile, verify_gateway_revision
@@ -239,7 +240,7 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
                  endpoint_id=endpoint, transport="http-sse", region_id="unknown",
                  catalog_hash=digest(build_catalog(task.coding_task)), fixture_hash=digest({
                      "sources": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                                 for name in ("catalog_fixture.py", "client_adapters.py", "codex_code_mode.py", "task_scenarios.py", "opencode_server_adapter.py", "scripted_clients.py", "native_wire.py")
+                                 for name in ("catalog_fixture.py", "client_adapters.py", "codex_code_mode.py", "code_mode_wire.py", "task_scenarios.py", "opencode_server_adapter.py", "scripted_clients.py", "native_wire.py")
                                  + (("coding_tasks.py",) if task.coding_task is not None else ())},
                      "coding_task": task.coding_task,
                      "isolation_version": 8,
@@ -376,7 +377,8 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                 raise ValueError("auxiliary work settlement is unverified")
             model_attempts = [attempt for attempt in attempts if attempt.get("role") != "auxiliary"]
             bodies = [json.loads((capture / (attempt["request_id"] + ".body")).read_bytes()) for attempt in model_attempts]
-            if scenario == "multitool" and prepared is not None and not intermediate_receipt_replayed(bodies, nonce):
+            code_view = normalize_code_mode_wire(bodies, profile["contract"]) if codex_mode == "code_mode_only" else {"bodies":bodies,"integrity":True}
+            if scenario == "multitool" and prepared is not None and not intermediate_receipt_replayed(code_view["bodies"], nonce):
                 checks["dispatch"] = False
                 issues.append("intermediate_receipt_not_replayed")
             declarations = [wire_declarations(profile["contract"], body) for body in bodies]
@@ -385,10 +387,11 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             if declarations:
                 if codex_mode == "code_mode_only":
                     code_mode_observation = observe_code_mode(declarations[0], mode, coding_task=task.coding_task,
-                        client_denied=PERMISSIONS["client_denied"], service_denied=PERMISSIONS["service_denied"])
-                    effective = code_mode_observation["effective"]
+                        client_denied=PERMISSIONS["client_denied"], service_denied=PERMISSIONS["service_denied"], wire_contract=profile["contract"])
+                    code_mode_observation["wire_history_integrity"] = code_view["integrity"]
+                    effective = code_mode_observation["effective"] and code_view["integrity"]
                     if mode == "lazy":
-                        code_mode_observation.update(observe_code_discovery(bodies, coding_task=task.coding_task))
+                        code_mode_observation.update(observe_code_discovery(code_view["bodies"], coding_task=task.coding_task))
                         dispatched = {event["tool"] for event in events if event["phase"] == "dispatch"}
                         effective = bool(effective and code_mode_observation["discovery_result_observed"]
                                          and code_mode_observation["history_identity_consistent"]

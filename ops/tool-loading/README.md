@@ -1006,13 +1006,25 @@ by the explicit isolated flags. Eager/lazy use different search visibility while
 retaining the selected Code Mode and bottom-level MCP permissions. Neither the
 operator configuration nor the existing direct profile is changed.
 
-The observed entry is a custom `functions.exec` with a Lark grammar. Eager must
+The native observed entry is custom `exec` with a Lark grammar, optionally
+wrapped in the native `functions` namespace. The pinned client registers its
+source identity as plain `exec`. The Responses bridge therefore uses the exact
+plain custom identity hash; the Chat bridge exposes a function `exec` with one
+string `input` parameter. These function bridges are separately observed and
+report grammar fidelity as `described` or `not-forwarded`; they never claim
+native grammar enforcement. A bridge history is normalized only in an
+analysis view after checking the actual entry declaration, argument wrapper
+and matching call/result IDs. Raw captures and token accounting stay intact.
+Eager must
 contain typed signatures for the permission-filtered fixture catalog; lazy must
 omit those signatures and expose `ALL_TOOLS`. Discovery uses that advertised
 Code Mode API, returning typed tool descriptions before dispatch. A forced
 native `tool_search_call` absent from the initial tool declaration does not prove
 discoverability. Matching call identity, schema output and invocation order are
 checked independently of nonce replay and terminal state.
+`effective_mode_observed` is a mode observation, not a standalone task-success
+claim. A correct no-result task may load no fixture schema; tasks requiring
+dispatch must independently prove the actual invocation and its loaded schema.
 
 Matrix declaration `schema_version: 2` permits a `codex_tool_mode` string on Codex
 units only (`direct` or `code_mode_only`); version 1 retains its closed original
