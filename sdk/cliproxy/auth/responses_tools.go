@@ -160,8 +160,9 @@ func (m *Manager) prepareResponsesToolsAttempt(route responsestools.Route, paylo
 		return prepared.Body, nil, nil, nil
 	}
 	guard := &WireContract{
-		ActiveToolBytes:    responsestools.ActiveToolArraysBytesOf(prepared.Body),
-		MaxActiveToolBytes: prepared.Attempt.MaxActiveToolBytes(),
+		ActiveToolBytes:       responsestools.ActiveToolArraysBytesOf(prepared.Body),
+		MaxActiveToolBytes:    prepared.Attempt.MaxActiveToolBytes(),
+		MultipleCustomOutputs: routePolicy.CustomOutputReplay == responsestools.CustomOutputReplayMultiple,
 	}
 	if prepared.Attempt.ResponseOnly() {
 		// Native Lite alias repair changes only upstream responses. Retain
@@ -248,6 +249,19 @@ func collectResponsesToolsWireRequirements(body []byte, wire *WireContract) erro
 	var root map[string]any
 	if err := json.Unmarshal(body, &root); err != nil {
 		return fmt.Errorf("prepared request is not valid JSON")
+	}
+	outputCounts := make(map[string]int)
+	if wire.MultipleCustomOutputs {
+		events, err := cliproxyexecutor.NativeWireToolHistoryEvents(body)
+		if err != nil {
+			return fmt.Errorf("prepared native history is not valid: %w", err)
+		}
+		wire.NativeHistoryEvents = events
+		for _, event := range events {
+			if event.Type == "function_call_output" || event.Type == "custom_tool_call_output" {
+				outputCounts[strings.TrimSpace(event.CallID)]++
+			}
+		}
 	}
 	required := make(map[string]struct{})
 	qualifiedNamesByName := make(map[string]map[string]struct{})
@@ -336,8 +350,9 @@ func collectResponsesToolsWireRequirements(body []byte, wire *WireContract) erro
 			}
 			if _, bridged := bridgedAliases[name]; bridged {
 				reference := cliproxyexecutor.WireToolHistoryReference{
-					Name:   name,
-					CallID: callID,
+					Name:        name,
+					CallID:      callID,
+					OutputCount: outputCounts[callID],
 				}
 				for alternate := range qualifiedNamesByName[name] {
 					if alternate == name {

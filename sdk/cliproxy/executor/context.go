@@ -81,7 +81,7 @@ func UpstreamAttempted(ctx context.Context) bool {
 type wireContractContextKey struct{}
 
 // WireContract is the read-only tool contract visible to the outbound guard.
-// It carries only tool identifiers and sizes: never the attempt, original
+// It carries only tool identifiers, hashes and sizes: never the attempt, original
 // client request, credentials, arguments, or tool outputs.
 type WireContract struct {
 	// SearchBridgeActive marks an attempt that adapted client tool_search,
@@ -100,6 +100,11 @@ type WireContract struct {
 	// HistoryCalls lists bridged historical calls whose identity and outputs
 	// must remain linked in the final outbound payload.
 	HistoryCalls []WireToolHistoryReference
+	// MultipleCustomOutputs binds the guard to the explicit native replay policy.
+	MultipleCustomOutputs bool
+	// NativeHistoryEvents protects global order and exact output content without
+	// retaining raw results in the context.
+	NativeHistoryEvents []WireToolHistoryEvent
 	// ActiveToolBytes is the normalized declaration size after adaptation.
 	ActiveToolBytes int
 	// MaxActiveToolBytes is the configured ceiling enforced after all
@@ -113,6 +118,8 @@ type WireToolHistoryReference struct {
 	Name           string
 	AlternateNames []string
 	CallID         string
+	// OutputCount is the prepared cardinality; zero retains the legacy count of one.
+	OutputCount int
 }
 
 // WithWireContract attaches the read-only wire contract for the final send

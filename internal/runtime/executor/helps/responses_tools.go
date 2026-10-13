@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
@@ -94,6 +95,7 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 			bridgedAliases[alias] = struct{}{}
 		}
 		expectedCallIDs := make(map[string]struct{}, len(wire.HistoryCalls))
+		expectedOutputs := make(map[string]int, len(wire.HistoryCalls))
 		for _, call := range wire.HistoryCalls {
 			if call.CallID == "" || call.Name == "" {
 				return wireError(http.StatusUnprocessableEntity, "bridged history reference is incomplete")
@@ -110,8 +112,12 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 			}
 			expected[call.CallID] = allowedNames
 			expectedCallIDs[call.CallID] = struct{}{}
+			expectedOutputs[call.CallID] = 1
+			if wire.MultipleCustomOutputs && call.OutputCount > 1 {
+				expectedOutputs[call.CallID] = call.OutputCount
+			}
 		}
-		history := collectOutboundToolHistory(root, bridgedAliases, expectedCallIDs)
+		history := collectOutboundToolHistory(root, bridgedAliases, expectedCallIDs, expectedOutputs)
 		if history.invalid {
 			return wireError(http.StatusUnprocessableEntity, "post rule duplicated or corrupted outbound tool history")
 		}
@@ -121,8 +127,14 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 			if !exists || !allowedName || history.callCounts[call.CallID] != 1 {
 				return wireError(http.StatusUnprocessableEntity, "post rule changed bridged history identity")
 			}
-			if history.outputCounts[call.CallID] != 1 {
+			if history.outputCounts[call.CallID] != expectedOutputs[call.CallID] {
 				return wireError(http.StatusUnprocessableEntity, "post rule removed bridged history output")
+			}
+		}
+		if wire.MultipleCustomOutputs {
+			events, err := cliproxyexecutor.NativeWireToolHistoryEvents(payload)
+			if err != nil || !slices.Equal(events, wire.NativeHistoryEvents) {
+				return wireError(http.StatusUnprocessableEntity, "post rule changed native tool result content, identity or order")
 			}
 		}
 		for callID, name := range history.calls {
@@ -319,7 +331,7 @@ type outboundToolHistory struct {
 	invalid      bool
 }
 
-func collectOutboundToolHistory(root map[string]any, bridgedAliases, expectedCallIDs map[string]struct{}) outboundToolHistory {
+func collectOutboundToolHistory(root map[string]any, bridgedAliases, expectedCallIDs map[string]struct{}, expectedOutputs map[string]int) outboundToolHistory {
 	history := outboundToolHistory{
 		calls:        make(map[string]string),
 		callCounts:   make(map[string]int),
@@ -349,7 +361,11 @@ func collectOutboundToolHistory(root map[string]any, bridgedAliases, expectedCal
 	recordOutput := func(callID string) {
 		callID = strings.TrimSpace(callID)
 		if callID != "" {
-			if history.outputCounts[callID] > 0 {
+			limit := expectedOutputs[callID]
+			if limit < 1 {
+				limit = 1
+			}
+			if history.outputCounts[callID] >= limit {
 				history.invalid = true
 			}
 			history.outputCounts[callID]++
