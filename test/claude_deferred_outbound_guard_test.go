@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	auth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -194,4 +198,130 @@ func claudeDeferredLongNamesBody(t *testing.T) []byte {
 		t.Fatal(err)
 	}
 	return body
+}
+
+func TestClaudeDeferredHostedToolChoiceGuard(t *testing.T) {
+	for _, transport := range []string{"execute", "stream", "websocket-execute", "websocket-stream"} {
+		stream := strings.HasSuffix(transport, "stream")
+		useWebsocket := strings.HasPrefix(transport, "websocket-")
+		for _, selection := range []string{"forced", "allowed-tools"} {
+			for _, declaration := range []string{"missing", "client-declared", "operator-injected", "disabled-client-declared"} {
+				name := transport + "/" + selection + "/" + declaration
+				t.Run(name, func(t *testing.T) {
+					var server *httptest.Server
+					var received *responsesToolsRecorder
+					var wsRequests *atomic.Int32
+					if useWebsocket {
+						server, received, wsRequests = newClaudeHostedWebsocketProviderServer(t)
+					} else {
+						server, received = newResponsesToolsProviderServer(t, responsesToolsCodexStream)
+					}
+					cfg := &config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationPassthrough}}
+					cfg.NormalizeResponsesToolsConfig()
+					toolType := "web_search"
+					body := []byte(claudeDeferredGuardRequest)
+					if declaration == "client-declared" || declaration == "disabled-client-declared" {
+						var root map[string]any
+						if err := json.Unmarshal(body, &root); err != nil {
+							t.Fatal(err)
+						}
+						root["tools"] = append(root["tools"].([]any), map[string]any{"type": "web_search_20250305", "name": "web_search"})
+						body, _ = json.Marshal(root)
+					}
+					if declaration == "operator-injected" {
+						cfg.DisableImageGeneration = config.DisableImageGenerationOff
+						toolType = "image_generation"
+					}
+					choice := map[string]any{"type": toolType}
+					if selection == "allowed-tools" {
+						choice = map[string]any{"type": "allowed_tools", "mode": "required", "tools": []any{choice}}
+					}
+					params := map[string]any{"tool_choice": choice}
+					if declaration == "disabled-client-declared" {
+						params["tools"] = []any{
+							map[string]any{"type": "function", "name": "ToolSearch", "parameters": map[string]any{"type": "object"}},
+							map[string]any{"type": "function", "name": "lookup", "parameters": map[string]any{"type": "object"}},
+						}
+					}
+					cfg.Payload.Override = []config.PayloadRule{{Models: []config.PayloadModelRule{{Name: "review-model"}}, Params: params}}
+					mgr := auth.NewManager(nil, nil, nil)
+					if useWebsocket {
+						mgr.RegisterExecutor(runtimeexecutor.NewCodexWebsocketsExecutor(cfg))
+					} else {
+						mgr.RegisterExecutor(runtimeexecutor.NewCodexExecutor(cfg))
+					}
+					mgr.SetRetryConfig(0, 0, 0)
+					mgr.SetConfig(cfg)
+					registerResponsesToolsProvider(t, mgr, "claude-hosted-guard", "codex", "review-model", server.URL)
+					req := executor.Request{Model: "review-model", Payload: body}
+					opts := executor.Options{SourceFormat: translator.FormatClaude, OriginalRequest: body, Stream: stream}
+					var err error
+					if stream {
+						result, errStream := mgr.ExecuteStream(context.Background(), []string{"codex"}, req, opts)
+						err = errStream
+						if result != nil {
+							for chunk := range result.Chunks {
+								if chunk.Err != nil {
+									err = chunk.Err
+								}
+							}
+						}
+					} else {
+						_, err = mgr.Execute(context.Background(), []string{"codex"}, req, opts)
+					}
+					if declaration == "client-declared" || declaration == "operator-injected" {
+						if err != nil || len(received.get()) == 0 {
+							t.Fatalf("valid hosted choice did not dispatch: %v", err)
+						}
+						found := false
+						for _, tool := range gjson.GetBytes(received.get(), "tools").Array() {
+							found = found || tool.Get("type").String() == toolType
+						}
+						if !found {
+							t.Fatalf("valid hosted selection lost its declaration: %s", received.get())
+						}
+						return
+					}
+					if len(received.get()) != 0 {
+						t.Fatalf("undeclared hosted choice was dispatched: %s", received.get())
+					}
+					if useWebsocket && wsRequests.Load() != 0 {
+						t.Fatalf("invalid hosted choice reached websocket handshake: %d", wsRequests.Load())
+					}
+					var localError interface{ StatusCode() int }
+					if !errors.As(err, &localError) || localError.StatusCode() != 422 {
+						t.Fatalf("expected local 422, got %v", err)
+					}
+				})
+			}
+		}
+	}
+}
+
+func newClaudeHostedWebsocketProviderServer(t *testing.T) (*httptest.Server, *responsesToolsRecorder, *atomic.Int32) {
+	t.Helper()
+	received := new(responsesToolsRecorder)
+	requests := new(atomic.Int32)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, payload, errRead := conn.ReadMessage()
+		if errRead != nil {
+			t.Errorf("read websocket request: %v", errRead)
+			return
+		}
+		received.set(payload)
+		completed := []byte(`{"type":"response.completed","response":{"id":"resp_hosted","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`)
+		if errWrite := conn.WriteMessage(websocket.TextMessage, completed); errWrite != nil {
+			t.Errorf("write websocket completion: %v", errWrite)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, received, requests
 }

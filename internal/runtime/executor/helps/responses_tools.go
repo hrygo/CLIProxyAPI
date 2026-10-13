@@ -314,9 +314,9 @@ func collectFunctionDeclarationNames(value any, inheritedNamespace string, names
 	}
 }
 
-// validateExactOutboundToolChoice checks only function identities. Hosted
-// built-ins keep their existing provider policy and are outside the active
-// client-executed function set.
+// validateExactOutboundToolChoice checks active function identities and requires
+// selected hosted tools to have a final declaration. Hosted declaration policy
+// remains provider-owned; this does not grant or verify execution permission.
 func validateExactOutboundToolChoice(root map[string]any, allowed map[string]struct{}) error {
 	check := func(name string) error {
 		if _, ok := allowed[name]; !ok {
@@ -325,20 +325,38 @@ func validateExactOutboundToolChoice(root map[string]any, allowed map[string]str
 		return nil
 	}
 	for _, toolRoot := range outboundToolRoots(root) {
-		if choice, ok := toolRoot["tool_choice"].(map[string]any); ok {
-			if stringField(choice, "type") == "function" {
-				if err := check(outboundToolName(choice)); err != nil {
-					return err
+		checkChoice := func(choice map[string]any) error {
+			toolType := stringField(choice, "type")
+			switch toolType {
+			case "function":
+				return check(outboundToolName(choice))
+			case "", "auto", "none", "required", "allowed_tools":
+				return nil
+			}
+			tools, _ := toolRoot["tools"].([]any)
+			for _, rawTool := range tools {
+				tool, _ := rawTool.(map[string]any)
+				if stringField(tool, "type") != toolType {
+					continue
 				}
+				// A provider-hosted MCP choice must refer to its declared server.
+				if label := stringField(choice, "server_label"); label != "" && label != stringField(tool, "server_label") {
+					continue
+				}
+				return nil
+			}
+			return wireError(http.StatusUnprocessableEntity, "post rule selected an undeclared hosted tool %q", toolType)
+		}
+		if choice, ok := toolRoot["tool_choice"].(map[string]any); ok {
+			if err := checkChoice(choice); err != nil {
+				return err
 			}
 			if stringField(choice, "type") == "allowed_tools" {
 				tools, _ := choice["tools"].([]any)
 				for _, rawTool := range tools {
 					tool, _ := rawTool.(map[string]any)
-					if stringField(tool, "type") == "function" {
-						if err := check(outboundToolName(tool)); err != nil {
-							return err
-						}
+					if err := checkChoice(tool); err != nil {
+						return err
 					}
 				}
 			}
