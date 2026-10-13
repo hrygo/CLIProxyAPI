@@ -1,6 +1,6 @@
 # Codex 0.160.0 Code Mode MCP 取消传播缺口
 
-状态：**隔离客户端候选已有局部实现及回归证据，原生 Code Mode 取消仍失败，未交付为已修复客户端。** T25 曾在任务目录修补并构建 Codex；该支线停止扩展，实施重新聚焦 CLIProxyAPI。未安装或替换现有客户端。
+状态：**官方 Codex `0.160.0` 在显式启用 `code_mode_interrupt` 后仍未通过 Code Mode MCP 请求级取消。** T28 的两个成功对照通过；两个取消案例收到 ack 和匹配 `interrupted`，但取消通知为 0，清理前最后 `active=1`。客户端接受该 feature 的实测与四例原始记录已独立复核，详见[T28 报告](../acceptance/2026-10-13-hosted-choice-and-official-cancel_CN.md)。没有构建、安装或替换客户端。T25 的自建支线仅保留历史诊断，不是交付路径。
 
 **2026-10-13 用户明确的交付边界：** 实际使用官方发行的 Codex CLI、Claude Code 等客户端，不走自建、源码修补或维护客户端 fork 的路线。下文源码候选与回归矩阵保留为历史诊断及外部上游参考，不是本任务后续执行计划。客户端缺口以兼容限制、责任边界和外部依赖报告交付；仅通过现有受支持能力接入，不将自建客户端作为验收前置。默认配置和原服务继续保持不变。
 
@@ -31,6 +31,8 @@ T25 的新增证据来自固定 commit 的完整 checkout 和实际编译使用�
 - pinned `Cargo.lock` 的 RMCP stanza 为 **3.2.0**。该版本 `RequestHandle::await_response(self)` 与 `cancel(self, reason)` 都消费同一个 handle；`cancel` 用 handle 自己的真实 request ID 发 `notifications/cancelled` 并清理 subscription/progress watcher，server 侧按同 ID 取消 callback token。不能把两个消费同一值的方法直接放进 `select!`，也不能假定 drop 自动发协议取消。
 
 这些源码断点属于客户端内部；哪个断点构成 2/2 实测失败的唯一根因仍未证明，也未排除 feature 配置条件。若最终需要改变 MCP request 生命周期，应由客户端官方项目解决。本任务保留诊断，不继续设计或编译客户端补丁。
+
+**T28 后续实测更新：** 上述“未排除 feature 配置条件”描述 T25。当日 T28 用已安装官方客户端、隔离 app-server/MCP 和显式 `features.code_mode_interrupt=true` 完成四例；官方 `features list` 返回 `code_mode_interrupt / under development / true`。两例取消依旧失败，因此单纯缺少此显式开关不能解释 T28 的结果。实验性 feature 已被客户端接受不代表全部内部配置条件都已排除，仍不把特定 request-handle 断点写成已证明的唯一根因。
 
 ## 历史候选改动范围（停止实施）
 

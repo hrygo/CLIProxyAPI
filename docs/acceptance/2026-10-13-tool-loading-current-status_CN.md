@@ -26,6 +26,8 @@ T26 返回网关生产路径，`0efa8a28` 为原生多结果回填增加调用�
 
 T27 继续修网关：`4a747f7f` 修复 Claude→Gemini 的长名/字符替换碰撞和响应大小写/前导下划线串名；`e202aaa8` 将 Claude ToolSearch 激活集合与字节预算接入既有最终发送契约，在三个 executor 入口传递，拦截声明丢失、重命名、重新引入未加载函数、重复声明及最终强制选择未加载函数。五种实际 executor 的 HTTP/SSE 共 80 个本地子案例通过；xAI 既有孤立 choice → 默认 auto 修复保留。全仓 103 个有测试 package、vet/build 通过，8 项既有可选 live/corpus/TLS 测试跳过，新增回归无跳过。官方 Claude Code `2.1.289` 在该候选完成一个固定编码对，两臂代码及 11 项独立测试通过，共 9 请求、6 MCP dispatch；lazy 多一次检索仍取得全任务输入 89.78% 的减少点估计。未形成统计置信度，不继承历史候选认证；原生 hosted 工具和动态权限/取消边界仍需另验。见[T27 修复与实测](2026-10-13-claude-deferred-wire-contract_CN.md)。
 
+T28 的 `42b3d5da` 补上 hosted choice 最终声明校验：直接/allowed_tools 选择不存在或被删除的 hosted 声明时本地 422，带 server_label 的 hosted MCP 选择须匹配声明。HTTP/SSE/WebSocket 共 32 个真实 executor 子案例和 6 个 server identity 子案例通过；已有 operator 图像注入与有效声明继续保留。这不认证 hosted 执行授权或费用。全仓 103 个有测试 package、vet/build 通过，8 项既有可选测试跳过。另用官方 Codex `0.160.0`、显式且被 `features list` 接受的 `code_mode_interrupt=true` 完成四个本机探针：两个成功对照通过，两个取消仍无 MCP 取消/释放、清理前 active=1；0 个真实 Provider 请求、没有自建客户端。限制已归客户端边界，不把开关接受当生产保证，也不将其唯一归因于某个源码断点。没有新增收益认证，见[T28 报告](2026-10-13-hosted-choice-and-official-cancel_CN.md)。
+
 ## 已取得的证据
 
 | 层次 | 结果 | 实际可证明的范围 |
@@ -64,7 +66,8 @@ GPT lazy 峰值已进一步归因：`functions.exec` 使用 `ALL_TOOLS.filter` �
 | 问题 | 已确认事实 | 下一步责任与交付 |
 | --- | --- | --- |
 | Codex Code Mode 多输出 | `notify` 与终态共享 `call_id`；已交付显式原生 Responses 多结果重放及最终发送保护，GPT 两次合成桥接和一个真实通知编码任务均取得闭环证据，旧验收器失败另保留。Muse 明确要求一个调用一个输出；Chat/Claude 的原有转换不能保真 | GPT 精确原生路由取得有限真实客户端证据，未认证可靠率。其他 Provider/跨协议仍需逐目标支持或新客户端/事件契约；默认有损路径继续 422。见[多输出边界](../compatibility/codex-code-mode-multiple-results_CN.md)。 |
-| Codex MCP 取消 | 两例本机 app-server interrupt 有 ack 与 interrupted 终态，但清理前无取消通知/释放，最后观测 active=1；不经过 Gateway。T25 自建候选仍失败且未排除 feature 条件 | 仅基于官方发行版本及现有受支持配置划定兼容范围；配置条件与客户端能力分别标注，依赖源码修改的路径列为外部上游依赖。本任务不交付自建客户端，网关不能代发其本机 request ID。见[取消缺口](../compatibility/codex-mcp-cancellation-gap_CN.md)。 |
+| Codex MCP 取消 | T28 官方 `0.160.0` 显式启用并核实接受 `code_mode_interrupt` 后，两例取消仍只有 ack/interrupted，无 MCP 取消/释放，清理前 active=1；两例成功对照通过，不经过 Gateway | 缺少该显式开关不能解释 T28 的失败；该 feature 为 UnderDevelopment，未认证稳定取消。指定 Code Mode/app-server profile 限用，需客户端官方解决或官方可验证能力；不自建客户端、网关不代发其 MCP request ID。见[取消缺口](../compatibility/codex-mcp-cancellation-gap_CN.md)。 |
+| Hosted 工具 | T27 的图像声明来自既有 operator 注入策略；T28 修复强制选择没有最终声明的 hosted 工具，保留合法配置行为 | 冻结图像策略、payload rules 和实际 final wire，分别观察客户端声明/operator 注入/模型选择；MCP 零禁止 dispatch 不认证 hosted 权限、副作用或费用。现有 passthrough 可用于隔离排除自动注入；默认配置未切换。见[T28](2026-10-13-hosted-choice-and-official-cancel_CN.md)。 |
 | Gemini / Claude 可用性 | T14 六例记录上游 HTTP 429；同模型 Codex 五例成功，一例额外 confirm 任务质量失败 | 429 来自 Provider 响应边界，但准确配额条件/持续性和 thinking 因果未证实。不能删除失败或把其他客户端成功追溯改判。 |
 | Gemini 冻结材料漂移 | T20 八例启动回执均为 `credentials / binding_content_mismatch`，默认配置摘要未变；Claude 两例另记录 12 次上游 429 | 保留旧分母；后续先明确稳定身份与执行材料绑定，不能自动刷新/换账号。未知请求与执行计数不补零。 |
 | Gemini 用量 | 原始 scalar counters 确有 thought/total 回退及 prompt 修正；最后 STOP snapshot 加总一致，辅助请求缺计量契约 | 仍缺 Antigravity 最终值权威性与辅助成本契约，输入收益保持未知；不能从内部一致推导账单正确。见[计量边界](2026-10-13-gemini-usage-boundary_CN.md)。 |
