@@ -273,43 +273,43 @@ func run() error {
 	flag.Parse()
 	bindings, err := parseCredentialBindings(credentialSelections)
 	if err != nil {
-		return err
+		return candidateFailure("arguments", "credential_binding_invalid", err)
 	}
 	profile := liveProfile{ClientModel: *clientModel, UpstreamModel: *upstreamModel, Executor: *provider, Contract: *contract, AuthFiles: bindings}
 	if flag.NArg() != 0 || !filepath.IsAbs(*configPath) || !filepath.IsAbs(*state) || *port < 1024 || *port > 65535 || *maxAttempts < 1 || *maxAttempts > 32 {
-		return errors.New("invalid isolated candidate arguments")
+		return candidateFailure("arguments", "invalid_arguments", errors.New("invalid isolated candidate arguments"))
 	}
 	if err := profile.validate(); err != nil {
-		return err
+		return candidateFailure("arguments", "invalid_profile", err)
 	}
 	if os.Getenv("MANAGEMENT_PASSWORD") != "" {
-		return errors.New("acceptance requires filtered management environment")
+		return candidateFailure("arguments", "unsafe_environment", errors.New("acceptance requires filtered management environment"))
 	}
 	log.SetOutput(io.Discard)
 	gin.SetMode(gin.ReleaseMode)
 	gin.DefaultWriter, gin.DefaultErrorWriter = io.Discard, io.Discard
 	raw, err := readLimited(*configPath)
 	if err != nil {
-		return err
+		return candidateFailure("configuration", "configuration_unavailable", err)
 	}
 	source, err := config.ParseConfigBytes(raw)
 	if err != nil {
-		return errors.New("cannot parse operator configuration snapshot")
+		return candidateFailure("configuration", "configuration_invalid", errors.New("cannot parse operator configuration snapshot"))
 	}
 	policy, err := json.Marshal(source.ResponsesTools)
 	if err != nil {
-		return err
+		return candidateFailure("configuration", "policy_invalid", err)
 	}
 	auths, err := loadSelectedCredentials(source, profile)
 	if err != nil {
 		return err
 	}
 	if err := os.Mkdir(*state, 0700); err != nil {
-		return err
+		return candidateFailure("evidence", "evidence_failed", err)
 	}
 	journal, err := acceptance.NewHTTPAttemptJournal(filepath.Join(*state, "capture"), profile.Contract, 1<<20, *maxAttempts)
 	if err != nil {
-		return err
+		return candidateFailure("evidence", "evidence_failed", err)
 	}
 	cfg := isolateConfig(source, *state, *port)
 	preparation := newPreparationEvidence()
@@ -432,7 +432,7 @@ func run() error {
 		c.Next()
 	})).Build()
 	if err != nil {
-		return errors.Join(err, closeAuxiliaryWork(context.Background(), auxiliaryWork, filepath.Join(*state, "capture")),
+		return errors.Join(candidateFailure("startup", "startup_failed", err), closeAuxiliaryWork(context.Background(), auxiliaryWork, filepath.Join(*state, "capture")),
 			closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")))
 	}
 	serviceCtx := helps.WithHTTPAttemptObserver(helps.WithHTTPAuxiliaryWorkScope(ctx, auxiliaryWork), observer)
@@ -448,7 +448,7 @@ func run() error {
 
 func main() {
 	if err := run(); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "isolated live candidate failed; evidence remains unverified")
+		_ = writeCandidateFailure(os.Stderr, err)
 		os.Exit(1)
 	}
 }

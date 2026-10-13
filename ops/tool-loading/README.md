@@ -95,6 +95,18 @@ change persistent Go configuration. The attested binary digest must also match
 the frozen batch materials. Read the full revision with `git rev-parse HEAD`
 after committing the candidate sources; do not reconstruct it from a short SHA.
 
+The isolated candidate exports failures on stderr as a bounded version-1
+`isolated-candidate-error` envelope, containing only fixed `stage`/`reason`
+categories. Credential binding content mismatch, missing/invalid sources,
+unavailable snapshots and profile mismatch are separate causes. Raw error
+messages, paths, URLs and tokens never enter the envelope. The launcher accepts
+only the exact schema and allowlisted categories, saves `gateway.failure.json`
+with the actual exit receipt, and keeps malformed diagnostics unknown. Case
+summaries retain `candidate_diagnostics` and `catalog_diagnostic` independently:
+a cleanup error cannot erase an earlier catalog mode/admission rejection.
+These diagnostics do not prove zero upstream requests when captures are missing
+and do not reclassify historical batches retrospectively.
+
 ```sh
 python3 ops/tool-loading/live_matrix.py \
   --declaration "$task_validation/matrix.json" \

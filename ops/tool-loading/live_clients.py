@@ -25,7 +25,7 @@ from batch_plan import build_plan, write_plan, fingerprint_materials, verify_mat
 from client_adapters import VERSIONS, ADAPTER_VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
 from http_attempts import import_http_attempts, read_admission_diagnostics, read_auxiliary_work_diagnostics
 from preparation_evidence import read_preparation_diagnostics, preparation_failure_class
-from live_gateway import candidate_process, parse_credential_bindings, validate_profile, verify_gateway_revision
+from live_gateway import CandidateFailure, candidate_process, parse_credential_bindings, validate_profile, verify_gateway_revision
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
 from scripted_clients import client_result, claude_structured_result
 from task_scenarios import SCENARIOS, get_scenario, output_schema, answer_matches, dispatch_matches, intermediate_receipt_replayed
@@ -42,16 +42,25 @@ def endpoint_id(value):
     return "ep_" + value[:32]
 
 
+class CatalogFailure(ValueError):
+    def __init__(self, reason):
+        if reason not in {"body_invalid", "model_unavailable", "tool_mode_mismatch", "search_not_admitted", "http_failure", "transport_failure"}:
+            raise ValueError("invalid catalog diagnostic")
+        self.reason = reason
+        super().__init__("actual model catalog does not admit the requested profile")
+
+
 def select_model_metadata(body, model, client, mode):
     if not isinstance(body, dict) or not isinstance(body.get("models"), list):
-        raise ValueError("actual Codex catalog is required")
+        raise CatalogFailure("body_invalid")
     selected = [item for item in body["models"] if isinstance(item, dict) and item.get("slug") == model]
     if len(selected) != 1 or type(selected[0].get("context_window")) is not int or selected[0]["context_window"] < 1:
-        raise ValueError("selected actual model metadata unavailable or ambiguous")
+        raise CatalogFailure("model_unavailable")
     metadata = selected[0]
-    if client == "codex" and (metadata.get("tool_mode") not in (None, "direct") or
-            mode == "lazy" and metadata.get("supports_search_tool") is not True):
-        raise ValueError("actual catalog does not admit the requested Codex search profile")
+    if client == "codex" and metadata.get("tool_mode") not in (None, "direct"):
+        raise CatalogFailure("tool_mode_mismatch")
+    if client == "codex" and mode == "lazy" and metadata.get("supports_search_tool") is not True:
+        raise CatalogFailure("search_not_admitted")
     return deepcopy(metadata)
 
 
@@ -64,8 +73,14 @@ def fetch_model_metadata(ready, model, client, mode):
         response = connection.getresponse()
         body = response.read(4 * 1024 * 1024 + 1)
         if response.status != 200 or len(body) > 4 * 1024 * 1024:
-            raise ValueError("bounded local model catalog query failed")
+            raise CatalogFailure("http_failure")
         return select_model_metadata(json.loads(body), model, client, mode)
+    except CatalogFailure:
+        raise
+    except (OSError, http.client.HTTPException):
+        raise CatalogFailure("transport_failure") from None
+    except ValueError:
+        raise CatalogFailure("body_invalid") from None
     finally:
         connection.close()
 
@@ -193,6 +208,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     capture, prepared, process, admission, code_outcome = None, None, None, None, None
     preparation = None
     auxiliary_work = None
+    candidate_diagnostics, catalog_diagnostic = None, None
     issues, attempts = [], []
     failure, effective, declaration_bytes = "framework", False, []
     stage = "candidate_start"
@@ -267,10 +283,22 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
         if locked_plan is not None:
             stage = "material_revalidation"
             verify_materials(locked_plan, material_paths)
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         checks["answer"] = False
         issues.append(stage + "_failure")
         failure = "framework"
+        # Cleanup can supersede an earlier catalog error. Retain both trusted
+        # categories, never serialize exception text or arbitrary child output.
+        observed = set()
+        for _ in range(8):
+            if error is None or id(error) in observed:
+                break
+            observed.add(id(error))
+            if isinstance(error, CandidateFailure):
+                candidate_diagnostics = error.diagnostics
+            if isinstance(error, CatalogFailure):
+                catalog_diagnostic = {"reason": error.reason}
+            error = error.__context__
     if capture is not None:
         try:
             attempts = import_http_attempts(journal, case_id, capture, expected_executor=profile["executor"])
@@ -321,6 +349,8 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     result["admission_diagnostics"] = admission
     result["preparation_diagnostics"] = preparation
     result["auxiliary_work_diagnostics"] = auxiliary_work
+    result["candidate_diagnostics"] = candidate_diagnostics
+    result["catalog_diagnostic"] = catalog_diagnostic
     if task.coding_task is not None:
         result["code_outcome"] = code_outcome
     write_private(case_root / "summary.json", json.dumps(result, indent=2))

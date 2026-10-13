@@ -60,21 +60,21 @@ func hasNativeAPIKey(cfg *config.Config, provider string) bool {
 func selectedCredentialPayloads(cfg *config.Config, p liveProfile) (map[string][]byte, string, error) {
 	directory, err := util.ResolveAuthDir(cfg.AuthDir)
 	if err != nil {
-		return nil, "", errors.New("selected credential directory unavailable")
+		return nil, "", candidateFailure("credentials", "binding_source_unavailable", errors.New("selected credential directory unavailable"))
 	}
 	root, err := os.OpenRoot(directory)
 	if err != nil {
-		return nil, "", errors.New("selected credential directory unavailable")
+		return nil, "", candidateFailure("credentials", "binding_source_unavailable", errors.New("selected credential directory unavailable"))
 	}
 	defer func() { _ = root.Close() }()
 	listing, err := root.Open(".")
 	if err != nil {
-		return nil, "", errors.New("selected credential inventory unavailable")
+		return nil, "", candidateFailure("credentials", "binding_source_unavailable", errors.New("selected credential inventory unavailable"))
 	}
 	entries, err := listing.Readdirnames(4097)
 	_ = listing.Close()
 	if err != nil && !errors.Is(err, io.EOF) || len(entries) > 4096 {
-		return nil, "", errors.New("selected credential inventory budget exceeded")
+		return nil, "", candidateFailure("credentials", "binding_source_unavailable", errors.New("selected credential inventory budget exceeded"))
 	}
 	wanted := map[string]string{}
 	for _, binding := range p.AuthFiles {
@@ -87,30 +87,36 @@ func selectedCredentialPayloads(cfg *config.Config, p liveProfile) (map[string][
 			continue
 		}
 		if !strings.HasSuffix(strings.ToLower(name), ".json") {
-			return nil, "", errors.New("selected credential is not a JSON source")
+			return nil, "", candidateFailure("credentials", "binding_source_invalid", errors.New("selected credential is not a JSON source"))
 		}
 		before, err := root.Lstat(name)
 		if err != nil || !before.Mode().IsRegular() || before.Size() > 1<<20 {
-			return nil, "", errors.New("selected credential is not a bounded regular source")
+			return nil, "", candidateFailure("credentials", "binding_source_invalid", errors.New("selected credential is not a bounded regular source"))
 		}
 		stream, err := root.Open(name)
 		if err != nil {
-			return nil, "", errors.New("selected credential could not be opened")
+			return nil, "", candidateFailure("credentials", "binding_source_unavailable", errors.New("selected credential could not be opened"))
 		}
 		opened, err := stream.Stat()
 		if err != nil || !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
 			_ = stream.Close()
-			return nil, "", errors.New("selected credential identity changed")
+			return nil, "", candidateFailure("credentials", "binding_source_changed", errors.New("selected credential identity changed"))
 		}
 		data, errRead := io.ReadAll(io.LimitReader(stream, (1<<20)+1))
 		errClose := stream.Close()
-		if errRead != nil || errClose != nil || len(data) > 1<<20 || fingerprint(data) != expected {
-			return nil, "", errors.New("selected credential content differs from binding")
+		if errRead != nil || errClose != nil {
+			return nil, "", candidateFailure("credentials", "binding_source_unavailable", errors.New("selected credential could not be read"))
+		}
+		if len(data) > 1<<20 {
+			return nil, "", candidateFailure("credentials", "binding_source_invalid", errors.New("selected credential exceeded capture budget"))
+		}
+		if fingerprint(data) != expected {
+			return nil, "", candidateFailure("credentials", "binding_content_mismatch", errors.New("selected credential content differs from binding"))
 		}
 		payloads[name] = data
 	}
 	if len(payloads) != len(wanted) {
-		return nil, "", errors.New("selected credential source missing")
+		return nil, "", candidateFailure("credentials", "binding_source_missing", errors.New("selected credential source missing"))
 	}
 	return payloads, directory, nil
 }
@@ -118,11 +124,11 @@ func selectedCredentialPayloads(cfg *config.Config, p liveProfile) (map[string][
 func loadSelectedCredentials(cfg *config.Config, p liveProfile) ([]*coreauth.Auth, error) {
 	if len(p.AuthFiles) == 0 {
 		if p.Executor == "antigravity" {
-			return nil, errors.New("Antigravity profile requires explicit credential bindings")
+			return nil, candidateFailure("credentials", "binding_required", errors.New("Antigravity profile requires explicit credential bindings"))
 		}
 		if p.Executor == "codex" || p.Executor == "gemini" || p.Executor == "claude" || p.Executor == "meta" {
 			if !hasNativeAPIKey(cfg, p.Executor) {
-				return nil, errors.New("native OAuth profile requires explicit credential bindings")
+				return nil, candidateFailure("credentials", "binding_required", errors.New("native OAuth profile requires explicit credential bindings"))
 			}
 		}
 		return nil, nil
@@ -136,7 +142,7 @@ func loadSelectedCredentials(cfg *config.Config, p liveProfile) ([]*coreauth.Aut
 	for name, data := range payloads {
 		items, err := synthesizer.SynthesizeAuthFile(ctx, filepath.Join(directory, name), data)
 		if err != nil || len(items) != 1 || items[0] == nil || items[0].Provider != p.Executor || items[0].Disabled {
-			return nil, errors.New("selected credential cannot serve pinned native profile")
+			return nil, candidateFailure("credentials", "profile_mismatch", errors.New("selected credential cannot serve pinned native profile"))
 		}
 		if p.Executor == "antigravity" {
 			token, _ := items[0].Metadata["access_token"].(string)
@@ -145,7 +151,7 @@ func loadSelectedCredentials(cfg *config.Config, p liveProfile) ([]*coreauth.Aut
 			// Match the executor's five-minute safety window; never bootstrap or
 			// refresh an operator credential in the isolated acceptance process.
 			if strings.TrimSpace(token) == "" || strings.TrimSpace(project) == "" || !valid || !expiry.After(ctx.Now.Add(5*time.Minute)) {
-				return nil, errors.New("Antigravity snapshot needs a current access token and project")
+				return nil, candidateFailure("credentials", "snapshot_unavailable", errors.New("Antigravity snapshot needs a current access token and project"))
 			}
 		}
 		result = append(result, items[0])

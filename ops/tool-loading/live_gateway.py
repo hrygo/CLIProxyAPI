@@ -11,11 +11,59 @@ import re
 import select
 import signal
 import socket
+import stat
 import subprocess
 import time
 from urllib.parse import urlsplit
 
 from client_adapters import ENV_KEYS, write_private
+
+
+FAILURE_REASONS = {
+    "arguments": {"invalid_arguments", "invalid_profile", "credential_binding_invalid", "unsafe_environment"},
+    "configuration": {"configuration_unavailable", "configuration_invalid", "policy_invalid", "configuration_changed"},
+    "credentials": {"binding_source_unavailable", "binding_source_invalid", "binding_source_changed", "binding_source_missing",
+                    "binding_content_mismatch", "binding_required", "profile_mismatch", "snapshot_unavailable"},
+    "startup": {"startup_failed"}, "evidence": {"evidence_failed"}, "unknown": {"candidate_failed"},
+}
+
+
+def _valid_failures(value):
+    return (isinstance(value, list) and 1 <= len(value) <= 8 and all(
+        isinstance(item, dict) and set(item) == {"stage", "reason"} and isinstance(item["stage"], str)
+        and isinstance(item["reason"], str) and item["reason"] in FAILURE_REASONS.get(item["stage"], set()) for item in value))
+
+
+class CandidateFailure(ValueError):
+    def __init__(self, diagnostics):
+        if not _valid_failures(diagnostics):
+            raise ValueError("invalid candidate failure diagnostics")
+        self.diagnostics = [dict(item) for item in diagnostics]
+        super().__init__("isolated candidate failed; evidence remains unverified")
+
+
+def read_candidate_failure(path):
+    from http_attempts import _json
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        with os.fdopen(descriptor, "rb") as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or not 0 < info.st_size <= 65536:
+                return None
+            raw = stream.read(65537)
+            after = os.fstat(stream.fileno())
+        identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        if (len(raw) != info.st_size or identity(info) != identity(after)
+                or identity(after) != identity(os.stat(path, follow_symlinks=False))):
+            return None
+        envelope = _json(raw)
+        if (not isinstance(envelope, dict) or set(envelope) != {"version", "scope", "failures"}
+                or type(envelope["version"]) is not int or envelope["version"] != 1
+                or envelope["scope"] != "isolated-candidate-error" or not _valid_failures(envelope["failures"])):
+            return None
+        return envelope["failures"]
+    except (OSError, ValueError):
+        return None
 
 
 def verify_gateway_revision(binary, revision):
@@ -192,7 +240,14 @@ def candidate_process(binary, config, root, profile, *, max_attempts=16):
             unchanged = hashlib.sha256(config.read_bytes()).hexdigest() == config_hash
             write_private(root / "gateway.exit.json", json.dumps({"exit_code": process.returncode, "source_config_unchanged": unchanged}))
             if process.returncode != 0 or not unchanged:
-                raise ValueError("candidate cleanup or source snapshot verification failed")
+                diagnostics = (read_candidate_failure(stderr_path) if process.returncode != 0 else None) or []
+                if not unchanged:
+                    diagnostics = diagnostics[:7] + [{"stage": "configuration", "reason": "configuration_changed"}]
+                if not diagnostics:
+                    diagnostics = [{"stage": "unknown", "reason": "candidate_failed"}]
+                write_private(root / "gateway.failure.json", json.dumps({"version": 1,
+                    "scope": "isolated-candidate-error", "failures": diagnostics}, indent=2))
+                raise CandidateFailure(diagnostics)
             from http_attempts import read_auxiliary_work_diagnostics
             if read_auxiliary_work_diagnostics(root / "gateway-state" / "capture") is None:
                 raise ValueError("candidate auxiliary work settlement is unverified")
