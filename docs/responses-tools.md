@@ -5,18 +5,23 @@ protocol: client-executed `tool_search` discovery and `custom` tools. The
 handling lives entirely in the core and requires no plugin or dynamic
 library.
 
+Code baseline: `743a5e0a`, verified on 2026-10-14. Durable references:
+[design and implementation](tool-loading/design-and-implementation_CN.md),
+[verification and compatibility](tool-loading/verification-and-compatibility_CN.md),
+and [request-level token usage](tool-loading/token-usage-report_CN.md).
+
 ## Background
 
-Codex-style clients only defer tool definitions when the selected model
-advertises `supports_search_tool`. When it does not, the client falls back to
-injecting the whole tool surface — the top-level `tools` array and
-`input.additional_tools` — into the **first** request of every turn.
+Deferred loading depends on the client's effective mode and model/provider
+metadata, including `supports_search_tool` on Codex search profiles. A client
+that falls back to eager declarations can inject the full tool surface into
+the opening request. Native tool search and Code Mode are separate client
+modes and require separate evidence.
 
-Measured on 2026-09-26 with the Codex 0.156.1 desktop client on non-OpenAI
-routes, that fallback put roughly 120K input tokens into the opening request
-of a task, almost all of it tool definitions the model never called. The cost
-is paid on every turn: latency, a cache miss on the prefix, and per-request
-spend — for tools the model may never touch.
+Scoped official-client measurements and complete request-level usage are in
+the [token usage report](tool-loading/token-usage-report_CN.md). A smaller
+opening packet does not by itself prove lower whole-task input, stable
+latency, or billing savings.
 
 ## Problem
 
@@ -58,7 +63,8 @@ Goals:
   auth kind, real upstream model, actual protocol, endpoint scoping), never
   from client aliases.
 - Declare `supports_search_tool` only when every selectable route behind a
-  public model alias can complete the client search loop.
+  public model alias permits the native or bridged search policy. This
+  conservative policy projection is not an empirical certificate.
 
 Non-goals: a Muse-specific provider, a tool execution server, a second
 generic JSON-RPC ABI, automatic model fallback, or a cross-session tool
@@ -73,7 +79,7 @@ optional: an absent block already applies the convention defaults.
 ```yaml
 requests:
   responses-tools:
-    enabled: true          # emergency gate; omit or set false to disable all
+    enabled: true          # omitted means enabled; explicit false disables all
     limits:
       max-active-tool-bytes: 262144
       max-active-attempts: 512
@@ -112,8 +118,9 @@ name the client typed. The provider-to-format mapping is fixed:
 
 `codex` is the internal name for the OpenAI Responses dialect, not a vendor
 label: `xai` and `meta` speak the Responses wire format and reuse the same
-translator. A misspelled or mismatched field never errors — the rule simply
-does not match, and the convention applies instead.
+translator. A valid match value that differs from the selected route does
+not apply; the convention remains in effect. Invalid strategy enums and
+conflicting configuration are rejected separately.
 
 ## Defaults
 
@@ -179,14 +186,10 @@ derived from the upstream format **and** the provider:
   It is not an HTTP response field and does not alter route policy.
 
   Exact position semantics are not certified on portable lifting routes.
-  A future opt-in strict contract should reject an unmappable interleaved
-  declaration or same-identity update locally with 422
-  `unsupported_protocol`, before opening an upstream connection; clients
-  should then select a route with position-preserving support rather than
-  retrying the same incompatible payload. This strict contract is a proposal,
-  not an enabled configuration option. Existing ambiguous definition conflicts
-  already fail with 422 `ambiguous_identity`. The compatibility behavior
-  above remains in effect pending whole-branch review.
+  There is no configurable strict-position contract. Interleaving and
+  same-identity updates are reported as transformation facts; this sidecar
+  does not certify semantic equivalence. Ambiguous definition conflicts
+  already fail with 422 `ambiguous_identity`.
   `schema.local-refs: inline` stays opt-in for every provider, `meta`
   included: the convention never expands a client-authored `$ref`; flattening
   only replaces the references that close a cycle with an unconstrained
@@ -331,6 +334,11 @@ argument delta and done events, `output_item.done`, and the terminal
 tracking key, so the existing `call_id` and `output_index` consistency checks
 keep comparing what the upstream actually sent.
 
+Protocol types and field names are identified by decoded JSON semantics,
+including valid Unicode escapes. Ordinary schemas and arguments containing
+the same strings do not become tool history. Lossy Unicode in Claude deferred
+identity input is rejected instead of being replaced and reinterpreted.
+
 For Chat-to-Responses streaming, the OpenAI-compatible executor requires both
 the upstream `[DONE]` marker and a translated `response.completed` or
 `response.incomplete` event with the matching response status. `[DONE]` alone
@@ -401,9 +409,10 @@ grammar bodies, prompts, results, tokens, and credentials are never logged.
 ## Multiple custom outputs
 
 A custom execution can emit a notification and a final result with the same
-`call_id`. On `custom-tools: function` or `custom-tools: strip` routes, an
-otherwise valid explicit history containing more than one custom output for
-one call is rejected locally with 422 `unsupported_protocol`. The error is
+`call_id`. On `custom-tools: function` or `custom-tools: strip` routes with the
+default `custom-output-replay: single`, an otherwise valid explicit history
+containing more than one custom output for one call is rejected locally with
+422 `unsupported_protocol`. The error is
 request-scoped and availability-neutral, and no upstream attempt is created.
 It describes an adaptation limit, rather than malformed client input.
 
@@ -413,9 +422,13 @@ some outputs into ordinary user text. Duplicate calls, missing call IDs, and
 orphan outputs remain `invalid_custom_input`; this change does not relax their
 identity checks. A native passthrough test proves only that `Prepare` leaves
 the local request bytes unchanged, not that a particular provider accepts the
-history. Full multi-output support remains unverified. See the
-[Codex Code Mode compatibility boundary](compatibility/codex-code-mode-multiple-results_CN.md)
-for the observed failure and remaining validation requirements.
+history. Explicit `custom-output-replay: multiple` routes preserve each output
+on supported native Responses targets and enforce the final-send contract
+described above. Historical GPT probes and an official Codex coding pair
+provide scoped evidence; Muse rejects one-to-many outputs, and cross-format
+support remains limited. See the
+[verification and compatibility report](tool-loading/verification-and-compatibility_CN.md)
+for actual versions, denominators and unsupported boundaries.
 
 ## Cumulative discovery activation
 

@@ -3,16 +3,19 @@
 本文描述核心对 Responses 客户端工具协议的处理：客户端执行的 `tool_search`
 发现流程与 `custom` 工具。处理完全位于核心，无需任何插件或动态库。
 
+代码基准：`743a5e0a`；核验日期：2026-10-14。长期资料入口为
+[设计与实施依据](tool-loading/design-and-implementation_CN.md)、
+[验证与兼容报告](tool-loading/verification-and-compatibility_CN.md)及
+[逐请求 token 报告](tool-loading/token-usage-report_CN.md)。
+
 ## 背景
 
-只有当所选模型声明 `supports_search_tool` 时，Codex 系客户端才会延迟下发工具
-定义。未声明时，客户端会把整份工具面（顶层 `tools` 数组与
-`input.additional_tools`）全量注入**每一轮的首个请求**。
+延迟加载取决于客户端的有效模式及模型/provider metadata，包括 Codex 搜索
+profile 的 `supports_search_tool`。客户端回退到 eager 时，完整工具面可能进入
+任务首包。Native ToolSearch 和 Code Mode 是不同模式，证据分别判定。
 
-2026-09-26 在 Codex 0.156.1 桌面端、非 OpenAI 路由上实测：这一回退使一个任务
-的首轮请求达到约 120K input token，其中几乎全部是模型从未调用过的工具定义。
-这笔开销每轮都要支付——延迟、首包前缀缓存失效、以及按请求计费——换来的却
-是模型可能根本不会用到的工具。
+官方客户端固定 scope 的逐请求用量见 token 报告。首包声明减少不单独证明
+全任务输入、稳定延迟或账单节省。
 
 ## 问题
 
@@ -45,8 +48,8 @@
 - 约定大于配置：未声明任何配置的路由同样按运行时已知信息得到正确策略。
 - 按实际上游路由（选定 provider、认证类别、真实上游模型、实际协议、
   endpoint 限定）解析策略，不从客户端 alias 推断能力。
-- 仅当公开模型 alias 背后全部可选路由都能完成客户端搜索闭环时，
-  才声明 `supports_search_tool`。
+- 仅当公开模型 alias 背后全部可选路由允许原生或桥接搜索策略时，
+  才声明 `supports_search_tool`；该保守策略投影不是实测认证。
 
 非目标：Muse 专用 provider、工具执行服务器、第二套通用 JSON-RPC ABI、
 自动模型回退器、跨会话工具内容数据库。
@@ -59,7 +62,7 @@ YAML 中不存在第二套可覆盖策略。所有字段都是可选的：整块
 ```yaml
 requests:
   responses-tools:
-    enabled: true          # 紧急总闸，三态；缺省等同 true，仅显式 false 才整体关闭
+    enabled: true          # omitted means enabled; explicit false disables all
     limits:
       max-active-tool-bytes: 262144
       max-active-attempts: 512
@@ -68,7 +71,7 @@ requests:
       max-schema-expansion-bytes: 65536
       max-schema-expansion-nodes: 10000
       max-depth: 64
-    routes:                 # 可选，用于覆盖约定默认
+    routes:                 # optional convention overrides
       - match:
           provider: "xai"
           auth-kind: "api-key"
@@ -97,8 +100,8 @@ provider 到格式的映射是固定的：
 | `openai-compatible-<name>` | `openai` |
 
 这里的 `codex` 是 OpenAI Responses 方言的内部名称，不是厂商标识：`xai` 与
-`meta` 说的是 Responses 线协议，因此复用同一个 translator。字段拼错或与实际
-路由不符**不会报错**，只是该条规则不匹配，最终回落到约定。
+`meta` 说的是 Responses 线协议，因此复用同一个 translator。合法匹配值与实际
+路由不符时不覆盖约定；未知策略枚举和冲突配置则在加载时另行拒绝。
 
 ## 默认行为
 
@@ -106,8 +109,10 @@ provider 到格式的映射是固定的：
 
 - 只有当上游格式为 `openai-response` 或 `codex`，**并且** provider 原样
   透传 `tool_search` 内建工具时，才是 `client-search: native`。目前只有
-  `codex` 与 `meta` 满足。不做任何改写，保留原生透传路径，包括实时
-  duplex steering。
+  `codex` 与 `meta` 满足。搜索 built-in 和关联历史保持 native；Lite、portable
+  声明或响应侧身份修复仍可能进入管理路径，不能仅凭 native 策略判断 duplex。
+  继承原生 Lite 保留请求字节，精确 `tool_search/tool_search_tool` 函数 alias
+  可在响应侧恢复为对象参数的 `tool_search_call`；声明的同名业务工具不误判。
 - 其余上游一律 `client-search: bridge`，**包括**那些说着原生 Responses
   格式但会改写内建工具的 provider：`xai` executor 会把它剥掉，走原生透传
   会静默丢失 discovery。bridge 在客户端真正声明 `tool_search` 之前完全不
@@ -120,9 +125,24 @@ provider 到格式的映射是固定的：
   且要求每个属性都出现在 `required` 中，还拒绝递归 schema，因此约定会
   对它采用 `custom-tools: function`、`custom-grammar: describe`、
   `schema.complete-search-required: true` 与 `schema.local-refs: flatten`。
+  在 `custom-tools: function` 的 portable native 路由，搜索结果中的有效声明
+  激活到顶层 `tools`，与 bridge 共用累计身份及预算检查。Lite
+  `input[].additional_tools` 在 eager 和搜索请求中提升到顶层后再适配；
+  匹配 namespace 合并、相同声明去重、冲突本地 422。空 description
+  使用中性说明，非空客户端说明及剩余历史身份保留。普通 eager namespace
+  的 qualified response name 可恢复原 leaf/namespace，不改参数或 call ID。
+
+  提升改变声明可见范围。内部 `Prepared.Transformation` 报告原索引、交错及
+  同身份更新；提升报告 `position_preserved: false` 和
+  `additional_tools_position_lift`。该 sidecar 不是 HTTP 响应字段，不认证语义
+  等价，也不改路由策略。纯原生及仅响应修复报告声明位置保留；portable
+  路由的精确位置语义未认证，当前无严格位置配置开关。
+
   `schema.local-refs: inline` 对所有 provider 都是手动开启，`meta` 也不
   例外：约定从不展开客户端自己写的 `$ref`；flatten 只把成环的引用替换
   为无约束 schema，非环 `$defs` 保持原样。
+  显式 inline/flatten 同样处理没有发现或 custom metadata 的普通 function
+  声明；inline 的递归 schema 本地拒绝，不因普通函数路径绕过检查。
 
 有损策略保持手动开启，因为它们要么丢失能力，要么改写用户 schema。唯一的
 例外是上文所述的可移植工具面折叠——对 `meta` 而言这是约定而非可选项，
@@ -144,9 +164,15 @@ provider 到格式的映射是固定的：
 - `client-search`：`inherit`（按该路由的约定）、`native`（真实原生
   Responses 路由透传）、`bridge`（function 翻译）、`disabled`（明确的
   客户端搜索请求返回 422，不静默丢弃）。
-- `custom-tools`：`inherit`、`native`、`function`（完整包装与恢复）、
+- `custom-tools`：`inherit`、`native`、`function`（包装与恢复受支持调用）、
   `strip`（有损：删除未来声明但保留可转换历史；强制调用被删除工具返回
   422）、`reject`（遇到 custom 契约直接 422）。
+- `custom-output-replay`：`single`（适配历史默认；同 call 多输出返回
+  422 `unsupported_protocol`）、`multiple`（逐项保留结果）。multiple
+  只允许显式匹配 `codex` 或 `openai-response` 上游格式，不自动继承；
+  具体 Provider 接受性另验。完整 payload、call ID、可逆 item ID 及全局顺序
+  保留，重复调用和孤立结果仍拒绝；最终发送契约检查结果数量、完整 item
+  摘要及工具事件顺序。context 保存摘要和身份，不保存原始结果正文。
 - `custom-grammar`：`reject`（默认）、`describe`（仅 function 模式：把
   grammar 语法折叠进说明；上游不保证 grammar 采样约束）。
 - `schema.complete-search-required`：三态。缺省按该路由的约定解析，
@@ -222,6 +248,16 @@ custom 调用的证据。
 `response.completed` 的 output 都指向同一个 id。上游 id 仍是跟踪键，因此既有的
 `call_id` 与 `output_index` 一致性校验仍然比较上游真实发送的内容。
 
+协议类型和字段按解码后的 JSON 含义识别，包括合法 Unicode 转义。普通
+schema/参数中的同名字符串不是历史协议；Claude 延迟身份输入中的非法
+UTF-8 和孤立 surrogate 被拒绝，不替换为其他名称。
+
+Chat→Responses 流要求上游 `[DONE]` 与匹配的合法 completed/incomplete
+终态。`[DONE]` 不完成未闭合的工具调用；缺 finish、截断或非法参数流不补造
+arguments 或 completed。明确 reasoning-only finish 仍可合法映射。
+调用 item 完整与 response 完整是不同边界；暴露工具调用后的断流不会跨凭据
+重放该调用。参数是否可执行继续由客户端/执行服务验证。
+
 原生 WebSocket duplex 连接会修补每一个后续的 `response.create`、
 `response.append` 和 `response.steer` 帧，而不只是首个请求：这些帧不经过
 Manager。无法修补的帧以携带相同状态码与 reason 的本地 error frame 应答，不
@@ -240,7 +276,8 @@ error frame 内部，不改写 HTTP 状态。
 
 这些上限约束的是桥接自身保留的状态：工具声明、被跟踪的调用、暂存的
 arguments 以及 SSE 缓冲。转发的请求正文属于调用方内容，代理在桥接之前
-已完整持有，因此不计入尝试预算；对话长度不会触发任何上限。
+已完整持有，因此不再计入桥接 attempt 状态预算；这不是模型 context window
+或完整进程内存限额。活跃声明预算在裁剪未加载声明后检查累计保留集合。
 
 诊断只携带路由/策略 generation、工具种类计数、声明字节、已用预算和
 固定原因码；不记录 arguments、patch、grammar 正文、prompt、结果、令牌或
@@ -257,6 +294,62 @@ arguments 以及 SSE 缓冲。转发的请求正文属于调用方内容，代�
 - 原生有状态透传/steering：只允许无需转换的原生透传；需要桥接的普通
   WebSocket 走 replay；需要桥接的 live steering 组合明确拒绝。live duplex
   不做逐帧桥接。
+  每 turn gate 使用与 HTTP 相同的 Prepare，覆盖普通 schema、Lite 提升、
+  响应侧修复、ID 修复及本地拒绝；私有探针返回前释放，无上游或工具 dispatch。
+  实际 alias/固定凭据保持真实协议和 endpoint，部分 route hint 不覆盖它们。
+  replay 中 `response.steer` 返回本地 422；replay 成功不认证 duplex。
 - 服务端历史：只转换本地可展开历史；依赖远端 opaque
   `previous_response_id` 的请求在需要转换的路由上返回 422。原生路径不受
   该限制。
+
+## 多个 custom 输出
+
+同一次 custom 执行可以用同一 `call_id` 回填通知和最终结果。在 function/strip
+适配路由的默认 single 策略下，合法多结果返回 request-scoped、availability-neutral
+的 422 `unsupported_protocol`，不打开上游，不静默合并、丢弃或降为 user text。
+重复 call、缺失 call ID、孤立/顺序错误结果仍为 `invalid_custom_input`。
+
+显式 multiple 的原生 Responses 路由逐项重放，并检查调用参数、结果内容、
+metadata、身份、数量和全局工具事件顺序；规范化摘要保留精确数字 token。
+指定历史 GPT route 有合成历史接受性和官方 Codex 编码 pair 的有限证据。
+Muse 明确要求一调用一输出；其他跨协议路径不能外推为已兼容。
+详见[验证报告](tool-loading/verification-and-compatibility_CN.md)。
+
+## 累计发现
+
+Bridge 和 portable native function 路由累计显式历史中的发现身份。先 A 后 B
+仍可调用 A；后轮更新同一身份采用最新声明，先前调用和结果保留历史。
+同轮冲突返回 422 `ambiguous_identity`。直接 function choice 与 allowed_tools
+使用活动 alias；portable 原生搜索 choice 保持 native。
+
+累计集合整体超预算返回 413 `declaration_budget`，不隐式淘汰旧轮次，不发送
+部分集合或切换凭据。拒绝释放 attempt lease。纯原生透传沿用上游自身激活语义。
+发现不是执行授权；客户端或 MCP 服务按当前权限和原始 schema 在 dispatch 前
+校验，移除后轮搜索引用本身不证明较早权限已撤销。
+
+## Claude 延迟工具适配
+
+非原生 Messages 路由按 deferral 字段、内容 reference block 与关联历史识别协议，
+检查有效声明和 ToolSearch 绑定，裁剪未加载目录及占位项，再检查活跃预算。
+普通文字、名称、schema/参数中的同名字段保持普通路径；重复成员与 Unicode
+转义不能隐藏真正协议。原生 Anthropic 和总闸关闭路径保留原行为。
+
+Execute、CountTokens、ExecuteStream 传递活跃集合的最终发送契约，删除、
+重命名、重复、新增未加载函数及非法最终选择在发送前拒绝。Gemini 使用已有
+消歧名称映射，回应优先精确还原，不以大小写或下划线 fallback 串名。
+此保护有明确集合范围，不是全部历史内容的通用签名。
+
+## 诊断与能力范围
+
+准备和响应失败 observer 可选启用。响应阶段限定 `response_restore`、
+`stream_feed`、`stream_finish`，仅 typed error 输出固定 reason/status；
+任意错误文本不作为可信归因，取消中不产生迟到诊断。
+
+Capability profile 描述有效 route policy；HTTP/SSE declared 不是 live 证书，
+WS replay/duplex 保持独立证据。公开 alias 的全部可选路线参与汇总，暂时
+cooldown 或 region error 不隐藏候选；显式禁用目标排除。
+
+Scoped 记录绑定代码、policy generation、客户端版本/build/mode、source
+protocol、provider/model/format、endpoint、transport、catalog/fixture/permission
+hash 与 region。未知维度保持 unknown，范围变动为 revalidation-required。
+结构和摘要合法不认证证据真实性，也不自动改变路由或切回 eager。
