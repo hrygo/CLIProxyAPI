@@ -72,6 +72,28 @@ class ClaudeProbeTests(unittest.TestCase):
         for extra in ("Bash", "mcp__fixture__ledger_budget_lookup"):
             self.assertFalse(inspect_claude_tools("lazy", tools + [{"name": extra}])["mode_observed"])
 
+    def test_native_output_requires_declared_schema_and_actual_receipts(self):
+        model = ScriptedClaudeModel("eager", "chat", structured_output=True)
+        definitions = self.declarations() + [{"type": "function", "function": {
+            "name": "StructuredOutput", "parameters": {"type": "object"}}}]
+        self.assertEqual(model.next({"tools": definitions})["name"], "mcp__fixture__ledger_budget_lookup")
+        model.next({"tools": definitions, "messages": [{"role": "tool", "tool_call_id": "lookup",
+            "content": '{"remaining_budget":424242,"verification_code":"actual-receipt"}'}]})
+        result = model.next({"tools": definitions, "messages": [{"role": "tool", "tool_call_id": "confirm",
+            "content": '{"confirmation_code":"actual-confirmation"}'}]})
+        self.assertEqual(result["name"], "StructuredOutput")
+        self.assertEqual(result["arguments"], {"remaining_budget": 424242,
+            "verification_code": "actual-receipt", "confirmation_code": "actual-confirmation"})
+        self.assertTrue(model.receipts_verified)
+
+    def test_native_first_wire_only_admits_structured_output_extra_builtin(self):
+        tools = [{"name": "ToolSearch", "input_schema": {"type": "object"}},
+                 {"name": "DeferredToolPlaceholder", "defer_loading": True, "input_schema": {"type": "object"}},
+                 {"name": "StructuredOutput", "input_schema": {"type": "object"}}]
+        self.assertTrue(inspect_claude_tools("lazy", tools, structured_output=True)["mode_observed"])
+        self.assertFalse(inspect_claude_tools("lazy", tools, structured_output=False)["mode_observed"])
+        self.assertFalse(inspect_claude_tools("lazy", tools[:-1], structured_output=True)["mode_observed"])
+
 
 if __name__ == "__main__":
     unittest.main()

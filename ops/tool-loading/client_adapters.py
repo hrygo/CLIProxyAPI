@@ -231,8 +231,6 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
             raise ValueError("explicit session title is supported only by OpenCode")
         validate_session_title(catalog["session_title"])
     if "output_schema" in catalog:
-        if client_id == "claude":
-            raise ValueError("Claude structured-output acceptance is not yet supported")
         validate_output_schema(catalog["output_schema"])
     url = urlsplit(catalog["base_url"])
     if (url.scheme != "http" or url.hostname not in {"127.0.0.1", "localhost", "::1"}
@@ -379,6 +377,8 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
             command += ["--disallowedTools", ",".join(denied_tools)]
         # Terminate variadic tool options before appending a positional prompt.
         command += ["--model", catalog["model"], "--prompt-suggestions", "false"]
+        if "output_schema" in catalog:
+            command += ["--json-schema", json.dumps(catalog["output_schema"], allow_nan=False)]
         expected_mode = "tool-search" if mode == "lazy" else "direct"
     permission_material = profile_permissions(normalized_permissions, structured_output="output_schema" in catalog, coding_task=coding_task)
     return PreparedClient(client_id, ADAPTER_VERSIONS[client_id], expected_mode, command, env, root,

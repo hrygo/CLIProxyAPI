@@ -16,6 +16,8 @@ Actual-client execution boundaries can be probed independently with
 `python3 ops/tool-loading/claude_boundary_probe.py --output-dir "$task_validation/claude-boundaries"`.
 Eight scripted Messages cases cover both modes with client denial, invalid
 arguments, service revocation after discovery and dispatch-triggered SIGINT.
+Add `--structured-output` to verify the explicit native output profile using
+a separate new directory; the same MCP permissions and dispatch rules apply.
 Denial requires zero MCP requests, rejection requires zero dispatch/effects,
 and cancellation requires the actual cancelled/released events, no forced
 client cleanup and final zero active callbacks. All starts and framework
@@ -27,7 +29,13 @@ not real-Provider successes or token/cost measurements.
 default remains Codex/OpenCode. Claude cases lock their version, executable,
 Messages source format and direct/ToolSearch mode in the ordinary paired plan,
 and retain all starts/failures in `CaseJournal`. Claude native structured output
-is not an admitted profile. The protocol probe remains separate:
+is an explicit `--structured-output` profile, using `--json-schema` and the
+client's builtin `StructuredOutput`. Default profiles retain their original
+plain JSON gate. The native profile requires a successful complete JSONL
+result, a schema-valid `structured_output`, and an identical input in the
+latest actual assistant `StructuredOutput` invocation. Duplicate JSON members,
+unbound result objects, earlier correct calls followed by wrong ones, terminal
+errors and truncated output cannot pass. The protocol probe remains separate:
 Provider usage, coding, permissions and statistical scopes need separate admission.
 The isolated profile uses a fresh home/config directory, explicit MCP, filtered
 environment, exact tool permission rules, no permission bypass and no updates.
@@ -45,7 +53,8 @@ python3 ops/tool-loading/claude_client_probe.py \
 Use a Python environment with the existing fixture dependencies. The output
 directory must be new. Four scripted loopback cases run the actual Claude CLI
 and MCP: direct Messages and Messages through the isolated gateway to Chat,
-each in eager/lazy mode. The model learns both receipts only from actual result
+each in eager/lazy mode. Add `--structured-output` to test the explicit native
+output profile in a separate new directory. The model learns both receipts only from actual result
 history; a missing signature or discovery result never invents an invocation.
 Private request bodies, process output, MCP events and gateway HTTP admission
 evidence remain local. Declaration byte reductions are transport measurements;
@@ -129,10 +138,12 @@ calculation, and does not certify latency, cache effectiveness or billing.
 
 ## Native client isolation and first-request probe
 
-Both clients support an explicit `--structured-output` acceptance profile.
+Codex, OpenCode and explicitly selected Claude Code support an explicit
+`--structured-output` acceptance profile in the live runner.
 The gold and prompt are unchanged. Codex receives a private `--output-schema`
 file; OpenCode uses its native HTTP session `format.json_schema` and
-`StructuredOutput` tool. The schema specifies shape, never the positive task's
+`StructuredOutput` tool; Claude Code uses its native `--json-schema` and
+`StructuredOutput` invocation/result pair. The schema specifies shape, never the positive task's
 budget or fresh receipts. The opt-in policy, permission addition and adapter
 sources enter the locked fixture scope and pair ID. Default CLI profiles remain
 unchanged and must not be pooled with the structured profile.

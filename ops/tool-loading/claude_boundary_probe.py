@@ -14,12 +14,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from client_adapters import CLAUDE_VERSION, prepare_isolated_client, synthetic_codex_model, write_private
 from claude_client_probe import anthropic_events, claude_result
+from scripted_clients import claude_structured_result
 
-def probe(root, mode, scenario, *, max_seconds=25):
+BOUNDARY_OUTPUT_SCHEMA = {"type": "object", "properties": {"status": {"const": "rejected"}},
+                          "required": ["status"], "additionalProperties": False}
+
+def probe(root, mode, scenario, *, max_seconds=25, structured_output=False):
     if mode not in {"eager", "lazy"} or scenario not in {"client-denied", "invalid", "revoked", "cancel"}:
         raise ValueError("unsupported boundary profile")
     root = Path(root).resolve()
-    run = root / (mode + "-" + scenario)
+    run = root / (mode + "-" + scenario + ("-native-json-schema" if structured_output else ""))
     run.mkdir(mode=0o700)
     target = "fixture_wait" if scenario == "cancel" else "ledger_budget_lookup"
     name = "mcp__fixture__" + target
@@ -61,7 +65,9 @@ def probe(root, mode, scenario, *, max_seconds=25):
                         error_replayed = error_replayed or any(part.get("type") == "tool_result"
                             and part.get("tool_use_id") == "invoke" and part.get("is_error") is True
                             for part in message["content"] if isinstance(part, dict))
-                item = {"type": "message", "content": [{"type": "output_text", "text": "Boundary fixture finished."}]}
+                item = ({"type": "function_call", "name": "StructuredOutput", "call_id": "structured",
+                         "arguments": {"status": "rejected"}} if structured_output else
+                        {"type": "message", "content": [{"type": "output_text", "text": "Boundary fixture finished."}]})
             encoded = "".join("event: " + kind + "\ndata: " + json.dumps(value) + "\n\n"
                               for kind, value in anthropic_events(item, body["model"], len(requests))).encode()
             self.send_response(200)
@@ -77,12 +83,15 @@ def probe(root, mode, scenario, *, max_seconds=25):
     worker.start()
     observer = None
     try:
-        prepared = prepare_isolated_client("claude", mode, {
+        client_inputs = {
             "run_dir": run / "client", "client_version": CLAUDE_VERSION,
             "executable": shutil.which("claude"), "fixture_python": sys.executable,
             "model": "claude-sonnet-4-5", "model_metadata": synthetic_codex_model("claude-sonnet-4-5"),
             "base_url": f"http://127.0.0.1:{server.server_port}/v1", "nonce": uuid.uuid4().hex,
-            "max_dispatches": 8, "max_result_bytes": 65536},
+            "max_dispatches": 8, "max_result_bytes": 65536}
+        if structured_output:
+            client_inputs["output_schema"] = BOUNDARY_OUTPUT_SCHEMA
+        prepared = prepare_isolated_client("claude", mode, client_inputs,
             {"client_denied": [target] if scenario == "client-denied" else [], "service_denied": ["fixture_mutation"]})
         if scenario == "cancel":
             def observe():
@@ -113,13 +122,17 @@ def probe(root, mode, scenario, *, max_seconds=25):
     effects = max((entry["effect_count"] for entry in events), default=0)
     active = events[-1]["active_count"] if events else None
     rejected = [entry.get("reason") for entry in events if entry["phase"] == "rejected"]
-    terminal = claude_result(Path(process["stdout_path"]).read_text())["terminal"]
+    raw = Path(process["stdout_path"]).read_text()
+    native = claude_structured_result(raw, BOUNDARY_OUTPUT_SCHEMA) if structured_output else None
+    terminal = native["legal_terminal"] if native else claude_result(raw)["terminal"]
     passed = bool(events and emitted and effects == 0 and active == 0 and not process["output_truncated"])
     if scenario == "cancel":
         passed = passed and discovery and dispatches == 1 and process["termination"] == "cancelled" and not process["forced_process_cleanup"]
         passed = passed and any(entry["phase"] == "cancelled" for entry in events) and any(entry["phase"] == "released" for entry in events)
     else:
         passed = passed and dispatches == 0 and error_replayed and terminal and process["exit_code"] == 0
+        if native:
+            passed = passed and native["invocation_verified"] and native["schema_valid"] and native["structured_output"] == {"status": "rejected"}
         if scenario == "client-denied":
             passed = passed and not any(entry["phase"] == "request" for entry in events)
         else:
@@ -127,6 +140,7 @@ def probe(root, mode, scenario, *, max_seconds=25):
     result = {"mode": mode, "scenario": scenario, "passed": bool(passed), "requests": len(requests),
               "dispatches": dispatches, "effects": effects, "active": active, "rejected": rejected,
               "error_replayed": error_replayed, "discovery": discovery, "terminal": terminal,
+              "structured_output_profile": structured_output,
               "process": process, "gate_status": "unverified", "scope": "scripted-native-client-mcp-boundary"}
     write_private(run / "summary.json", json.dumps(result, indent=2))
     return result
@@ -135,6 +149,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--task-seconds", type=int, default=25)
+    parser.add_argument("--structured-output", action="store_true", help="explicit native output boundary profile")
     args = parser.parse_args()
     if not 5 <= args.task_seconds <= 60:
         parser.error("bounded task budget required")
@@ -150,9 +165,9 @@ def main():
     try:
         for scenario in ("client-denied", "invalid", "revoked", "cancel"):
             for mode in ("eager", "lazy"):
-                event({"event": "started", "mode": mode, "scenario": scenario})
+                event({"event": "started", "mode": mode, "scenario": scenario, "structured_output_profile": args.structured_output})
                 try:
-                    result = probe(root, mode, scenario, max_seconds=args.task_seconds)
+                    result = probe(root, mode, scenario, max_seconds=args.task_seconds, structured_output=args.structured_output)
                 except Exception as failure:
                     result = {"mode": mode, "scenario": scenario, "passed": False,
                               "exception_type": type(failure).__name__}

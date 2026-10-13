@@ -27,7 +27,7 @@ from http_attempts import import_http_attempts, read_admission_diagnostics, read
 from preparation_evidence import read_preparation_diagnostics, preparation_failure_class
 from live_gateway import candidate_process, parse_credential_bindings, validate_profile
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
-from scripted_clients import client_result
+from scripted_clients import client_result, claude_structured_result
 from task_scenarios import SCENARIOS, get_scenario, output_schema, answer_matches, dispatch_matches, intermediate_receipt_replayed
 from jsonschema import Draft202012Validator
 from native_wire import wire_contract, declarations as wire_declarations, declaration_bytes as wire_declaration_bytes, successful_terminal
@@ -70,7 +70,7 @@ def fetch_model_metadata(ready, model, client, mode):
         connection.close()
 
 
-def result_checks(client, raw, nonce, *, scenario="lookup", native_result=None, source_sha256=None):
+def result_checks(client, raw, nonce, *, scenario="lookup", native_result=None, source_sha256=None, structured_output=False):
     if native_result is not None:
         legal = (client == "opencode" and native_result.get("client_output_profile") == "opencode-http-session-v1"
                  and native_result.get("protocol_terminal_verified") is True
@@ -80,6 +80,12 @@ def result_checks(client, raw, nonce, *, scenario="lookup", native_result=None, 
         matched, receipt, exact = answer_matches(scenario, value, nonce, source_sha256=source_sha256)
         return {"answer": bool(legal and matched), "dispatch": None, "nonce": receipt, "code": None,
                 "format": bool(legal and valid and exact), "terminal": legal}
+    if client == "claude" and structured_output:
+        observed = claude_structured_result(raw, output_schema(scenario))
+        matched, receipt, exact = answer_matches(scenario, observed["structured_output"], nonce, source_sha256=source_sha256)
+        verified = observed["invocation_verified"] and observed["schema_valid"]
+        return {"answer": bool(verified and matched), "dispatch": None, "nonce": bool(verified and receipt), "code": None,
+                "format": bool(verified and exact), "terminal": observed["legal_terminal"]}
     observed = client_result(client, raw)
     values = []
     plain_json = False
@@ -137,8 +143,6 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
         raise ValueError("structured output profile must be explicit boolean")
     if client not in ADAPTER_VERSIONS or mode not in {"eager", "lazy"}:
         raise ValueError("unsupported pinned client profile")
-    if structured_output and client == "claude":
-        raise ValueError("Claude native structured output is not a verified profile")
     if opencode_title is not None:
         if client != "opencode":
             raise ValueError("explicit session title is supported only by OpenCode")
@@ -162,7 +166,7 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
                                  for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py", "scripted_clients.py", "native_wire.py")
                                  + (("coding_tasks.py",) if task.coding_task is not None else ())},
                      "coding_task": task.coding_task,
-                     "isolation_version": 7,
+                     "isolation_version": 8,
                      "preparation_diagnostic_version": 1,
                      "credential_selection": profile.get("auth_files", []),
                      "structured_output": structured_output,
@@ -235,7 +239,8 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                     project.read()["source"].splitlines(keepends=True), fromfile="baseline/module.py", tofile="candidate/module.py")))
             checks = result_checks(client, Path(process["stdout_path"]).read_text(), nonce, scenario=scenario,
                                    native_result=process if structured_output and client == "opencode" else None,
-                                   source_sha256=None if code_outcome is None else code_outcome["source_sha256"])
+                                   source_sha256=None if code_outcome is None else code_outcome["source_sha256"],
+                                   structured_output=structured_output)
             if code_outcome is not None:
                 checks["code"] = code_outcome["passed"] and code_outcome["changed"]
             events = prepared.collect_boundary_events()
@@ -345,8 +350,6 @@ def main():
         parser.error("bounded task budget required")
     if any(len(set(values)) != len(values) for values in (args.clients, args.modes, args.scenarios)):
         parser.error("duplicate client, mode, or scenario")
-    if args.structured_output and "claude" in args.clients:
-        parser.error("Claude native structured output is not a verified profile")
     if args.opencode_title is not None:
         if "opencode" not in args.clients:
             parser.error("explicit title requires an OpenCode case")

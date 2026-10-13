@@ -12,6 +12,17 @@ from claude_boundary_probe import main, probe
 
 
 class ClaudeBoundaryTests(unittest.TestCase):
+    def test_structured_boundary_profile_is_explicit_and_keeps_all_starts(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "new-probes"
+            argv = ["probe", "--output-dir", str(root), "--structured-output"]
+            with patch.object(sys, "argv", argv), patch("claude_boundary_probe.probe", return_value={"passed": True}) as run, redirect_stdout(io.StringIO()):
+                main()
+            self.assertEqual(run.call_count, 8)
+            self.assertTrue(all(call.kwargs["structured_output"] is True for call in run.call_args_list))
+            events = [json.loads(line) for line in (root / "probe-events.jsonl").read_text().splitlines()]
+            self.assertEqual(sum(event["event"] == "started" for event in events), 8)
+
     def test_framework_failure_stays_started_and_does_not_skip_other_profiles(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / "new-probes"

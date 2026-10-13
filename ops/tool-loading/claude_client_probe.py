@@ -19,17 +19,21 @@ from catalog_fixture import build_catalog, canonical_bytes, confirmation_code
 from client_adapters import CLAUDE_VERSION, prepare_isolated_client, synthetic_codex_model, write_private
 from http_attempts import read_http_attempts, read_admission_diagnostics, read_auxiliary_work_diagnostics
 from live_gateway import candidate_process
-from scripted_clients import chat_chunks, client_result
+from scripted_clients import chat_chunks, client_result, claude_structured_result
+from task_scenarios import output_schema
 
 LOOKUP = "mcp__fixture__ledger_budget_lookup"
 CONFIRM = "mcp__fixture__ledger_budget_confirm"
 
 
-def inspect_claude_tools(mode, tools):
+def inspect_claude_tools(mode, tools, *, structured_output=False):
     names = [tool.get("name") for tool in tools]
     expected = {"mcp__fixture__" + tool["name"] for tool in build_catalog() if tool["name"] != "fixture_mutation"}
+    if structured_output:
+        expected.add("StructuredOutput")
+    lazy_names = {"ToolSearch", "DeferredToolPlaceholder"} | ({"StructuredOutput"} if structured_output else set())
     valid = (set(names) == expected and len(names) == len(expected) and all(not tool.get("defer_loading") for tool in tools)) if mode == "eager" else (
-        len(names) == 2 and set(names) == {"ToolSearch", "DeferredToolPlaceholder"}
+        len(names) == len(lazy_names) and set(names) == lazy_names
         and next(tool for tool in tools if tool.get("name") == "DeferredToolPlaceholder").get("defer_loading") is True)
     return {"mode_observed": valid, "declaration_count": len(tools), "first_declaration_bytes": len(canonical_bytes(tools))}
 
@@ -63,8 +67,9 @@ def _object(value):
 
 
 class ScriptedClaudeModel:
-    def __init__(self, mode, contract):
+    def __init__(self, mode, contract, *, structured_output=False):
         self.mode, self.contract, self.round = mode, contract, 0
+        self.structured_output = structured_output
         self.discovery_verified = mode == "eager"
         self.receipts_verified = False
         self.issues = []
@@ -101,9 +106,14 @@ class ScriptedClaudeModel:
             if not confirmed or not isinstance(confirmed.get("confirmation_code"), str):
                 return self.failure("confirmation_receipt_missing")
             self.receipts_verified = True
-            return {"type": "message", "content": [{"type": "output_text", "text": json.dumps({
+            answer = {
                 "remaining_budget": self.lookup["remaining_budget"], "verification_code": self.lookup["verification_code"],
-                "confirmation_code": confirmed["confirmation_code"]})}]}
+                "confirmation_code": confirmed["confirmation_code"]}
+            if self.structured_output:
+                if not isinstance(definitions.get("StructuredOutput"), dict):
+                    return self.failure("structured_schema_missing")
+                return self.call("StructuredOutput", "structured", answer)
+            return {"type": "message", "content": [{"type": "output_text", "text": json.dumps(answer)}]}
         return self.failure("unexpected_extra_round")
 
     @staticmethod
@@ -130,12 +140,12 @@ def anthropic_events(item, model, index):
         ("message_stop", {"type": "message_stop"})]
 
 
-def probe(root, mode, *, binary=None):
+def probe(root, mode, *, binary=None, structured_output=False):
     contract = "chat" if binary else "messages"
-    case = Path(root) / (contract + "-" + mode)
+    case = Path(root) / (contract + "-" + mode + ("-native-json-schema" if structured_output else ""))
     case.mkdir(mode=0o700)
     requests = []
-    model = ScriptedClaudeModel(mode, contract)
+    model = ScriptedClaudeModel(mode, contract, structured_output=structured_output)
     nonce = uuid.uuid4().hex
 
     class Handler(BaseHTTPRequestHandler):
@@ -184,10 +194,13 @@ def probe(root, mode, *, binary=None):
         gateway = candidate_process(binary, source, case, profile, max_attempts=8)
     try:
         with gateway as (ready, capture):
-            prepared = prepare_isolated_client("claude", mode, {"run_dir": case / "client", "client_version": CLAUDE_VERSION,
+            client_inputs = {"run_dir": case / "client", "client_version": CLAUDE_VERSION,
                 "executable": shutil.which("claude") or "claude", "fixture_python": sys.executable,
                 "model": "claude-sonnet-4-5", "model_metadata": synthetic_codex_model("claude-sonnet-4-5"),
-                "base_url": ready["base_url"], "nonce": nonce, "max_dispatches": 8, "max_result_bytes": 65536},
+                "base_url": ready["base_url"], "nonce": nonce, "max_dispatches": 8, "max_result_bytes": 65536}
+            if structured_output:
+                client_inputs["output_schema"] = output_schema("multitool")
+            prepared = prepare_isolated_client("claude", mode, client_inputs,
                 {"client_denied": [], "service_denied": ["fixture_mutation"]})
             result = prepared.run_task({"prompt": "Read alpha remaining budget, then confirm its actual returned verification_code using the fixture. Return exact JSON with remaining_budget, verification_code, confirmation_code.",
                                        "max_seconds": 60, "max_output_bytes": 2000000})
@@ -198,16 +211,19 @@ def probe(root, mode, *, binary=None):
     write_private(case / "requests.json", json.dumps(requests))
     write_private(case / "process.json", json.dumps(result))
     events = prepared.collect_boundary_events()
-    terminal = claude_result(Path(result["stdout_path"]).read_text())
-    answer = _object(terminal["text"])
+    raw = Path(result["stdout_path"]).read_text()
+    native = claude_structured_result(raw, output_schema("multitool")) if structured_output else None
+    terminal = {"terminal": native["legal_terminal"], "text": ""} if native else claude_result(raw)
+    answer = native["structured_output"] if native else _object(terminal["text"])
     dispatches = [event["tool"] for event in events if event["phase"] == "dispatch"]
     expected = {"remaining_budget": 424242, "verification_code": nonce, "confirmation_code": confirmation_code(nonce)}
     boundary_good = dispatches == ["ledger_budget_lookup", "ledger_budget_confirm"] and bool(events) and events[-1]["active_count"] == 0 and max(event["effect_count"] for event in events) == 0
     sizes = [len(canonical_bytes(request["body"].get("tools", []))) for request in requests]
-    observation = inspect_claude_tools(mode, requests[0]["body"].get("tools", [])) if requests and not binary else {}
+    observation = inspect_claude_tools(mode, requests[0]["body"].get("tools", []), structured_output=structured_output) if requests and not binary else {}
     if binary and requests:
         first_names = {tool.get("function", {}).get("name") for tool in requests[0]["body"].get("tools", [])}
-        observation["mode_observed"] = first_names == {"ToolSearch"} if mode == "lazy" else len(first_names) == 67 and "ToolSearch" not in first_names
+        expected_search = {"ToolSearch"} | ({"StructuredOutput"} if structured_output else set())
+        observation["mode_observed"] = first_names == expected_search if mode == "lazy" else len(first_names) == 67 + int(structured_output) and "ToolSearch" not in first_names
     evidence = {}
     if capture:
         attempts = read_http_attempts(capture)
@@ -217,12 +233,14 @@ def probe(root, mode, *, binary=None):
         evidence["physical_attempts_match"] = len(attempts) == len(requests)
     good = (terminal["terminal"] and answer == expected and boundary_good and model.discovery_verified
             and model.receipts_verified and not model.issues and observation.get("mode_observed") and result["termination"] == "exited"
+            and (not native or native["schema_valid"] and native["invocation_verified"])
             and result["exit_code"] == 0 and not result["output_truncated"] and (not capture or evidence.get("physical_attempts_match")))
     summary = {"client": "claude", "client_version": CLAUDE_VERSION, "mode": mode, "contract": contract,
         "scope": "synthetic-native-client-mcp-loopback", "gate_status": "protocol-verified" if good else "unverified",
         "passed": bool(good), "requests_received": len(requests), "mcp_dispatches": dispatches,
         "client_terminal": terminal["terminal"], "receipt_replay_verified": model.receipts_verified,
         "discovery_verified": model.discovery_verified, "declaration_bytes": sizes, "provider_input_tokens": None,
+        "structured_output_profile": structured_output, "structured_output_verified": None if native is None else native["invocation_verified"] and native["schema_valid"],
         "billing_cost": None, "model_issues": model.issues, "catalog_sha256": prepared.catalog_hash,
         "permission_sha256": prepared.permission_hash,
         "client_executable_sha256": hashlib.sha256(Path(prepared.command[0]).read_bytes()).hexdigest(),
@@ -235,6 +253,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--gateway-binary", type=Path, required=True)
+    parser.add_argument("--structured-output", action="store_true", help="explicit native StructuredOutput protocol profile")
     args = parser.parse_args()
     root = args.output_dir.resolve()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -247,10 +266,10 @@ def main():
             handle.flush()
     for binary in (None, args.gateway_binary.resolve()):
         for mode in ("eager", "lazy"):
-            case_id = ("chat" if binary else "messages") + "-" + mode
+            case_id = ("chat" if binary else "messages") + "-" + mode + ("-native-json-schema" if args.structured_output else "")
             record({"event": "started", "case_id": case_id, "sequence": len(results) * 2})
             try:
-                result = probe(root, mode, binary=binary)
+                result = probe(root, mode, binary=binary, structured_output=args.structured_output)
             except Exception as error:
                 result = {"passed": False, "gate_status": "unverified", "failure_class": "framework",
                           "exception_type": type(error).__name__, "provider_input_tokens": None, "billing_cost": None}

@@ -177,10 +177,30 @@ class AdapterTests(unittest.TestCase):
                 self.assertIn("--permissions", config["mcpServers"]["fixture"]["args"])
                 self.assertEqual(prepared.expected_mode, "tool-search" if mode == "lazy" else "direct")
 
-    def test_claude_unsupported_output_profile_and_version_fail_before_artifacts(self):
+    def test_claude_native_schema_is_explicit_and_preserves_tool_permissions(self):
+        from task_scenarios import output_schema
+        for mode in ("eager", "lazy"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:
+                permissions = {"client_denied": ["ledger_budget_lookup"], "service_denied": ["fixture_mutation"]}
+                catalog = self.catalog(temporary, "claude")
+                plain = self.prepare("claude", mode, catalog, permissions)
+                catalog["run_dir"] = Path(temporary) / "structured"
+                catalog["output_schema"] = output_schema("lookup")
+                native = self.prepare("claude", mode, catalog, permissions)
+                self.assertEqual(json.loads(native.command[native.command.index("--json-schema") + 1]), output_schema("lookup"))
+                self.assertEqual(native.output_schema, output_schema("lookup"))
+                self.assertNotIn("--json-schema", plain.command)
+                self.assertNotEqual(plain.permission_hash, native.permission_hash)
+                self.assertEqual(plain.catalog_hash, native.catalog_hash)
+                for flag in ("--allowedTools", "--disallowedTools", "--tools", "--permission-mode", "--permission-prompts"):
+                    self.assertEqual(plain.command[plain.command.index(flag) + 1], native.command[native.command.index(flag) + 1])
+                catalog["output_schema"]["properties"]["verification_code"]["minLength"] = 99
+                self.assertEqual(native.output_schema, output_schema("lookup"))
+
+    def test_claude_invalid_output_profile_and_version_fail_before_artifacts(self):
         with tempfile.TemporaryDirectory() as temporary:
             catalog = self.catalog(temporary, "claude")
-            catalog["output_schema"] = {"type": "object", "properties": {}, "required": [], "additionalProperties": False}
+            catalog["output_schema"] = None
             with self.assertRaises(ValueError):
                 self.prepare("claude", "lazy", catalog)
             self.assertFalse(catalog["run_dir"].exists())

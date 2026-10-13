@@ -26,8 +26,10 @@ class LiveClientTests(unittest.TestCase):
             with patch("live_clients.shutil.which", return_value=str(executable)):
                 lazy = make_case_spec(config, profile, "claude", "lazy", "a" * 40, "ep_" + "b" * 32, 90)
                 eager = make_case_spec(config, profile, "claude", "eager", "a" * 40, "ep_" + "b" * 32, 90)
-                with self.assertRaises(ValueError):
-                    make_case_spec(config, profile, "claude", "lazy", "a" * 40, "ep_" + "b" * 32, 90, structured_output=True)
+                native = make_case_spec(config, profile, "claude", "lazy", "a" * 40, "ep_" + "b" * 32, 90, structured_output=True)
+                self.assertNotEqual(lazy.pair_id, native.pair_id)
+                self.assertNotEqual(lazy.scope["fixture_hash"], native.scope["fixture_hash"])
+                self.assertNotEqual(lazy.scope["permission_hash"], native.scope["permission_hash"])
             self.assertEqual(lazy.scope["client_version"], CLAUDE_VERSION)
             self.assertEqual(lazy.scope["source_format"], "claude")
             self.assertEqual(lazy.scope["client_mode"], "tool-search")
@@ -56,17 +58,20 @@ class LiveClientTests(unittest.TestCase):
         self.assertFalse(effective_tool_mode("claude", "lazy", [search] * 60))
         self.assertTrue(effective_tool_mode("claude", "eager", [{"name": f"tool_{i}"} for i in range(67)]))
 
-    def test_claude_structured_output_rejected_before_run_directory(self):
-        from contextlib import redirect_stderr
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "absent"
-            argv = ["live_clients.py", "--gateway-binary", "unused", "--config", "unused", "--output-dir", str(output),
-                    "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
-                    "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "claude", "--structured-output"]
-            with patch("live_clients.sys.argv", argv), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exit:
-                main()
-            self.assertEqual(exit.exception.code, 2)
-            self.assertFalse(output.exists())
+    def test_claude_native_result_needs_tool_invocation_schema_gold_and_success(self):
+        from test_claude_structured_output import ClaudeStructuredTests
+        events = ClaudeStructuredTests().events({"remaining_budget": 424242, "verification_code": "fresh"})
+        raw = "".join(json.dumps(event) + "\n" for event in events)
+        observed = result_checks("claude", raw, "fresh", structured_output=True)
+        self.assertTrue(all(observed[name] for name in ("answer", "nonce", "format", "terminal")))
+        self.assertFalse(result_checks("claude", raw, "fresh")["format"])
+        self.assertFalse(result_checks("claude", raw, "different", structured_output=True)["answer"])
+        unbound = json.dumps(events[-1]) + "\n"
+        self.assertFalse(result_checks("claude", unbound, "fresh", structured_output=True)["format"])
+        fenced = json.dumps({"type": "result", "subtype": "success", "is_error": False,
+            "result": '```json\n{"remaining_budget":424242,"verification_code":"fresh"}\n```'}) + "\n"
+        self.assertFalse(result_checks("claude", fenced, "fresh", structured_output=True)["answer"])
+        self.assertFalse(result_checks("claude", fenced, "fresh", structured_output=True)["format"])
 
     def test_auxiliary_capture_is_budgeted_without_becoming_model_terminal_or_schema(self):
         from types import SimpleNamespace
@@ -279,7 +284,7 @@ class LiveClientTests(unittest.TestCase):
             self.assertEqual(audit["safe_successes"], 0)
             self.assertEqual(json.loads((output / "summary.json").read_text())["batch_stop_reason"], "complete")
 
-    def test_explicit_claude_batch_locks_both_modes_and_retains_started_failures(self):
+    def test_explicit_claude_structured_batch_locks_both_modes_and_retains_started_failures(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             binary, config, executable = (root / name for name in ("gateway", "config", "client"))
@@ -288,6 +293,8 @@ class LiveClientTests(unittest.TestCase):
             output, observed = root / "run", []
             def task(root, journal, *args, specification, locked_plan, **kwargs):
                 self.assertEqual(specification.scope["client"], "claude")
+                self.assertTrue(kwargs["structured_output"])
+                self.assertIn("native-json-schema", specification.pair_id)
                 self.assertEqual(len(locked_plan["cases"]), 2)
                 observed.append(specification.mode)
                 journal.start_case(specification)
@@ -297,7 +304,7 @@ class LiveClientTests(unittest.TestCase):
                 return {"safe_task_success": False, "upstream_attempts": 0, "issues": [], "boundary_counts": counts}
             argv = ["live_clients.py", "--gateway-binary", str(binary), "--config", str(config), "--output-dir", str(output),
                     "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
-                    "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "claude"]
+                    "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "claude", "--structured-output"]
             with patch("live_clients.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
                     patch("live_clients.run_case", side_effect=task), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exit:
                 main()

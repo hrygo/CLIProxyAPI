@@ -7,12 +7,14 @@ The scripted model learns the nonce only from an actual tool-result receipt.
 from copy import deepcopy
 import argparse
 import json
+import math
 from pathlib import Path
 import shutil
 import sys
 import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from jsonschema import Draft202012Validator
 
 from client_adapters import VERSIONS, prepare_isolated_client, synthetic_codex_model, write_private
 from codex_app_adapter import run_app_server_task
@@ -180,6 +182,61 @@ def client_result(client, raw):
     terminal = (last.get("type") == "turn.completed" if client == "codex"
                 else last.get("type") == "step_finish" and last.get("part", {}).get("reason") == "stop")
     return {"final_texts": texts, "legal_terminal": bool(complete and terminal), "parse_complete": complete}
+
+
+def claude_structured_result(raw, schema):
+    """Bind a strict native result to its latest StructuredOutput tool use."""
+    invalid = {"legal_terminal": False, "schema_valid": False,
+               "invocation_verified": False, "structured_output": None}
+    if not raw or not raw.endswith("\n"):
+        return invalid
+
+    def unique_object(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("duplicate JSON member")
+            value[key] = item
+        return value
+
+    def reject_constant(value):
+        raise ValueError("non-finite JSON constant")
+
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("non-finite JSON number")
+        return number
+
+    try:
+        events = [json.loads(line, object_pairs_hook=unique_object, parse_constant=reject_constant, parse_float=finite_float)
+                  for line in raw.splitlines()]
+    except (ValueError, RecursionError):
+        return invalid
+    if any(not isinstance(event, dict) for event in events):
+        return invalid
+    last = events[-1]
+    legal = (last.get("type") == "result" and last.get("subtype") == "success"
+             and last.get("is_error") is False
+             and sum(event.get("type") == "result" for event in events) == 1
+             and not any(event.get("type") == "assistant" and event.get("error") for event in events))
+    value = last.get("structured_output")
+    calls = []
+    for event in events:
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        if event.get("type") == "assistant" and isinstance(content, list):
+            calls.extend(block for block in content if isinstance(block, dict)
+                         and block.get("type") == "tool_use" and block.get("name") == "StructuredOutput")
+    identifiers = [call.get("id") for call in calls]
+    bound = (bool(calls) and all(isinstance(value_id, str) and value_id for value_id in identifiers)
+             and len(set(identifiers)) == len(identifiers) and isinstance(value, dict)
+             and isinstance(calls[-1].get("input"), dict)
+             and json.dumps(calls[-1]["input"], sort_keys=True, allow_nan=False)
+             == json.dumps(value, sort_keys=True, allow_nan=False))
+    valid = isinstance(value, dict) and Draft202012Validator(schema).is_valid(value)
+    return {"legal_terminal": bool(legal), "schema_valid": valid,
+            "invocation_verified": bool(legal and bound), "structured_output": value if legal else None}
 
 
 def run_case(root, client, mode, scenario, *, max_seconds=20, transport="cli"):
