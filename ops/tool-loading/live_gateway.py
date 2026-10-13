@@ -66,6 +66,21 @@ def read_candidate_failure(path):
         return None
 
 
+def _signal_candidate_group(process, sig):
+    try:
+        os.killpg(process.pid, sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError as signal_error:
+        # On macOS an exiting session can disappear between poll and killpg.
+        # Only an authoritative reap makes that race benign; a live child with
+        # denied signalling must still fail and cannot claim clean shutdown.
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            raise signal_error
+
+
 def verify_gateway_revision(binary, revision):
     """Attest the clean Go build before any evidence claims its revision."""
     from batch_plan import fingerprint_materials
@@ -230,11 +245,11 @@ def candidate_process(binary, config, root, profile, *, max_attempts=16):
             yield ready, root / "gateway-state" / "capture"
         finally:
             if process.poll() is None:
-                os.killpg(process.pid, signal.SIGTERM)
+                _signal_candidate_group(process, signal.SIGTERM)
             try:
                 process.wait(timeout=35)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
+                _signal_candidate_group(process, signal.SIGKILL)
                 process.wait()
             process.stdout.close()
             unchanged = hashlib.sha256(config.read_bytes()).hexdigest() == config_hash

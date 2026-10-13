@@ -7,12 +7,25 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 class CandidateDiagnosticsTests(unittest.TestCase):
+    def test_group_signal_permission_race_requires_authoritative_child_exit(self):
+        import signal
+        import subprocess
+        from live_gateway import _signal_candidate_group
+        child = Mock(pid=12345)
+        child.wait.return_value = 1
+        with patch("live_gateway.os.killpg", side_effect=PermissionError("already exiting")):
+            _signal_candidate_group(child, signal.SIGTERM)
+        child.wait.assert_called_once_with(timeout=1)
+        child.wait.side_effect = subprocess.TimeoutExpired("fixture", 1)
+        with patch("live_gateway.os.killpg", side_effect=PermissionError("live child denied")), self.assertRaises(PermissionError):
+            _signal_candidate_group(child, signal.SIGTERM)
+
     def test_actual_child_failure_preserves_only_safe_diagnostics_and_exit_receipt(self):
         from live_gateway import candidate_process, CandidateFailure
         failures = [{"stage": "credentials", "reason": "binding_content_mismatch"}]
