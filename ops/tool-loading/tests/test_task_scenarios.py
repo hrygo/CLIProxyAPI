@@ -16,6 +16,16 @@ def output(value):
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_lookup_admits_complete_idempotent_reads_and_rejects_other_dispatches(self):
+        def phases(tool):
+            return [{"phase":phase,"tool":tool} for phase in ("dispatch","completed","released")]
+        lookup=phases("ledger_budget_lookup")
+        self.assertTrue(dispatch_matches("lookup",lookup+lookup))
+        for invalid in ([],lookup[:-1],lookup+lookup[:-1],lookup+phases("ledger_budget_confirm"),
+                        lookup+phases("collection_00_read"),lookup+[lookup[0]]):
+            with self.subTest(events=invalid):
+                self.assertFalse(dispatch_matches("lookup",invalid))
+
     def test_claude_result_replay_requires_bound_successful_tool_result(self):
         def history(value, *, call_id="lookup", result_id="lookup", role="user", error=False, name="mcp__fixture__ledger_budget_lookup"):
             return {"messages": [

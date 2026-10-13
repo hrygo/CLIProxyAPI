@@ -578,8 +578,12 @@ the set of certified Provider routes. The runner still accepts only explicitly
 identified Chat routes and native `codex`/`meta` Responses routes, and every
 gate remains `unverified` until the corresponding evidence is sufficient.
 
-`lookup` requires exactly one completed/released ledger dispatch and its fresh
-receipt in plain final JSON. `unavailable` asks for project omega, which no
+`lookup` requires one or more complete ledger lookup dispatch/completed/released
+sequences and its fresh receipt in plain final JSON. Repeated idempotent lookup
+reads remain counted within the locked task/batch budgets; confirmation,
+unrelated dispatches and incomplete sequences fail. The v2 lookup template and
+fixture fingerprint bind this rule separately from historical exact-once runs.
+`unavailable` asks for project omega, which no
 fixture schema admits; it requires a catalog observation, zero dispatches, and
 exact unavailable JSON. This is a no-supported-tool outcome, not proof that the
 client's search API returned an empty list. The model must not substitute alpha.

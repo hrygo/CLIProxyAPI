@@ -22,7 +22,7 @@ class TaskScenario:
 
 
 SCENARIOS = {
-    "lookup": TaskScenario("ledger-json-lookup",
+    "lookup": TaskScenario("ledger-json-lookup-read-repeats-v2",
         "Read the remaining budget and verification code for project alpha from the fixture tools. "
         "Return only a JSON object with remaining_budget and verification_code from the actual tool result.", True, True),
     "unavailable": TaskScenario("ledger-unavailable",
@@ -126,6 +126,10 @@ def dispatch_matches(name, events, *, source_sha256=None):
     tools = ["ledger_budget_lookup"] + (["ledger_budget_confirm"] if name == "multitool" else [])
     observed = [(event["phase"], event["tool"]) for event in events if event["phase"] in {"dispatch", "completed", "released"}]
     expected = [(phase, tool) for tool in tools for phase in ("dispatch", "completed", "released")]
+    if name == "lookup":
+        # Repeated idempotent reads are allowed by the task, while the journal
+        # still enforces the locked dispatch budget and counts every attempt.
+        return bool(observed) and len(observed) % 3 == 0 and all(observed[start:start + 3] == expected for start in range(0, len(observed), 3))
     return observed == expected
 
 

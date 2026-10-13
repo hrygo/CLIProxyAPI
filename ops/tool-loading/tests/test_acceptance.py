@@ -38,6 +38,23 @@ def record(journal, case_id, value):
 
 
 class AcceptanceTests(unittest.TestCase):
+    def test_repeat_read_oracle_does_not_bypass_locked_dispatch_budget(self):
+        from task_scenarios import dispatch_matches
+        for count, expected in ((8,True),(9,False)):
+            with self.subTest(dispatches=count), tempfile.TemporaryDirectory() as temporary:
+                events=[{"phase":phase,"tool":"ledger_budget_lookup"}
+                        for _ in range(count) for phase in ("dispatch","completed","released")]
+                self.assertTrue(dispatch_matches("lookup",events))
+                journal=self.journal(temporary)
+                case=spec()
+                journal.start_case(case)
+                record(journal,case.case_id,request("lookup-request",response_usage()))
+                self.finish(journal,case,boundaries={**BOUNDARIES,"mcp_attempts":count,"dispatch":count})
+                result=summarize(read_journal(journal.path))["cases"][0]
+                self.assertEqual(result["safe_task_success"],expected)
+                if not expected:
+                    self.assertEqual(result["failure_class"],"budget")
+
     def journal(self, temporary):
         return CaseJournal(Path(temporary) / "events.jsonl", "run-1")
 
