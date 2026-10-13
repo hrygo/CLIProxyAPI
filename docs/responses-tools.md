@@ -220,7 +220,8 @@ Strategy enums:
   (passthrough on a true native Responses route), `bridge` (function translation),
   `disabled` (explicit client search requests fail with 422, never silently
   dropped).
-- `custom-tools`: `inherit`, `native`, `function` (full wrap and restore),
+- `custom-tools`: `inherit`, `native`, `function` (wrap and restore supported
+  custom calls; multi-output history is rejected),
   `strip` (lossy: drops future declarations but keeps convertible history;
   forced calls to stripped tools fail with 422), `reject` (any custom
   contract fails with 422).
@@ -383,6 +384,25 @@ grammar bodies, prompts, results, tokens, and credentials are never logged.
   that depend on remote opaque `previous_response_id` references fail with
   422 on routes that need transformation. Native paths keep their existing
   capabilities.
+
+## Multiple custom outputs
+
+A custom execution can emit a notification and a final result with the same
+`call_id`. On `custom-tools: function` or `custom-tools: strip` routes, an
+otherwise valid explicit history containing more than one custom output for
+one call is rejected locally with 422 `unsupported_protocol`. The error is
+request-scoped and availability-neutral, and no upstream attempt is created.
+It describes an adaptation limit, rather than malformed client input.
+
+The current downstream adapters cannot preserve every such output as a tool
+result. Passing them through those adapters would discard, collapse, or turn
+some outputs into ordinary user text. Duplicate calls, missing call IDs, and
+orphan outputs remain `invalid_custom_input`; this change does not relax their
+identity checks. A native passthrough test proves only that `Prepare` leaves
+the local request bytes unchanged, not that a particular provider accepts the
+history. Full multi-output support remains unverified. See the
+[Codex Code Mode compatibility boundary](compatibility/codex-code-mode-multiple-results_CN.md)
+for the observed failure and remaining validation requirements.
 
 ## Cumulative discovery activation
 

@@ -572,7 +572,9 @@ func validateCustomHistory(root map[string]any) error {
 				return unprocessableError(ReasonInvalidCustomInput, fmt.Errorf("custom history output has no matching call"))
 			}
 			if _, exists := outputs[callID]; exists {
-				return unprocessableError(ReasonInvalidCustomInput, fmt.Errorf("custom history repeats output for call_id"))
+				// Custom executions can notify before returning. Function/strip
+				// adaptation cannot preserve every such result item downstream.
+				return unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("selected route cannot preserve multiple custom outputs for one call_id"))
 			}
 			outputs[callID] = struct{}{}
 		}
