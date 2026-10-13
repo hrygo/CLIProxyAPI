@@ -55,7 +55,7 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 	// response adapter is needed. Also inspect ordinary declarations when
 	// local schema preparation is enabled, even without discovery metadata.
 	localSchemaPolicy := policy.Schema.LocalRefs == LocalRefsInline || policy.Schema.LocalRefs == LocalRefsFlatten
-	if root == nil && (bytes.Contains(body, []byte("\"additional_tools\"")) ||
+	if root == nil && (bytes.Contains(body, []byte("\"additional_tools\"")) || bytes.Contains(body, []byte(`\u`)) ||
 		(localSchemaPolicy && bytes.Contains(body, []byte("\"tools\"")))) {
 		value, ok := decodeValue(body)
 		if ok {
@@ -75,17 +75,8 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}
 	needsCustomHistory := (policy.CustomTools == CustomToolsFunction || policy.CustomTools == CustomToolsStrip) && customHistory
-	portableAdditional := false
-	if policy.ClientSearch == ClientSearchNative && policy.CustomTools == CustomToolsFunction &&
-		bytes.Contains(body, []byte("\"additional_tools\"")) {
-		if root == nil {
-			value, ok := decodeValue(body)
-			if ok {
-				root, _ = value.(map[string]any)
-			}
-		}
-		portableAdditional = hasAdditionalToolsInput(root)
-	}
+	portableAdditional := policy.ClientSearch == ClientSearchNative && policy.CustomTools == CustomToolsFunction &&
+		hasAdditionalToolsInput(root)
 	schemaDeclarations := localSchemaPolicy && hasDeclarationToolArrays(root)
 	if contract == nil && !customHistory && !portableAdditional && !schemaDeclarations {
 		return Prepared{Body: body, Transformation: report}, nil

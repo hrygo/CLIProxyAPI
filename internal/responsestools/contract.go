@@ -110,6 +110,7 @@ func ParseContract(body []byte) *ToolContract {
 		!bytes.Contains(trimmed, []byte(NamespaceToolType)) &&
 		!bytes.Contains(trimmed, []byte("defer_loading")) &&
 		!bytes.Contains(trimmed, []byte("\"additional_tools\"")) &&
+		!bytes.Contains(trimmed, []byte(`\u`)) &&
 		!bytes.Contains(trimmed, []byte("\"custom\"")) {
 		return nil
 	}

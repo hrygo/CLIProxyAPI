@@ -2,6 +2,7 @@ package responsestools
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +35,43 @@ func TestNativePortableAdditionalTools(t *testing.T) {
 			}
 			if len(tools) != want {
 				t.Fatalf("declarations not lifted: %s", prepared.Body)
+			}
+		})
+	}
+}
+
+func TestNativePortableAdditionalToolsEscapedType(t *testing.T) {
+	const plain = `{"input":[{"type":"additional_tools","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]},{"type":"message","id":"msg_1","role":"user","content":"budget"}]}`
+	for _, encodedType := range []string{`additional\u005ftools`, `\u0061dditional_tools`} {
+		t.Run(encodedType, func(t *testing.T) {
+			body := []byte(strings.Replace(plain, "additional_tools", encodedType, 1))
+			limits := DefaultLimits()
+			policy := RoutePolicy{ClientSearch: ClientSearchNative, CustomTools: CustomToolsFunction}
+			if !RequiresToolReplay(body, policy, limits) {
+				t.Fatal("escaped Lite declarations bypass managed replay")
+			}
+			prepared, err := Prepare(body, policy, limits, NewLimiter(limits))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prepared.Attempt == nil {
+				t.Fatal("escaped Lite declarations were not adapted")
+			}
+			defer prepared.Attempt.Close()
+			value, _ := decodeValue(prepared.Body)
+			root := value.(map[string]any)
+			tools, _ := root["tools"].([]any)
+			input, _ := root["input"].([]any)
+			if len(tools) != 1 || stringField(tools[0].(map[string]any), "name") != "lookup" || len(input) != 1 || stringField(input[0].(map[string]any), "id") != "msg_1" {
+				t.Fatalf("escaped declaration or message identity lost: %s", prepared.Body)
+			}
+			inherited := RoutePolicy{ClientSearch: ClientSearchNative}
+			if RequiresToolReplay(body, inherited, limits) {
+				t.Fatal("unchanged native Lite request forced replay")
+			}
+			unchanged, errNative := Prepare(body, inherited, limits, NewLimiter(limits))
+			if errNative != nil || unchanged.Attempt != nil || !bytes.Equal(unchanged.Body, body) {
+				t.Fatalf("native Lite request changed: %s %v", unchanged.Body, errNative)
 			}
 		})
 	}
