@@ -37,7 +37,9 @@ def mcp_result(value: dict[str, Any], is_error: bool = False) -> dict[str, Any]:
             "content": [{"type": "text", "text": json.dumps(value)}]}
 
 
-def build_catalog(coding_task: str | None = None) -> list[dict[str, Any]]:
+def build_catalog(coding_task: str | None = None, *, repository: bool = False) -> list[dict[str, Any]]:
+    if coding_task is not None and repository:
+        raise ValueError("coding and repository profiles are mutually exclusive")
     tools = []
     for index in range(64):
         target = index == 37
@@ -86,6 +88,9 @@ def build_catalog(coding_task: str | None = None) -> list[dict[str, Any]]:
             tools.append({"name": name, "description": description,
                 "inputSchema": {"type": "object", "properties": properties, "required": required, "additionalProperties": False},
                 "annotations": {"readOnlyHint": name != "coding_source_replace", "destructiveHint": False}})
+    if repository:
+        from repository_project import repository_tools
+        tools.extend(repository_tools())
     return tools
 
 
@@ -96,14 +101,17 @@ class InvalidPolicy(ValueError):
 class CatalogFixture:
     def __init__(self, nonce: str, *, denied: set[str] | None = None,
                  max_dispatches: int = 8, max_result_bytes: int = 65536,
-                 policy_file: Path | None = None, event_file: Path | None = None, coding_project=None):
+                 policy_file: Path | None = None, event_file: Path | None = None, coding_project=None,
+                 repository_project=None):
         if not nonce or max_dispatches < 1 or max_result_bytes < 256:
             raise ValueError("nonce and positive fixture budgets are required")
         self.nonce = nonce
         if coding_project is not None and max_result_bytes < 32768:
             raise ValueError("coding profile requires room for bounded source results")
         self.coding_project = coding_project
-        self.tools = {tool["name"]: tool for tool in build_catalog(coding_project.task if coding_project else None)}
+        self.repository_project = repository_project
+        self.tools = {tool["name"]: tool for tool in build_catalog(coding_project.task if coding_project else None,
+                                                                repository=repository_project is not None)}
         self.validators = {name: Draft202012Validator(tool["inputSchema"]) for name, tool in self.tools.items()}
         for tool in self.tools.values():
             Draft202012Validator.check_schema(tool["inputSchema"])
@@ -115,6 +123,7 @@ class CatalogFixture:
         self.policy_file, self.event_file = policy_file, event_file
         self.max_dispatches, self.max_result_bytes = max_dispatches, max_result_bytes
         self.dispatch_count = self.effect_count = self.active_count = self.attempt_count = 0
+        self.repository_audit_failed = False
         self.ledger_completed = False
         self.events: deque[dict[str, Any]] = deque(maxlen=256)
         self.event_sequence = 0
@@ -181,6 +190,14 @@ class CatalogFixture:
         self._record("rejected", name, reason=code)
         return {"isError": True, "value": {"error": code}}
 
+    def _record_repository_outcome(self, phase: str, name: str, **details: Any) -> None:
+        try:
+            self._record(phase, name, **details)
+        except OSError:
+            # Losing an audit record cannot turn a committed revision into an
+            # uncommitted failure. The receipt explicitly excludes certification.
+            self.repository_audit_failed = True
+
     async def call(self, name: str, arguments: Any) -> dict[str, Any]:
         self.attempt_count += 1
         try:
@@ -195,6 +212,8 @@ class CatalogFixture:
             return self._reject(name, "unknown_tool")
         if name in self.denied:
             return self._reject(name, "permission_denied")
+        if name.startswith("repository_"):
+            arguments = deepcopy(arguments)
         if not self.validators[name].is_valid(arguments):
             return self._reject(name, "invalid_arguments")
         if name == "ledger_budget_confirm":
@@ -215,11 +234,33 @@ class CatalogFixture:
                         return self._reject(name, "source_revision_mismatch")
             except (OSError, ValueError):
                 return self._reject(name, "source_boundary")
+        if name.startswith("repository_"):
+            from repository_project import RepositoryError
+            def authorize_repository():
+                self._sync_policy()
+                if name in self.denied:
+                    raise RepositoryError("permission_revoked")
+            try:
+                snapshot = self.repository_project.read()
+                if name == "repository_patch":
+                    preview = self.repository_project.preview_patch(arguments["expected_revision"], arguments["changes"])
+                    budget_preview = {**preview, "evidence_complete": False}
+                    uncertain = {"error": "repository_commit_uncertain", **budget_preview}
+                    if max(len(canonical_bytes(mcp_result(budget_preview))),
+                           len(canonical_bytes(mcp_result(uncertain, True)))) > self.max_result_bytes:
+                        return self._reject(name, "result_budget")
+                elif len(canonical_bytes(mcp_result({**snapshot, "evidence_complete": False}))) > self.max_result_bytes:
+                    return self._reject(name, "result_budget")
+                authorize_repository()
+            except InvalidPolicy:
+                return self._reject(name, "invalid_policy")
+            except RepositoryError as error:
+                return self._reject(name, error.code)
         self.dispatch_count += 1
         self.active_count += 1
+        value: dict[str, Any] = {"project": "alpha"}
         try:
             self._record("dispatch", name)
-            value: dict[str, Any] = {"project": "alpha"}
             if name.startswith("coding_"):
                 from coding_tasks import TASKS, LANGUAGE_CONTRACT, async_evaluate_source
                 if name == "coding_task_read":
@@ -231,13 +272,23 @@ class CatalogFixture:
                 else:
                     value = {**await async_evaluate_source(self.coding_project.task, snapshot["source"]),
                              "source_sha256": snapshot["source_sha256"], "verification_code": self.nonce}
+            elif name.startswith("repository_"):
+                from repository_project import RepositoryCommitUncertain
+                try:
+                    value = (snapshot if name == "repository_read" else self.repository_project.patch(
+                        arguments["expected_revision"], arguments["changes"], authorize=authorize_repository))
+                except RepositoryCommitUncertain as error:
+                    self._record_repository_outcome("commit_uncertain", name, repository_revision=error.receipt["revision"],
+                                                    changed_files=error.receipt["changed_files"])
+                    value = {"error": error.code, **error.receipt, "evidence_complete": not self.repository_audit_failed}
+                    return {"isError": True, "value": value}
             elif name == "fixture_wait":
                 self.started.set()
                 await self.wait_gate.wait()
                 self._sync_policy()
                 if name in self.denied:
                     return self._reject(name, "permission_revoked")
-            if name.startswith("coding_"):
+            if name.startswith(("coding_", "repository_")):
                 pass
             elif name == "fixture_large_result":
                 value["data"] = "x" * arguments["size"]
@@ -254,24 +305,42 @@ class CatalogFixture:
                 return self._reject(name, "result_budget")
             if name == "ledger_budget_lookup":
                 self.ledger_completed = True
+            if name.startswith("repository_"):
+                value["evidence_complete"] = not self.repository_audit_failed
             details = {"result_sha256": digest(value)}
             if name.startswith("coding_"):
                 details["source_sha256"] = value["source_sha256"]
                 if name == "coding_tests_run": details["tests_passed"] = value["passed"]
-            self._record("completed", name, **details)
+            if name.startswith("repository_"):
+                details["repository_revision"] = value["revision"]
+                if name == "repository_patch":
+                    details["changed_files"] = value["changed_files"]
+            if name.startswith("repository_"):
+                self._record_repository_outcome("completed", name, **details)
+                value["evidence_complete"] = not self.repository_audit_failed
+            else:
+                self._record("completed", name, **details)
             return {"isError": False, "value": value}
         except asyncio.CancelledError:
             self._record("cancelled", name)
             raise
         except InvalidPolicy:
             return self._reject(name, "invalid_policy")
-        except (OSError, ValueError):
+        except (OSError, ValueError) as error:
             if name.startswith("coding_"):
                 return self._reject(name, "source_boundary")
+            if name.startswith("repository_"):
+                from repository_project import RepositoryError
+                return self._reject(name, error.code if isinstance(error, RepositoryError) else "repository_boundary")
             raise
         finally:
             self.active_count -= 1
-            self._record("released", name)
+            if name.startswith("repository_"):
+                self._record_repository_outcome("released", name)
+                if self.repository_audit_failed:
+                    value["evidence_complete"] = False
+            else:
+                self._record("released", name)
             self.released.set()
 
 
@@ -337,16 +406,26 @@ def main() -> None:
     parser.add_argument("--max-result-bytes", type=int, default=65536)
     parser.add_argument("--coding-task", choices=["budget", "retry", "identity"])
     parser.add_argument("--coding-workspace", type=Path)
+    parser.add_argument("--repository-workspace", type=Path)
+    parser.add_argument("--repository-owner")
     args = parser.parse_args()
     if (args.coding_task is None) != (args.coding_workspace is None):
         parser.error("coding task and private workspace must be supplied together")
+    if (args.repository_workspace is None) != (args.repository_owner is None):
+        parser.error("repository workspace and host-owned identity must be supplied together")
+    if args.coding_task is not None and args.repository_workspace is not None:
+        parser.error("coding and repository profiles are mutually exclusive")
     project = None
     if args.coding_task is not None:
         from coding_tasks import CodingProject
         project = CodingProject(args.coding_workspace, args.coding_task)
+    repository = None
+    if args.repository_workspace is not None:
+        from repository_project import RepositoryProject
+        repository = RepositoryProject.open(args.repository_workspace, args.repository_owner)
     asyncio.run(serve(CatalogFixture(args.nonce, event_file=args.events, policy_file=args.permissions,
                                     max_dispatches=args.max_dispatches, max_result_bytes=args.max_result_bytes,
-                                    coding_project=project)))
+                                    coding_project=project, repository_project=repository)))
 
 
 if __name__ == "__main__":

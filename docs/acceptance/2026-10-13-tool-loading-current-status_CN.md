@@ -1,6 +1,8 @@
 # 跨 Provider 工具按需加载：当前验收状态
 
-核验日期：2026-10-13（Asia/Shanghai）。结论：**闭环和上下文收益已有有限实测，G1–G5 尚未全部通过，不能宣称完备解决或切换默认配置。** CLIProxyAPI 为实施主体，Codex、Claude Code 为主要客户端；OpenCode 仅作历史对照。
+核验日期：2026-10-13（Asia/Shanghai）。结论：**闭环和上下文收益已有有限实测，代表性编码任务的高置信全任务净收益尚未建立，不能宣称完备解决或切换默认配置。** CLIProxyAPI 为实施主体，Codex、Claude Code 为主要客户端；OpenCode 非重点。
+
+用户已明确替换线程目标，现行依据为[全任务净收益分阶段方案](../superpowers/plans/2026-10-13-tool-loading-net-benefit-pilot_CN.md)。60 例为覆盖证据，45%／10% 为历史参考，不再作为所有路由统一通过线；正式实验前锁定任务分布、质量非劣界、最小有意义收益、区间方法与投入上限。下文 G1–G5 是旧冻结规则的历史结果，保留而不追溯改判。
 
 ## 候选与配置边界
 
@@ -8,18 +10,19 @@ T14/T15 真实 Provider 试验使用候选 `4b428edfa70e98df3780f4850ab1d7129b95
 
 用户已确认 12:07 的默认配置变化属于其他任务的预期改动。本任务不回退它；原指纹下失效的 10-case 批次保留原始分母、失败与未知值，随后新建冻结基线。确认来源不等于已验证所有配置字段；当前声明只覆盖冻结材料与实际 route。
 
-T14/T15 live 数据属于 `4b428edf`，T17 属于 `ca0758f4`，T19/T20 属于 `58f5523b`，不同执行候选不能合并认证。T20 已完成当前候选的 60-case 数量覆盖，但只有 41 safe，代表性编码和正式统计仍未认证。用户于 2026-10-13 将首轮/峰值输入降幅门槛改为 45%；历史 50% 判定保留，新门槛不免除置信证据和正式测试前锁定要求。
+T14/T15 live 数据属于 `4b428edf`，T17 属于 `ca0758f4`，T19/T20 属于 `58f5523b`，不同执行候选不能合并认证。T20 已完成当前候选的 60-case 数量覆盖，但只有 41 safe，代表性编码和正式统计仍未认证。此前 50% → 45% 调整保留在历史记录；最新目标以预登记的质量与实际净收益界评价，不能用放宽数字追溯升级认证。
 
 ## 已取得的证据
 
 | 层次 | 结果 | 实际可证明的范围 |
 | --- | --- | --- |
-| 本地协议回归 | Go 1.26.4 全仓 103 个有测试 package 通过；`go vet ./...`、server build 返回 0；验收 Python 更新至 304 tests 通过；响应诊断四个相关 package race 通过 | 回归与构建，不是所有 Provider 功能或真实断流的新增认证。T20 仅新增 Python 登记分析与文档，网关执行源码未变，未重复 Go 门禁。新响应诊断版本不得继承 T17 live 认证。 |
+| 本地协议回归 | Go 1.26.4 全仓 103 个有测试 package 通过；`go vet ./...`、server build 返回 0；T21 验收 Python 更新至 327 tests 通过；响应诊断四个相关 package race 通过 | 回归与构建，不是所有 Provider 功能或真实断流的新增认证。T20/T21 改动验收 Python 与文档，网关执行源码未变，未重复 Go 门禁。新响应诊断版本不得继承 T17 live 认证。 |
 | T14 跨 Provider smoke | 两份冻结计划累计 60 started / 60 finished，44 safe successes，210 已记录请求、55 已知 dispatch | 同一候选的数量覆盖；保留两份 plan/journal 边界，不能据此给跨路线可靠率。所有已开始案例均入统计。 |
 | T15 受限编码 | 24/24 safe；123 已记录请求、81 已知 dispatch；24/24 有代码修改；host gold 288/288 次测试执行通过 | 三个隔离 Python 函数任务，不代表广泛多文件 repository 编码质量。 |
 | T17 Codex 发现策略对照 | 24/24 started/finished，20/24 safe；123 请求、75 dispatch；六个选择性 lazy 全部 safe 且只加载所需三个工具 | 同候选、同 task 的原始/选择性策略校准；有指导的 exact-name discovery，不能当自然语言检索或原生 `tool_search` 认证。四例失败保留。 |
 | T19 新响应诊断校准 | 4/4 safe；20 请求、12 dispatch；代码修改与 host gold 44/44 测试执行通过；四份响应回执正常封存 | Codex GPT/Muse 一个 selective budget task 的 E/L；真实 collector 正常路径，不是全部 route 或真实拒绝事件认证。 |
 | T20 当前候选跨 Provider 复测 | 60 started / finished，41 safe；161 已记录请求、46 已知 dispatch；52 份响应诊断正常封存；8 例凭据材料不匹配启动失败 | 当前候选数量覆盖；未知计数不补零，实际请求/dispatch 总量及全部预算未知。三个非编码固定模板，仍不是正式任务质量认证。 |
+| T21 仓库 fixture 基础 | 四模块 allowlist、真实 MCP read/patch、23 项定向及 327 项完整 Python 回归通过 | 仓库 revision、提交回执、预算与权限边界；未提供模型代码测试执行或隔离，不证明代表性编码质量。见[执行端边界](2026-10-13-repository-fixture-boundaries_CN.md)。 |
 | 可观测安全与释放 | T14/T15/T17/T19 各 case 记录的 forbidden dispatch、forbidden effect、最终 active 均为 0；进程退出回执均为 0 | 仅对应各批观测；不能覆盖独立取消缺口，也不能用退出码替代任务成功。 |
 
 详细数据：[T14 覆盖审计](2026-10-13-primary-60-coverage_CN.md)、[T15 编码试验](2026-10-13-primary-coding-pilot_CN.md)、[T17 选择性发现](2026-10-13-codex-selective-discovery_CN.md)、[T19 响应诊断校准](2026-10-13-response-diagnostics-calibration_CN.md)、[T20 六十例复测](2026-10-13-final-candidate-60-retest_CN.md)、[新基线及失效批次](2026-10-13-primary-routes-refreeze_CN.md)、[本地诊断回归回执](../../.omo/tool-loading-completion/t16-diagnostic-verification.json)。
@@ -55,9 +58,9 @@ GPT lazy 峰值已进一步归因：`functions.exec` 使用 `ALL_TOOLS.filter` �
 
 在零观察回归且独立代表性簇假设成立的理想情况下，单组至少 149 簇才能使条件性单侧 95% 失败概率上界低于 2%；这是样本下限示例，不是存在回归时的完整 power 设计。十个 client/route 单元各做 149 簇 × 两模式为 2,980 cases；按每 case 八请求上限投影为 23,840 请求，远大于本轮 pilot，真实费用仍未知。重复同一模板或改随机参数不能冒充独立代表性簇。大规模正式试验须先形成可评审的采样、预算和停止条件，不能直接按该投影启动。
 
-[正式验收设计](../superpowers/plans/2026-10-13-tool-loading-formal-acceptance-design_CN.md)已落盘；[任务族登记分析](../../ops/tool-loading/task_registry.py)已实现并覆盖 16 项回归，保留完整 CaseSpec 摘要，拒绝事后登记、伪拆分和材料漂移。该模块尚未自动接入 live runner；repository fixture、自然语言任务集、独立抽样与预算设计仍待交付，未启动大规模试验。T20 不因新模块而获得事后认证。
+[原正式验收设计](../superpowers/plans/2026-10-13-tool-loading-formal-acceptance-design_CN.md)保留冻结流程与历史方法；[任务族登记分析](../../ops/tool-loading/task_registry.py)已实现并覆盖 16 项回归，保留完整 CaseSpec 摘要，拒绝事后登记、伪拆分和材料漂移。T21 已交付 repository read/patch 基础，gold/隔离测试执行、自然语言任务集、独立抽样、live runner 集成及新统计设计仍未完成。后续按[现行分阶段方案](../superpowers/plans/2026-10-13-tool-loading-net-benefit-pilot_CN.md)投入，未启动大规模试验；T20 不因新模块获得事后认证。
 
-## 门槛状态
+## 旧冻结门槛的历史状态
 
 - **G1：部分完成。** 本地回归通过，多输出桥接能力仍有明确缺口；当前候选已有十个 client/route 单元的 60 例有限实测，但部分失败，真实响应拒绝和新增 WS 诊断待验证。
 - **G2：未闭合。** T20 的 52 例可观测 forbidden/effect/active 为零，8 例未知；Codex 请求级取消和完整权限生命周期尚未认证。
