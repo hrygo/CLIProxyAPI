@@ -65,6 +65,11 @@ func (m *Manager) responsesToolsCallToFormat(
 	if m == nil || call == nil {
 		return cliproxyexecutor.Response{}, nil
 	}
+	var errClaude error
+	execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(execCtx, auth, provider, toFormat, execReq, execOpts)
+	if errClaude != nil {
+		return cliproxyexecutor.Response{}, errClaude
+	}
 	// Only Responses-family input targeting a Responses-family downstream
 	// enters adaptation. Anything else (or unknown) passes through unchanged
 	// even when a route matches the model name.
@@ -156,10 +161,15 @@ func (m *Manager) responsesToolsCountCall(
 	if m == nil || call == nil {
 		return cliproxyexecutor.Response{}, nil
 	}
+	toFormat := requestToFormat(provider, executor, execReq, execOpts)
+	var errClaude error
+	execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(execCtx, auth, provider, toFormat, execReq, execOpts)
+	if errClaude != nil {
+		return cliproxyexecutor.Response{}, errClaude
+	}
 	if !isResponsesFamily(execOpts.SourceFormat, cliproxyexecutor.ResponseFormatOrSource(execOpts)) {
 		return call(execCtx, execReq, execOpts)
 	}
-	toFormat := requestToFormat(provider, executor, execReq, execOpts)
 	route := responsesToolsRoute(auth, provider, execReq.Model, toFormat)
 	route.AuthKind = normalizeAuthKindForPolicy(route.AuthKind)
 	payload := responsesToolsPayload(execReq, execOpts)
@@ -207,11 +217,16 @@ func (m *Manager) responsesToolsStreamCall(
 	if m == nil || call == nil {
 		return nil, false, nil
 	}
+	toFormat := requestToFormat(provider, executor, execReq, execOpts)
+	var errClaude error
+	execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(parentCtx, auth, provider, toFormat, execReq, execOpts)
+	if errClaude != nil {
+		return nil, false, errClaude
+	}
 	if !isResponsesFamily(execOpts.SourceFormat, cliproxyexecutor.ResponseFormatOrSource(execOpts)) {
 		result, err := call(parentCtx, execReq, execOpts)
 		return result, false, err
 	}
-	toFormat := requestToFormat(provider, executor, execReq, execOpts)
 	route := responsesToolsRoute(auth, provider, execReq.Model, toFormat)
 	route.AuthKind = normalizeAuthKindForPolicy(route.AuthKind)
 	payload := responsesToolsPayload(execReq, execOpts)
