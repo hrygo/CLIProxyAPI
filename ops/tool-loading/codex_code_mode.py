@@ -114,23 +114,33 @@ def observe_code_discovery(bodies, *, coding_task=None):
     loaded, invoked, premature = set(), set(), set()
     observed, integrity = False, True
     unqualified = _unqualified_exec_declared(bodies)
-    for item in _history_items(bodies):
-        key = (item.get("type"), item["call_id"])
-        fingerprint = json.dumps(item, sort_keys=True)
-        if key in seen:
-            integrity = integrity and seen[key] == fingerprint
-            continue
-        seen[key] = fingerprint
-        if _exec_call(item, unqualified):
-            code = item["input"]
-            if re.search(r"\bALL_TOOLS\b", code):
-                discovery_calls.add(item["call_id"])
-            targets = set(re.findall(r"\btools\.mcp__fixture_{1,2}([A-Za-z0-9_]+)\s*\(", code)) & expected
-            invoked.update(targets)
-            premature.update(targets - loaded)
-        elif item.get("type") == "custom_tool_call_output" and item["call_id"] in discovery_calls:
-            observed = True
-            loaded.update(_schema_tools(item.get("output"), expected))
+    for body in bodies:
+        output_ordinals, body_seen = {}, set()
+        for item in _history_items([body]):
+            identity = None
+            if item.get("type") == "custom_tool_call_output":
+                ordinal = output_ordinals.get(item["call_id"], 0)
+                output_ordinals[item["call_id"]] = ordinal + 1
+                identity = ("id", item["id"]) if isinstance(item.get("id"), str) and item["id"] else ("ordinal", ordinal)
+            key = (item.get("type"), item["call_id"], identity)
+            fingerprint = json.dumps(item, sort_keys=True)
+            if key in body_seen:
+                integrity = False
+            body_seen.add(key)
+            if key in seen:
+                integrity = integrity and seen[key] == fingerprint
+                continue
+            seen[key] = fingerprint
+            if _exec_call(item, unqualified):
+                code = item["input"]
+                if re.search(r"\bALL_TOOLS\b", code):
+                    discovery_calls.add(item["call_id"])
+                targets = set(re.findall(r"\btools\.mcp__fixture_{1,2}([A-Za-z0-9_]+)\s*\(", code)) & expected
+                invoked.update(targets)
+                premature.update(targets - loaded)
+            elif item.get("type") == "custom_tool_call_output" and item["call_id"] in discovery_calls:
+                observed = True
+                loaded.update(_schema_tools(item.get("output"), expected))
     return {"discovery_result_observed": observed, "loaded_fixture_schema_tools": sorted(loaded),
             "observed_fixture_invocations": sorted(invoked), "invocations_before_schema": sorted(premature),
             "history_identity_consistent": integrity}

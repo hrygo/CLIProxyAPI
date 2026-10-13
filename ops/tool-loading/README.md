@@ -1090,11 +1090,12 @@ by the explicit isolated flags. Eager/lazy use different search visibility while
 retaining the selected Code Mode and bottom-level MCP permissions. Neither the
 operator configuration nor the existing direct profile is changed.
 
-The native observed entry is custom `exec` with a Lark grammar, optionally
-wrapped in the native `functions` namespace. The pinned client registers its
-source identity as plain `exec`. The Responses bridge therefore uses the exact
-plain custom identity hash; the Chat bridge exposes a function `exec` with one
-string `input` parameter. These function bridges are separately observed and
+The observed entry is custom `exec` with a Lark grammar. Source identities include
+plain `exec` and `functions.exec`; bridge observation binds the corresponding
+identity hash to one actual original declaration scope. A plain alias wrapped
+in an unrelated namespace cannot impersonate the namespaced source. The Chat
+bridge exposes a function `exec` with one string `input` parameter. These
+function bridges are separately observed and
 report grammar fidelity as `described` or `not-forwarded`; they never claim
 native grammar enforcement. A bridge history is normalized only in an
 analysis view after checking the actual entry declaration, argument wrapper
@@ -1106,6 +1107,14 @@ Code Mode API, returning typed tool descriptions before dispatch. A forced
 native `tool_search_call` absent from the initial tool declaration does not prove
 discoverability. Matching call identity, schema output and invocation order are
 checked independently of nonce replay and terminal state.
+Native Responses history observation retains each notification and final result
+for the same real call, including distinct output item IDs and result order.
+Cross-request replay checks use those IDs, or per-call ordinals when absent;
+duplicate calls, result IDs and same-identity content changes remain invalid.
+This changes only the analysis view, never raw captures, accounting or historical
+verdicts. The [T24 notification evidence](../../docs/compatibility/codex-code-mode-multiple-results_CN.md)
+records a legacy-observer failure and its separate audit, rather than rewriting
+it as a successful case. Chat observation retains its single-result boundary.
 `effective_mode_observed` is a mode observation, not a standalone task-success
 claim. A correct no-result task may load no fixture schema; tasks requiring
 dispatch must independently prove the actual invocation and its loaded schema.

@@ -6,32 +6,55 @@ import json
 from http_attempts import _json
 from native_wire import _declaration_containers, declarations
 
-# The pinned client registers exec as a plain custom tool. A native Codex
-# upstream wrapper namespace is not the source identity used by the bridge.
+# Bind each supported source identity to its actual declaration scope.
 EXEC_ALIAS = "ccb_" + hashlib.sha256(json.dumps(["", "exec", "custom"], separators=(",", ":")).encode()).hexdigest()[:48]
+EXEC_NAMESPACED_ALIAS = "ccb_" + hashlib.sha256(json.dumps(["functions", "exec", "custom"], separators=(",", ":")).encode()).hexdigest()[:48]
+ENTRY_NAMES = {"exec", EXEC_ALIAS, EXEC_NAMESPACED_ALIAS}
 
 
-def code_mode_entry(tools, contract=None):
+def _entry_candidates(tools, namespace=(), depth=0):
+    if depth > 16 or not isinstance(tools, list) or len(tools) > 4096:
+        return None
     candidates = []
     for tool in tools:
         if not isinstance(tool, dict):
             continue
-        function = tool.get("function", tool)
-        if isinstance(function, dict) and function.get("name") in {"exec", EXEC_ALIAS}:
-            candidates.append((tool, function))
-    if len(candidates) != 1:
+        if tool.get("type") == "namespace":
+            nested = _entry_candidates(tool.get("tools"), namespace + (tool.get("name"),), depth+1)
+            if nested is None:
+                return None
+            candidates.extend(nested)
+        else:
+            function = tool.get("function", tool)
+            if isinstance(function, dict) and function.get("name") in ENTRY_NAMES:
+                candidates.append((tool, function, namespace))
+    return candidates
+
+
+def code_mode_entry(tools, contract=None):
+    candidates = _entry_candidates(tools)
+    if candidates is None or len(candidates) != 1:
         return None
-    tool, function = candidates[0]
+    tool, function, namespace = candidates[0]
     if not isinstance(function.get("description"), str):
         return None
     form = tool.get("format")
     if (tool.get("type") == "custom" and function.get("name") == "exec"
             and isinstance(form, dict) and form.get("type") == "grammar" and form.get("syntax") == "lark"
             and isinstance(form.get("definition"), str) and form["definition"].strip()):
+        if namespace not in ((), ("functions",)):
+            return None
         return {"description": function["description"], "wire_name": "exec", "bridge": False, "grammar_fidelity": "native"}
     if contract not in {"openai-responses-v1", "openai-chat-v1"} or tool.get("type") != "function":
         return None
-    name = EXEC_ALIAS if contract == "openai-responses-v1" else "exec"
+    name = function.get("name") if contract == "openai-responses-v1" else "exec"
+    allowed_names = {EXEC_ALIAS, EXEC_NAMESPACED_ALIAS} if contract == "openai-responses-v1" else {"exec"}
+    # declarations() flattens wrappers. The final history observer separately
+    # verifies the required scope against the original containers.
+    allowed_scopes = ((), ("functions",)) if name == EXEC_NAMESPACED_ALIAS else ((),)
+    if (name not in allowed_names or namespace not in allowed_scopes
+            or tool.get("namespace") not in (None, "") or function.get("namespace") not in (None, "")):
+        return None
     parameters = function.get("parameters")
     if (function.get("name") != name or not isinstance(parameters, dict)
             or parameters.get("type") != "object" or parameters.get("properties") != {"input": {"type": "string"}}
@@ -64,7 +87,8 @@ def _entry_scope_valid(body, contract, entry):
         return False
     namespace, outer, inner = matches[0]
     if entry["bridge"]:
-        return namespace == () and outer in (None, "") and inner in (None, "")
+        expected = ("functions",) if entry["wire_name"] == EXEC_NAMESPACED_ALIAS else ()
+        return namespace == expected and outer in (None, "") and inner in (None, "")
     return namespace in ((), ("functions",)) and outer in (None, "", "functions") and inner in (None, "", "functions")
 
 
@@ -75,8 +99,8 @@ def normalize_code_mode_wire(bodies, contract):
         return {"bodies": bodies, "integrity": False}
     for body in bodies:
         tools = declarations(contract, body)
-        if any(isinstance(tool.get("function", tool), dict)
-               and tool.get("function", tool).get("name") in {"exec", EXEC_ALIAS} for tool in tools):
+        candidates = _entry_candidates(tools)
+        if candidates is None or candidates:
             current = code_mode_entry(tools, contract)
             if (current is None or current["wire_name"] != entry["wire_name"]
                     or current["bridge"] != entry["bridge"] or not _entry_scope_valid(body, contract, current)):
@@ -85,7 +109,7 @@ def normalize_code_mode_wire(bodies, contract):
         return {"bodies": bodies, "integrity": True}
     integrity, normalized = True, []
     for body in bodies:
-        items, pending = [], set()
+        items, pending, known_calls, output_ids = [], set(), set(), set()
         def call(name, call_id, arguments):
             nonlocal integrity
             if name != entry["wire_name"]:
@@ -101,25 +125,39 @@ def normalize_code_mode_wire(bodies, contract):
             if not isinstance(value, dict) or set(value) != {"input"} or not isinstance(value["input"], str):
                 integrity = False
                 return
+            if call_id in known_calls:
+                integrity = False
+                return
+            known_calls.add(call_id)
             pending.add(call_id)
             items.append({"type":"custom_tool_call", "name":"exec", "namespace":"functions",
                           "call_id":call_id, "input":value["input"]})
-        def result(call_id, output):
-            if isinstance(call_id, str) and call_id in pending:
-                items.append({"type":"custom_tool_call_output", "call_id":call_id, "output":output})
-                pending.remove(call_id)
+        def result(call_id, output, item_id=None):
+            nonlocal integrity
+            eligible = pending if contract == "openai-chat-v1" else known_calls
+            if isinstance(call_id, str) and call_id in eligible:
+                item = {"type":"custom_tool_call_output", "call_id":call_id, "output":output}
+                if item_id is not None:
+                    if not isinstance(item_id, str) or not item_id or item_id in output_ids:
+                        integrity = False
+                        return
+                    output_ids.add(item_id)
+                    item["id"] = item_id
+                items.append(item)
+                pending.discard(call_id)
         if contract == "openai-responses-v1":
             history = body.get("input") if isinstance(body, dict) else None
             for item in history if isinstance(history, list) else []:
                 if not isinstance(item, dict):
                     continue
                 if item.get("type") == "function_call":
-                    if item.get("name") == entry["wire_name"] and item.get("namespace") not in (None, ""):
+                    allowed = (None, "", "functions") if entry["wire_name"] == EXEC_NAMESPACED_ALIAS else (None, "")
+                    if item.get("name") == entry["wire_name"] and item.get("namespace") not in allowed:
                         integrity = False
                         continue
                     call(item.get("name"), item.get("call_id"), item.get("arguments"))
                 elif item.get("type") == "function_call_output":
-                    result(item.get("call_id"), item.get("output"))
+                    result(item.get("call_id"), item.get("output"), item.get("id"))
         else:
             messages = body.get("messages") if isinstance(body, dict) else None
             for message in messages if isinstance(messages, list) else []:

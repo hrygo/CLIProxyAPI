@@ -18,6 +18,14 @@ T23 对生产候选 `f497d7987b0842335e61623a15958c948bb90217` 的受限协议�
 
 T23 总计 9 次物理请求，另保留 `v4` 的两次本地拒绝和上述启动问题。最终候选全仓 103 个有测试 package、`go vet ./...` 和 server build 通过；隔离进程退出 0，最终准备层 active 与 HTTP body active 均为 0，默认配置前后指纹相同，绑定凭据来源复核通过且未请求刷新。证据位于 `.omo/tool-loading-completion/t23-native-multi-output-v6`。**这是指定原生路由的协议可用性证据，合成历史没有真实工具执行，不是 Codex 客户端通知任务、编码质量、可靠率、上下文收益或费用节省认证。** 未扩大试验、未发布、未改默认配置、未重启原服务。
 
+## T24：真实 Codex 通知与编码回填
+
+同一生产候选 `832c8fbf`、同一只读绑定的 `gpt-6-luna` / Codex OAuth 路由完成一个 Codex CLI `0.160.0` / `code_mode_only` / lazy 编码任务。每次执行 coding fixture 工具前发送 `notify`，同一 `exec` 再回填真实结果；原始上游历史确认五个真实调用各有两份独立结果，通知与终态均保留。共 7 次物理请求、5 次 MCP dispatch，禁止工具 dispatch/effect 和最终 active 均为 0；实际修改了代码，独立行为测试 11/11 通过，最终答案重放了真实回执和代码摘要，客户端及上游终态合法，候选退出 0。
+
+**原验收结果仍保留为失败，不追溯改判。** 该记录的 `effective_tool_mode_not_observed` 来自旧验收器：只识别普通 `exec` 的桥接别名，未识别真实 `functions.exec` 源身份；并将一个调用的后续结果丢出分析视图。已最小适配观测代码：绑定实际原始 namespace 容器和唯一声明，区分两个源身份的别名；逐项保留原生多结果及独立 item ID；跨请求重放按结果身份检查内容一致，缺省 ID 使用单调用内序号，拒绝声明歧义、错误 namespace、重复调用、重复结果 ID 和同 ID 内容篡改。Chat 的单结果观测边界不变，原始 wire、usage 和旧 verdict 不改写。16 项定向、328 项完整 Python 回归通过。
+
+独立复核文件 `.omo/tool-loading-completion/t24-codex-notify-v1/independent-code-mode-audit.json` 确认：首轮未注入 fixture 参数签名，实际加载并调用三个 coding 工具，未发现 schema 加载前调用；结果历史身份一致。这个复核有独立观测代码摘要，补充解释旧失败，不新增成功案例或可靠率分母。**T24 是一个受限单函数任务的真实客户端闭环证据，没有 eager 配对、代表性 repository 任务或收益置信区间，不能用于宣称净收益或全面认证。** 默认配置及隔离源配置指纹未变，未刷新凭据、未发布、未重启原服务。
+
 ## 实测触发
 
 候选 `4b428edfa70e98df3780f4850ab1d7129b95ed14` 的 [T14 覆盖审计](../acceptance/2026-10-13-primary-60-coverage_CN.md) 保留 Codex / Muse unavailable lazy 的失败：客户端执行 Code Mode `notify(...)` 后，下一次 Responses 请求在 `prepare` 阶段返回 `422 invalid_custom_input`，没有打开该请求的上游连接。捕获到的四个 custom call ID 均不同；触发点是同一次执行产生额外输出及最终输出，共享其 `call_id`，不是 Provider 重复发出同一调用。

@@ -12,6 +12,57 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 class CodexCodeModeProfileTests(unittest.TestCase):
+    def test_namespaced_bridge_preserves_notifications_and_replay_identity(self):
+        from code_mode_wire import normalize_code_mode_wire
+        from codex_code_mode import observe_code_discovery, observe_code_mode
+        alias="ccb_f72e3911cb7356b98395fd15d498da9250134da22f53ea44"
+        tool={"type":"function","name":alias,"description":"Run JavaScript code; ALL_TOOLS; grammar: lark",
+              "parameters":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"],"additionalProperties":False}}
+        initial={"tools":[{"type":"namespace","name":"functions","tools":[tool]}],"input":[]}
+        search={"type":"function_call","name":alias,"namespace":"functions","call_id":"search",
+                "arguments":json.dumps({"input":"text(ALL_TOOLS);"})}
+        schema={"type":"function_call_output","id":"fco_schema","call_id":"search",
+                "output":"declare const tools: { mcp__fixture__ledger_budget_lookup(args: {project: string;}): Promise<unknown>; };"}
+        invoke={"type":"function_call","name":alias,"call_id":"read",
+                "arguments":json.dumps({"input":"notify('progress'); text(await tools.mcp__fixture__ledger_budget_lookup({project:'alpha'}));"})}
+        notice={"type":"function_call_output","id":"fco_notice","call_id":"read","output":"progress"}
+        final={"type":"function_call_output","id":"fco_final","call_id":"read","output":[{"type":"input_text","text":"actual result"}]}
+        history={"input":[search,schema,invoke,notice,final]}
+        bodies=[initial,history,deepcopy(history)]
+        frozen=deepcopy(bodies)
+        view=normalize_code_mode_wire(bodies,"openai-responses-v1")
+        self.assertTrue(view["integrity"])
+        self.assertEqual(bodies,frozen)
+        self.assertEqual([item.get("id") for item in view["bodies"][1]["input"] if item["type"]=="custom_tool_call_output"],
+                         ["fco_schema","fco_notice","fco_final"])
+        self.assertEqual(view["bodies"][1]["input"][-1]["output"],final["output"])
+        mode=observe_code_mode(initial["tools"],"lazy",wire_contract="openai-responses-v1")
+        self.assertTrue(mode["effective"])
+        self.assertTrue(mode["exec_bridge_observed"])
+        self.assertFalse(mode["exec_grammar_observed"])
+        observation=observe_code_discovery(view["bodies"])
+        self.assertTrue(observation["history_identity_consistent"])
+        self.assertEqual(observation["loaded_fixture_schema_tools"],["ledger_budget_lookup"])
+        self.assertEqual(observation["observed_fixture_invocations"],["ledger_budget_lookup"])
+        self.assertEqual(observation["invocations_before_schema"],[])
+        without_ids=deepcopy(history)
+        for item in without_ids["input"]:
+            item.pop("id",None)
+        unkeyed=normalize_code_mode_wire([initial,without_ids,deepcopy(without_ids)],"openai-responses-v1")
+        self.assertTrue(unkeyed["integrity"])
+        self.assertEqual(len(unkeyed["bodies"][1]["input"]),5)
+        self.assertTrue(observe_code_discovery(unkeyed["bodies"])["history_identity_consistent"])
+        altered=deepcopy(history); altered["input"][-1]["output"]="changed"
+        changed_view=normalize_code_mode_wire([initial,history,altered],"openai-responses-v1")
+        self.assertFalse(observe_code_discovery(changed_view["bodies"])["history_identity_consistent"])
+        for invalid in ({"tools":[{**initial["tools"][0],"name":"other"}],"input":[]},
+                        {"tools":initial["tools"]+initial["tools"],"input":[]}):
+            self.assertFalse(normalize_code_mode_wire([invalid,history],"openai-responses-v1")["integrity"])
+        for items in ([search,schema,invoke,invoke,notice,final],
+                      [search,schema,invoke,notice,{**final,"id":"fco_notice"}],
+                      [search,schema,{**invoke,"namespace":"other"},notice,final]):
+            self.assertFalse(normalize_code_mode_wire([initial,{"input":items}],"openai-responses-v1")["integrity"])
+
     def test_code_mode_entry_retains_actual_declaration_namespace(self):
         from code_mode_wire import EXEC_ALIAS, normalize_code_mode_wire
         native={"type":"custom","name":"exec","description":"Run JavaScript code; ALL_TOOLS",

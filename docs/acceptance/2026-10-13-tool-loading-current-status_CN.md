@@ -16,6 +16,8 @@ T22 按用户纠偏暂停 Docker/gold runner 扩建，优先修 CLIProxyAPI 生�
 
 T23 继续交付生产功能：`c16b5526` 新增精确原生路由 `custom-output-replay: multiple`，`832c8fbf` 修复最终发送层仍错误限制单结果的问题，并按准备阶段数量、完整结果摘要及工具事件顺序防止后处理篡改。最终干净候选 `832c8fbf2414b7ccea6e865444716d485b0e4577` 的隔离 SDK binary SHA-256 为 `033d57377c8bcba869242a976a3e097beb62401d9920e0a1c66905a856473ce8`；GPT `gpt-6-luna` 两次合成 custom bridge 探测均 HTTP 200、实际上游合法完成，文本与数组多结果的内容、身份和交错次序全部保留。默认仍为 `single`；Muse 上游明确拒绝一对多结果，不宣称跨协议已解决。新候选只取得这一精确路由的协议证据，没有继承旧批次的任务质量或收益认证。详见[多输出生产修复与实测边界](../compatibility/codex-code-mode-multiple-results_CN.md)。后续优先补生产闭环，验证只服务具体修复，继续暂停 Docker/gold runner 扩建。
 
+T24 用同一生产候选完成一个真实 Codex 通知编码任务：7 次物理请求、5 次实际 MCP 调用，每次调用的通知和最终结果均保留，代码修改及 11 项独立行为测试通过。原 verdict 因旧验收器不识别 `functions.exec` 源身份与多结果而失败；最小修复观测并做独立原始记录复核后，首轮 fixture 签名未注入、仅加载并调用三个 coding 工具、无 schema 前调用，历史一致。保留原失败，不改判或增加成功分母。该受限任务未提供 eager 配对、代表性编码任务或新的净收益认证。
+
 ## 已取得的证据
 
 | 层次 | 结果 | 实际可证明的范围 |
@@ -28,6 +30,7 @@ T23 继续交付生产功能：`c16b5526` 新增精确原生路由 `custom-outpu
 | T20 当前候选跨 Provider 复测 | 60 started / finished，41 safe；161 已记录请求、46 已知 dispatch；52 份响应诊断正常封存；8 例凭据材料不匹配启动失败 | 当前候选数量覆盖；未知计数不补零，实际请求/dispatch 总量及全部预算未知。三个非编码固定模板，仍不是正式任务质量认证。 |
 | T21 仓库 fixture 基础 | 四模块 allowlist、真实 MCP read/patch、23 项定向及 327 项完整 Python 回归通过 | 仓库 revision、提交回执、预算与权限边界；未提供模型代码测试执行或隔离，不证明代表性编码质量。见[执行端边界](2026-10-13-repository-fixture-boundaries_CN.md)。 |
 | T23 原生多结果生产修复 | 配置与 Prepare 支持精确原生路由逐项重放；最终发送保护允许合法多结果、九种篡改零上游请求；103 包、vet、server build 通过；最终 GPT 两次相邻/交错请求均合法完成 | 合成历史的协议能力；没有真实工具执行、Codex 通知任务或新的上下文收益证据。保留此前两次本地拒绝及启动问题，不与旧候选池化。 |
+| T24 真实 Codex 通知回填 | 同一生产候选上真实代码修改、11 项行为测试通过；五次 MCP 调用各保留通知及终态，权限和释放观测为零；独立复核确认按需加载闭环 | 原验收器失败保留，并修复 namespace / 多结果观测缺口；一个受限单函数任务，不能外推可靠率、代表性 repository 质量或全任务净收益。 |
 | 可观测安全与释放 | T14/T15/T17/T19 各 case 记录的 forbidden dispatch、forbidden effect、最终 active 均为 0；进程退出回执均为 0 | 仅对应各批观测；不能覆盖独立取消缺口，也不能用退出码替代任务成功。 |
 
 详细数据：[T14 覆盖审计](2026-10-13-primary-60-coverage_CN.md)、[T15 编码试验](2026-10-13-primary-coding-pilot_CN.md)、[T17 选择性发现](2026-10-13-codex-selective-discovery_CN.md)、[T19 响应诊断校准](2026-10-13-response-diagnostics-calibration_CN.md)、[T20 六十例复测](2026-10-13-final-candidate-60-retest_CN.md)、[新基线及失效批次](2026-10-13-primary-routes-refreeze_CN.md)、[本地诊断回归回执](../../.omo/tool-loading-completion/t16-diagnostic-verification.json)。
@@ -52,7 +55,7 @@ GPT lazy 峰值已进一步归因：`functions.exec` 使用 `ALL_TOOLS.filter` �
 
 | 问题 | 已确认事实 | 下一步责任与交付 |
 | --- | --- | --- |
-| Codex Code Mode 多输出 | `notify` 与终态共享 `call_id`；已交付显式原生 Responses 多结果重放及最终发送保护，GPT 两次合成桥接成功。Muse 明确要求一个调用一个输出；Chat/Claude 的原有转换不能保真 | GPT 精确原生路由的网关能力已交付，真实 Codex 通知任务待验。其他 Provider/跨协议仍需逐目标支持或新客户端/事件契约；默认有损路径继续 422。见[多输出边界](../compatibility/codex-code-mode-multiple-results_CN.md)。 |
+| Codex Code Mode 多输出 | `notify` 与终态共享 `call_id`；已交付显式原生 Responses 多结果重放及最终发送保护，GPT 两次合成桥接和一个真实通知编码任务均取得闭环证据，旧验收器失败另保留。Muse 明确要求一个调用一个输出；Chat/Claude 的原有转换不能保真 | GPT 精确原生路由取得有限真实客户端证据，未认证可靠率。其他 Provider/跨协议仍需逐目标支持或新客户端/事件契约；默认有损路径继续 422。见[多输出边界](../compatibility/codex-code-mode-multiple-results_CN.md)。 |
 | Codex MCP 取消 | 两例本机 app-server interrupt 有 ack 与 interrupted 终态，但清理前无取消通知/释放，最后观测 active=1；不经过 Gateway | Codex 客户端单独交付 request token → 实际 MCP request handle 取消，再做编译和实测；网关不能代发其本机 request ID。见[取消缺口](../compatibility/codex-mcp-cancellation-gap_CN.md)。 |
 | Gemini / Claude 可用性 | T14 六例记录上游 HTTP 429；同模型 Codex 五例成功，一例额外 confirm 任务质量失败 | 429 来自 Provider 响应边界，但准确配额条件/持续性和 thinking 因果未证实。不能删除失败或把其他客户端成功追溯改判。 |
 | Gemini 冻结材料漂移 | T20 八例启动回执均为 `credentials / binding_content_mismatch`，默认配置摘要未变；Claude 两例另记录 12 次上游 429 | 保留旧分母；后续先明确稳定身份与执行材料绑定，不能自动刷新/换账号。未知请求与执行计数不补零。 |
