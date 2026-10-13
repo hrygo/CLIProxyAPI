@@ -475,7 +475,8 @@ func (a *Attempt) RewriteResponse(body []byte) ([]byte, error) {
 	}
 	if !bytes.Contains(trimmed, []byte("function_call")) &&
 		!bytes.Contains(trimmed, []byte("custom_tool_call")) &&
-		!bytes.Contains(trimmed, []byte("tool_search_call")) {
+		!bytes.Contains(trimmed, []byte("tool_search_call")) &&
+		!bytes.Contains(trimmed, []byte(`\u`)) {
 		return body, nil
 	}
 	value, ok := decodeValue(body)
@@ -502,36 +503,29 @@ func (a *Attempt) RewriteResponse(body []byte) ([]byte, error) {
 }
 
 func hasCustomHistory(body []byte) bool {
-	if !bytes.Contains(body, []byte("custom_tool_call")) {
+	if !bytes.Contains(body, []byte("custom_tool_call")) && !bytes.Contains(body, []byte(`\u`)) {
 		return false
 	}
 	value, ok := decodeValue(body)
 	if !ok {
 		return false
 	}
-	var visit func(any) bool
-	visit = func(current any) bool {
-		switch typed := current.(type) {
-		case map[string]any:
-			itemType := stringField(typed, "type")
-			if itemType == "custom_tool_call" || itemType == "custom_tool_call_output" {
-				return true
-			}
-			for _, child := range typed {
-				if visit(child) {
-					return true
-				}
-			}
-		case []any:
-			for _, child := range typed {
-				if visit(child) {
-					return true
-				}
-			}
-		}
+	root, ok := value.(map[string]any)
+	if !ok {
 		return false
 	}
-	return visit(value)
+	input, _ := root["input"].([]any)
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemType := stringField(item, "type")
+		if itemType == "custom_tool_call" || itemType == "custom_tool_call_output" {
+			return true
+		}
+	}
+	return false
 }
 
 func validateCustomHistory(root map[string]any, allowMultipleOutputs bool) error {
@@ -629,32 +623,46 @@ func hasCustomDeclarations(body []byte) bool {
 	if len(trimmed) == 0 {
 		return false
 	}
-	if !bytes.Contains(trimmed, []byte("\"custom\"")) {
+	if !bytes.Contains(trimmed, []byte("\"custom\"")) && !bytes.Contains(trimmed, []byte(`\u`)) {
 		return false
 	}
 	value, ok := decodeValue(body)
 	if !ok {
 		return false
 	}
-	return scanCustomDeclarations(value)
-}
-
-func scanCustomDeclarations(value any) bool {
-	switch typed := value.(type) {
+	switch root := value.(type) {
 	case map[string]any:
-		if stringsEqualFold(stringField(typed, "type"), "custom") {
+		if scanCustomDeclarations(root["tools"]) {
 			return true
 		}
-		for _, child := range typed {
-			if scanCustomDeclarations(child) {
+		input, _ := root["input"].([]any)
+		for _, rawItem := range input {
+			item, ok := rawItem.(map[string]any)
+			if ok && IsToolDeclarationInput(item) && scanCustomDeclarations(item["tools"]) {
 				return true
 			}
 		}
 	case []any:
-		for _, child := range typed {
-			if scanCustomDeclarations(child) {
-				return true
-			}
+		return scanCustomDeclarations(root)
+	}
+	return false
+}
+
+func scanCustomDeclarations(value any) bool {
+	tools, _ := value.([]any)
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringsEqualFold(stringField(tool, "type"), "custom") {
+			return true
+		}
+		if strings.TrimSpace(stringField(tool, "type")) == NamespaceToolType && scanCustomDeclarations(tool["tools"]) {
+			return true
+		}
+		if scanCustomDeclarations(tool[DeferredToolsKey]) {
+			return true
 		}
 	}
 	return false
