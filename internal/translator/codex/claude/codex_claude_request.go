@@ -676,6 +676,13 @@ func buildReverseMapFromClaudeOriginalToShort(original []byte) map[string]string
 	return m
 }
 
+// ClaudeToolNameMap exposes the same request-specific identities used for
+// declarations, choices and history. Guards must not independently shorten
+// names, since collisions are resolved against the complete active tool list.
+func ClaudeToolNameMap(original []byte) map[string]string {
+	return buildReverseMapFromClaudeOriginalToShort(original)
+}
+
 // normalizeToolParameters ensures object schemas contain at least an empty properties map,
 // strips dialect keywords ($schema, $id), and drops regex patterns containing unsupported
 // Unicode property escapes (\p{...} / \P{...}) that cause upstream schema validation failures.

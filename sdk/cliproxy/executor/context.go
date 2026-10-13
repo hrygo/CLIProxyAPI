@@ -97,6 +97,9 @@ type WireContract struct {
 	// RequiredFunctionNames lists function declarations that must survive all
 	// provider translation and post-rule normalization.
 	RequiredFunctionNames []string
+	// ExactFunctionNames rejects function declarations outside the prepared
+	// active set, including deferred tools reintroduced by post rules.
+	ExactFunctionNames bool
 	// HistoryCalls lists bridged historical calls whose identity and outputs
 	// must remain linked in the final outbound payload.
 	HistoryCalls []WireToolHistoryReference

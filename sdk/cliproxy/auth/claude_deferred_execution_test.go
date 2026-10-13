@@ -22,21 +22,32 @@ func TestClaudeDeferredPreparationAtAllExecutorEntries(t *testing.T) {
 			req := cliproxyexecutor.Request{Model: "fixture", Payload: body}
 			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, OriginalRequest: body}
 			auth := &Auth{ID: "fixture", Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth"}}
+			checkContract := func(ctx context.Context) {
+				t.Helper()
+				wire := cliproxyexecutor.WireContractFromContext(ctx)
+				if wire == nil || !wire.ExactFunctionNames || wire.MaxActiveToolBytes != responsestools.DefaultLimits().MaxActiveToolBytes ||
+					len(wire.RequiredFunctionNames) != 2 || wire.RequiredFunctionNames[0] != "ToolSearch" || wire.RequiredFunctionNames[1] != "lookup" {
+					t.Fatalf("executor entry lost the active declaration contract: %+v", wire)
+				}
+			}
 			var err error
 			switch entry {
 			case "execute":
 				_, err = mgr.responsesToolsCallWithExecutor(context.Background(), auth, "codex", exec, req, opts,
 					func(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+						checkContract(ctx)
 						return exec.Execute(ctx, auth, req, opts)
 					})
 			case "count":
 				_, err = mgr.responsesToolsCountCall(context.Background(), auth, "codex", exec, req, opts,
 					func(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+						checkContract(ctx)
 						return exec.CountTokens(ctx, auth, req, opts)
 					})
 			case "stream":
 				_, _, err = mgr.responsesToolsStreamCall(context.Background(), auth, "codex", exec, req, opts,
 					func(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
+						checkContract(ctx)
 						return exec.ExecuteStream(ctx, auth, req, opts)
 					})
 			}
@@ -76,7 +87,7 @@ func TestClaudeDeferredNativeAndEmergencyGateRemainUntouched(t *testing.T) {
 		body := []byte(claudeClientSearchRequest)
 		req := cliproxyexecutor.Request{Payload: body}
 		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, OriginalRequest: body}
-		outReq, outOpts, err := mgr.prepareClaudeDeferredRequest(context.Background(), nil, "fixture", format, req, opts)
+		_, outReq, outOpts, err := mgr.prepareClaudeDeferredRequest(context.Background(), nil, "fixture", format, req, opts)
 		if err != nil || !bytes.Equal(outReq.Payload, body) || !bytes.Equal(outOpts.OriginalRequest, body) {
 			t.Fatalf("pass through altered: %v", err)
 		}
@@ -89,7 +100,7 @@ func TestClaudeDeferredDisabledRouteRejectsDiscoveryOnly(t *testing.T) {
 	for _, body := range []string{claudeClientSearchRequest, `{"tools":[{"name":"ordinary","defer_loading":false,"input_schema":{"type":"object"}}],"messages":[]}`} {
 		req := cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: []byte(body)}
 		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, OriginalRequest: []byte(body)}
-		prepared, _, err := mgr.prepareClaudeDeferredRequest(context.Background(), auth, "codex", sdktranslator.FormatCodex, req, opts)
+		_, prepared, _, err := mgr.prepareClaudeDeferredRequest(context.Background(), auth, "codex", sdktranslator.FormatCodex, req, opts)
 		if body == claudeClientSearchRequest {
 			if !responsestools.IsRequestScopedError(err) {
 				t.Fatalf("disabled discovery admitted: %v", err)

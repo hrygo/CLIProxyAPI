@@ -66,7 +66,7 @@ func (m *Manager) responsesToolsCallToFormat(
 		return cliproxyexecutor.Response{}, nil
 	}
 	var errClaude error
-	execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(execCtx, auth, provider, toFormat, execReq, execOpts)
+	execCtx, execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(execCtx, auth, provider, toFormat, execReq, execOpts)
 	if errClaude != nil {
 		return cliproxyexecutor.Response{}, errClaude
 	}
@@ -164,7 +164,7 @@ func (m *Manager) responsesToolsCountCall(
 	}
 	toFormat := requestToFormat(provider, executor, execReq, execOpts)
 	var errClaude error
-	execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(execCtx, auth, provider, toFormat, execReq, execOpts)
+	execCtx, execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(execCtx, auth, provider, toFormat, execReq, execOpts)
 	if errClaude != nil {
 		return cliproxyexecutor.Response{}, errClaude
 	}
@@ -220,7 +220,7 @@ func (m *Manager) responsesToolsStreamCall(
 	}
 	toFormat := requestToFormat(provider, executor, execReq, execOpts)
 	var errClaude error
-	execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(parentCtx, auth, provider, toFormat, execReq, execOpts)
+	parentCtx, execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(parentCtx, auth, provider, toFormat, execReq, execOpts)
 	if errClaude != nil {
 		return nil, false, errClaude
 	}
