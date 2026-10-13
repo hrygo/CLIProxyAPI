@@ -34,12 +34,6 @@ jobs:
           cache: true
       - name: Check maintenance tooling
         run: python3 ops/tests/test_maintenance.py
-      - name: Check tool loading evidence and MCP fixture
-        run: |
-          set -euo pipefail
-          python3 -m venv "$RUNNER_TEMP/tool-loading-validation"
-          "$RUNNER_TEMP/tool-loading-validation/bin/python" -m pip install --disable-pip-version-check -r ops/tool-loading/requirements-mcp.txt
-          "$RUNNER_TEMP/tool-loading-validation/bin/python" -m unittest discover -s ops/tool-loading/tests -p 'test_*.py'
       # Upstream refreshes this catalog from the network in its PR CI. We
       # validate the tracked copy offline instead, so the gate stays hermetic
       # and never mutates the checkout.

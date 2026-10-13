@@ -1,12 +1,20 @@
 # 跨 Provider 工具按需加载：当前验收状态
 
-核验日期：2026-10-13（Asia/Shanghai）。结论：**闭环和上下文收益已有有限实测，代表性编码任务的高置信全任务净收益尚未建立，不能宣称完备解决或切换默认配置。** CLIProxyAPI 为实施主体，Codex、Claude Code 为主要客户端；OpenCode 非重点。
+核验日期：2026-10-13（Asia/Shanghai）。结论：**CLIProxyAPI 的生产兼容缺陷已持续修复；历史闭环和上下文收益只在明确客户端、版本和路由范围内取得有限实测，未验证能力仍为未知。** CLIProxyAPI 为实施主体，Codex、Claude Code 为主要客户端；OpenCode 非重点。没有发布、安装、默认配置切换或服务重启。
 
-用户已明确替换线程目标，现行依据为[全任务净收益分阶段方案](../superpowers/plans/2026-10-13-tool-loading-net-benefit-pilot_CN.md)。60 例为覆盖证据，45%／10% 为历史参考，不再作为所有路由统一通过线；正式实验前锁定任务分布、质量非劣界、最小有意义收益、区间方法与投入上限。下文 G1–G5 是旧冻结规则的历史结果，保留而不追溯改判。
+现行目标以生产缺陷、可用改进与清楚的职责边界推动实施；最小充分回归和必要的小规模官方客户端实测服务于具体修复。历史方案、60 例、固定收益百分比及 G1–G5 均保留为历史参考，不作为继续建设测试设施或统计认证的交付前置。追求可解释、可复现的实际收益，保留失败和负面结果，不外推有限样本、不将未知费用填零。
 
 **实施边界纠偏：** 使用官方发行的 Codex、Claude Code 等客户端，通过现有受支持配置与扩展接入；停止客户端源码修补、构建和 fork 维护，不以自建客户端作为交付条件。CLIProxyAPI 是主要生产修复载体，客户端缺口交付兼容限制与责任边界。T25 自建候选只保留诊断证据，不计为官方客户端兼容认证。
 
-## 候选与配置边界
+## 当前生产改进与交付范围
+
+在既有激活、身份、历史回填和最终发送修复基础上，`fab2b0ee` 将 Claude 延迟协议识别限制到声明与历史字段，修复普通内容误判、重复成员隐藏发现以及 Unicode 转义漏判；`7f495158` 将活跃字节预算检查移到裁剪之后，大目录不再因未加载声明而提前失败，活跃集合超限仍拒绝。见[生产修复与回归](2026-10-13-claude-deferred-detection_CN.md)。这两项没有新增 Provider 请求或任务级节省数据。
+
+旧 PR 范围含 86 个 `ops/tool-loading` 实验文件及 Python 设施 CI 门禁。它们已从本地生产候选移出；原工作区、旧提交和历史报告保留，生产 Go 回归及既有 CI 门禁保留。原生客户端 fork、Docker/gold、任务库、benchmark 与统计平台不作为本目标实施内容。远端 PR 更新仍须按明确授权范围执行；本地候选不代表已部署。
+
+分离后的候选通过 Go 1.26.4 全套回归（101 个带测试包、29 个无测试包）、vet、server build、28 项既有维护检查和离线模型目录校验。与 `7f495158` 比较，`internal`、`sdk`、`cmd`、`test` 和配置模板未改变；与 PR 的 `main` 基线比较，CI 无差异。测试包数从 103 变为 101 是移出了两个实验 Go package，不是删除生产回归。详见[生产交付范围](2026-10-13-production-delivery_CN.md)。下文旧脚本与本机回执须结合历史提交及原工作区查看，不是当前生产候选的运行命令。
+
+## 历史候选与配置边界
 
 T14/T15 真实 Provider 试验使用候选 `4b428edfa70e98df3780f4850ab1d7129b95ed14`，隔离网关 binary SHA-256 为 `96f4546eae22f39bd07ad7dd8afa457136b44311ce49cd9f28320c08e49485c7`。T17 使用 `ca0758f4943baa97e651545a56c376adcdcb8e3d`，binary SHA-256 为 `f1d0214f3e75808fd457f2d06a2fe9852b05ae4988b9b037aff9bcd73a1fb278`。T19 响应诊断候选为 `58f5523b90d0561ff7812ad8da8257f14acb4ef5`，binary SHA-256 为 `42920710b5c0feda73458abb4bf16e79b57989fdcd8a89b726b8bac59e8e3c9c`。Codex CLI `0.160.0`、Claude CLI `2.1.289`；配置指纹为 `a746ab767d3e1ab33ed5e513f61dd119854b5ebc17db9f1a7e2053f0976a31f7`。
 
@@ -43,7 +51,7 @@ T28 的 `42b3d5da` 补上 hosted choice 最终声明校验：直接/allowed_tool
 | T24 真实 Codex 通知回填 | 同一生产候选上真实代码修改、11 项行为测试通过；五次 MCP 调用各保留通知及终态，权限和释放观测为零；独立复核确认按需加载闭环 | 原验收器失败保留，并修复 namespace / 多结果观测缺口；一个受限单函数任务，不能外推可靠率、代表性 repository 质量或全任务净收益。 |
 | 可观测安全与释放 | T14/T15/T17/T19 各 case 记录的 forbidden dispatch、forbidden effect、最终 active 均为 0；进程退出回执均为 0 | 仅对应各批观测；不能覆盖独立取消缺口，也不能用退出码替代任务成功。 |
 
-详细数据：[T14 覆盖审计](2026-10-13-primary-60-coverage_CN.md)、[T15 编码试验](2026-10-13-primary-coding-pilot_CN.md)、[T17 选择性发现](2026-10-13-codex-selective-discovery_CN.md)、[T19 响应诊断校准](2026-10-13-response-diagnostics-calibration_CN.md)、[T20 六十例复测](2026-10-13-final-candidate-60-retest_CN.md)、[新基线及失效批次](2026-10-13-primary-routes-refreeze_CN.md)、[本地诊断回归回执](../../.omo/tool-loading-completion/t16-diagnostic-verification.json)。
+详细数据：[T14 覆盖审计](2026-10-13-primary-60-coverage_CN.md)、[T15 编码试验](2026-10-13-primary-coding-pilot_CN.md)、[T17 选择性发现](2026-10-13-codex-selective-discovery_CN.md)、[T19 响应诊断校准](2026-10-13-response-diagnostics-calibration_CN.md)、[T20 六十例复测](2026-10-13-final-candidate-60-retest_CN.md)、[新基线及失效批次](2026-10-13-primary-routes-refreeze_CN.md)；本地诊断回归回执在原工作区 `.omo/tool-loading-completion/t16-diagnostic-verification.json`。
 
 ## 上下文、质量与成本
 
@@ -73,11 +81,9 @@ GPT lazy 峰值已进一步归因：`functions.exec` 使用 `ALL_TOOLS.filter` �
 | Gemini 用量 | 原始 scalar counters 确有 thought/total 回退及 prompt 修正；最后 STOP snapshot 加总一致，辅助请求缺计量契约 | 仍缺 Antigravity 最终值权威性与辅助成本契约，输入收益保持未知；不能从内部一致推导账单正确。见[计量边界](2026-10-13-gemini-usage-boundary_CN.md)。 |
 | 响应失败诊断 | T17 Muse 返回空 custom bridge 参数 `{}`，网关执行前拒绝，原 harness 记 framework | [独立响应诊断](../compatibility/responses-tool-failure-diagnostics_CN.md)已实现、本地回归并完成 T19 正常路径 live 校准；T19 没有再次触发非法参数，真实拒绝回执与 WS 诊断仍未实测。旧 verdict 不重写。 |
 | 模型/任务质量 | 部分 GLM、Qwen、Muse 案例缺中间回执重放、发现后加载或规定最终格式，另有未请求 confirm | 客户端与任务策略按固定 oracle 做新版本对照；不能用网关伪造工具执行或回执。 |
-| 正式统计与代表性编码 | 固定模板、单函数任务和未知成本仍不足 | 先锁定代表性任务族、exact case fingerprints 与 family/cluster 设计、路由/版本、冷热缓存和费用上限，再扩大测试。不能删除 fingerprint 来强行池化。 |
+| 证据不足 | 固定模板、单函数任务和未知成本不足以证明普遍可靠率或费用收益 | 保持有限实测标签；新验证围绕具体生产改动，不将统计平台、任务库或大规模抽样变为修复前置。 |
 
-在零观察回归且独立代表性簇假设成立的理想情况下，单组至少 149 簇才能使条件性单侧 95% 失败概率上界低于 2%；这是样本下限示例，不是存在回归时的完整 power 设计。十个 client/route 单元各做 149 簇 × 两模式为 2,980 cases；按每 case 八请求上限投影为 23,840 请求，远大于本轮 pilot，真实费用仍未知。重复同一模板或改随机参数不能冒充独立代表性簇。大规模正式试验须先形成可评审的采样、预算和停止条件，不能直接按该投影启动。
-
-[原正式验收设计](../superpowers/plans/2026-10-13-tool-loading-formal-acceptance-design_CN.md)保留冻结流程与历史方法；[任务族登记分析](../../ops/tool-loading/task_registry.py)已实现并覆盖 16 项回归，保留完整 CaseSpec 摘要，拒绝事后登记、伪拆分和材料漂移。T21 已交付 repository read/patch 基础，gold/隔离测试执行、自然语言任务集、独立抽样、live runner 集成及新统计设计仍未完成。后续按[现行分阶段方案](../superpowers/plans/2026-10-13-tool-loading-net-benefit-pilot_CN.md)投入，未启动大规模试验；T20 不因新模块获得事后认证。
+[原正式验收设计](../superpowers/plans/2026-10-13-tool-loading-formal-acceptance-design_CN.md)和[旧分阶段方案](../superpowers/plans/2026-10-13-tool-loading-net-benefit-pilot_CN.md)作为历史材料保留。[实验工具快照](https://github.com/hrygo/CLIProxyAPI/tree/d9e64b8eff81414244703220d44d651d195ee428/ops/tool-loading)仍可追溯。后续只从实际失败记录、当前源码和有效协议出发，修复网关可解决的问题；没有新的具体问题时收束，不为维持 Goal 制造设施需求。客户端取消、Provider 结果基数与未知计量分别交付兼容边界。
 
 ## 旧冻结门槛的历史状态
 

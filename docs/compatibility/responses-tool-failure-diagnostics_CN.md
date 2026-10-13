@@ -1,12 +1,14 @@
 # Responses 工具响应失败诊断：实施边界与回归要求
 
+> 本文的隔离 Gateway、Python reader 和 T19 live 数据属于历史实验；相关设施保留在[原提交](https://github.com/hrygo/CLIProxyAPI/tree/d9e64b8eff81414244703220d44d651d195ee428/ops/tool-loading)，已移出生产候选与 CI 前置。生产 observer 与 Go 回归保持，本报告不要求继续建设实验消费者或统计认证。
+
 核验日期：2026-10-13。**最小响应诊断已实现并通过本地回归；新候选四例正常路径 live 校准通过，尚未获得完整认证。** 范围仅是本地工具响应转换诊断；不增加自动重试，不修改权限、调用参数或流终态，不要求改默认配置或重启服务。
 
 ## 触发案例与当前实现
 
 T17 Muse / selective budget eager 的实际 upstream 状态为 HTTP 200，桥接函数声明 `parameters.required=["input"]`、`additionalProperties=false`，响应却生成 `arguments="{}"`。本地转换返回 `upstream_contract`，随后结束上游读取；零 MCP attempts、零 dispatch。原始 harness verdict 为 framework，因为客户端非零退出且响应侧原因没有结构化回执。原始 capture SHA-256 为 `70894daf1a9f9f1f0e4a127de5cb24b359506683d1bc171d2b2bdcb18f6a7789`，详见[T17 报告](../acceptance/2026-10-13-codex-selective-discovery_CN.md)。
 
-改动前 [`failure_observer.go`](../../internal/responsestools/failure_observer.go) 只定义准备阶段的 observer，`RewriteResponse`、流 `Feed` 和 `Finish` 错误仅返回/发出错误，没有响应侧回执。现在新增 [`response_failure_observer.go`](../../internal/responsestools/response_failure_observer.go)，在 [`responses_tools_execution.go`](../../sdk/cliproxy/auth/responses_tools_execution.go) 的三个本地转换边界调用；[`handlers.go`](../../sdk/api/handlers/handlers.go) 向执行 context 传递独立 observer。隔离 candidate 新增 [`response_evidence.go`](../../ops/tool-loading/live-gateway/response_evidence.go)，原 [`preparation_evidence.go`](../../ops/tool-loading/live-gateway/preparation_evidence.go) 不变。以上依据源码读取及回归；图谱相应路径 not_tracked/metadata_changed，未用索引缺失证明不存在。
+改动前 [`failure_observer.go`](../../internal/responsestools/failure_observer.go) 只定义准备阶段的 observer，`RewriteResponse`、流 `Feed` 和 `Finish` 错误仅返回/发出错误，没有响应侧回执。现在新增 [`response_failure_observer.go`](../../internal/responsestools/response_failure_observer.go)，在 [`responses_tools_execution.go`](../../sdk/cliproxy/auth/responses_tools_execution.go) 的三个本地转换边界调用；[`handlers.go`](../../sdk/api/handlers/handlers.go) 向执行 context 传递独立 observer。历史隔离 candidate 的 [`response_evidence.go`](https://github.com/hrygo/CLIProxyAPI/blob/d9e64b8eff81414244703220d44d651d195ee428/ops/tool-loading/live-gateway/response_evidence.go) 与 [`preparation_evidence.go`](https://github.com/hrygo/CLIProxyAPI/blob/d9e64b8eff81414244703220d44d651d195ee428/ops/tool-loading/live-gateway/preparation_evidence.go) 不属于生产交付。以上依据源码读取及回归；图谱相应路径 not_tracked/metadata_changed，未用索引缺失证明不存在。
 
 ## 最小改动与责任分工
 
@@ -33,7 +35,7 @@ phase 限定 `response_restore`、`stream_feed`、`stream_finish`。不复用 `p
 
 ## 交付与回退
 
-实现前新增测试因缺少 observer/reader/recorder 失败；实现后定向测试通过。审查时补了取消中转换的回归：移除取消检查的 overlay 会导致两个测试失败，当前实现通过 race 检查。最终 Go 1.26.4 全仓 103 个测试 package、vet、server build 均通过；四个相关 package 的完整 race 及取消修复后的定向 race 通过；Python 288 tests 通过。回执见[本地验证](../../.omo/tool-loading-completion/t19-response-diagnostic-verification.json)。
+实现前新增测试因缺少 observer/reader/recorder 失败；实现后定向测试通过。审查时补了取消中转换的回归：移除取消检查的 overlay 会导致两个测试失败，当时实现通过 race 检查。当时 Go 1.26.4 全仓 103 个测试 package、vet、server build 均通过；四个相关 package 的完整 race 及取消修复后的定向 race 通过；Python 288 tests 通过。历史回执在原工作区 `.omo/tool-loading-completion/t19-response-diagnostic-verification.json`。
 
 HTTP 执行 context 的传播有新增回归；WebSocket 使用相同 `GetContextWithCancel` 入口已有源码证据，既有全仓回归通过，但尚没有新增的真实 WS 响应诊断实测，不能据此宣称 WS 诊断已认证。新增观测不成为适配成功的前置业务条件；仅隔离验收将缺失/失败证据保留为未知或 framework。关闭 observer 即不收集诊断，原适配与错误语义不变；原服务配置、运行进程和默认客户端策略不参与此次实施。
 
