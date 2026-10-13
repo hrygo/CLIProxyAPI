@@ -6,9 +6,62 @@ Predeclared paired live scheduling and bounded Chat/Responses calibration are av
 the final multi-route matrix and statistical certification remain pending.
 Read-only paired diagnostics are available in `analyze_pairs.py`; their
 conditional bounds never promote a run to a certification label.
+`task_registry.py` adds opt-in analysis for preregistered task clusters while
+retaining every exact CaseSpec digest. It does not automatically change either
+live runner or certify representative sampling. See the registration workflow below.
 Offline case replay and request-level usage normalization are
 available below. Fixture tests do not certify
 Codex/OpenCode/Claude Code permission handling, model quality, or context savings.
+
+## Preregistered task clusters
+
+Keep each eager/lazy pair's complete execution scope identical apart from
+`client_mode`. `build_registry(experiment_id, cases, assignments,
+task_frame_sha256, seed, thresholds)` admits only explicitly registered task
+variation in `fixture_hash`, `catalog_hash` and `permission_hash`; all other
+route dimensions and the eager/lazy client modes remain fixed. Each assignment
+contains `pair_id`, `route_id`, `task_id`, `family_id`, `cluster_id` and
+`repeat_id`. Every pair must appear exactly once. A task cannot change its
+identity across repeats; one exact fixture cannot be split into independent
+clusters, and aliases cannot split one fixed route into selected groups.
+Fixture hashes must cover the task's immutable gold as well as its baseline.
+Different hashes alone do not prove independent or representative tasks.
+
+Before any task starts:
+
+1. Save the actual sampling-frame document, including task/family definitions,
+   cluster selection, repeat design and stopping rules. Hash its exact bytes.
+2. Build the registry with explicit `quality_margin`, `first_input_reduction`,
+   `peak_input_reduction` and `total_input_reduction` fractions. Save it with
+   `write_registry(path, registry)`, which creates a new private canonical file.
+3. Include both `task-frame` and `task-registry` paths in
+   `fingerprint_materials`, then build/save the ordinary batch plan with the
+   same schedule seed. Bind the complete plan digest with
+   `CaseJournal.lock_plan(plan["plan_sha256"])` before the first case.
+4. Execute only that plan's cases, order and frozen materials. The existing
+   live runners do not yet consume this registration automatically; a future
+   registered repository runner must verify the same materials before launch.
+
+Analyze that registered run without modifying its journal:
+
+```sh
+python3 ops/tool-loading/task_registry.py \
+  --journal "$task_validation/cases.jsonl" \
+  --plan "$task_validation/batch-plan.json" \
+  --registry "$task_validation/task-registry.json"
+```
+
+The analyzer verifies exact cases, membership, registry/frame material hashes,
+schedule seed and the durable pre-task lock. All planned pairs are reported;
+only actual starts enter the started denominator. Failed or unfinished starts,
+retry attempts, missing usage and unknown scope remain visible. Repeats are
+aggregated within registered clusters before conditional bounds are computed.
+Missing partners or not-started pairs block aggregate bounds. Unknown usage
+blocks that metric instead of being replaced by a successful subset or zero.
+Results always remain `unverified`: this implementation does not prove the
+sampling frame representative, evaluate billing, provide custom family weights,
+or grant historical runs a post-hoc certificate. The registry must be canonical;
+duplicate fields, nonfinite values, symlinks and changed files fail closed.
 
 ## Claude Code protocol probe
 

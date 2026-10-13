@@ -26,7 +26,7 @@ flowchart LR
 | Exact case / pair | baseline revision、fixture/gold/prompt/catalog/permission hash、工具服务/客户端/harness 版本、Gateway binary SHA/revision、模型/协议/路由、凭据材料绑定、E/L 模式、预算、实际身份及 journal | 判定这一对是否真的可比较，拒绝材料漂移与历史改判 |
 | Experiment / family | 完整预登记 task-set digest、每项任务的 exact hashes、任务族定义、独立抽样簇、route 列表、权重、重复次数、随机顺序、缓存实验条件、统计方法与停止规则 | 只有登记的任务变化可以在这一层聚合；既不丢掉 exact 证据，也不把每项不同 fixture 拆成不可统计的孤立认证 |
 
-新任务集、任务族或分析方法必须在采样前登记。不得事后把已有“好看”的任务归入新族、删除失败任务，或拿同一 bug 的数字/文案变体冒充独立簇。当前 analyzer 尚未实现该族级契约；旧 `unverified` 结果不因此获得认证。
+新任务集、任务族或分析方法必须在采样前登记。不得事后把已有“好看”的任务归入新族、删除失败任务，或拿同一 bug 的数字/文案变体冒充独立簇。[task_registry.py](../../../ops/tool-loading/task_registry.py)现已实现 opt-in 登记与条件性分析：完整 CaseSpec 摘要、sampling frame、材料与 seed 在首任务前绑定，重复和伪拆分有负向回归。尚未自动接入 live runner，也未证明抽样代表性、实现自定义族权重或交付编码 fixture；旧 `unverified` 结果不因此获得认证。
 
 工具身份必须证实。凭据 byte SHA 只证明材料绑定，不证明账号身份；region、账单与缓存信息的未知分别报告。与某指标无关的未知不能被擅自填成已知，也不能自动当作该指标的零值。若输入 usage 已完整可信，未知账单不应被转写为“输入未知”；Gemini 当前的输入计量冲突则确实阻止其输入收益认证。
 
@@ -74,4 +74,4 @@ Repository 工具应提供限定 workspace 的读、带 expected tree revision �
 
 ## 当前起点与未完成事项
 
-执行候选当前为 `58f5523b`；[四例校准](../../acceptance/2026-10-13-response-diagnostics-calibration_CN.md)已有实际闭环和正常诊断封存。新候选尚未完成 60 例覆盖；[Codex MCP 取消](../../compatibility/codex-mcp-cancellation-gap_CN.md)、[多输出保真](../../compatibility/codex-code-mode-multiple-results_CN.md)、[Gemini 权威计量](../../acceptance/2026-10-13-gemini-usage-boundary_CN.md)、repository fixture 和族级统计仍未闭合。以上未知项不因输入点估计达到 45% 就变为已解决。
+执行候选当前为 `58f5523b`；[四例校准](../../acceptance/2026-10-13-response-diagnostics-calibration_CN.md)已有实际闭环和正常诊断封存。[六十例复测](../../acceptance/2026-10-13-final-candidate-60-retest_CN.md)已完成 60 started / finished、41 safe，数量覆盖完成，失败与未知计数保留；它没有预登记新任务族，不能事后升级认证。[Codex MCP 取消](../../compatibility/codex-mcp-cancellation-gap_CN.md)、[多输出保真](../../compatibility/codex-code-mode-multiple-results_CN.md)、[Gemini 权威计量](../../acceptance/2026-10-13-gemini-usage-boundary_CN.md)、repository fixture、登记 runner 集成和正式族级统计仍未闭合。以上未知项不因输入点估计达到 45% 就变为已解决。
