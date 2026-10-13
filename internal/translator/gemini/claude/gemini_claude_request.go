@@ -42,6 +42,7 @@ func ConvertClaudeRequestToGeminiWithCompat(modelName string, inputRawJSON []byt
 
 func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool, preserveEmptyThinkingBlocks bool) []byte {
 	rawJSON := inputRawJSON
+	functionNameMap := util.SanitizedFunctionNameMap(rawJSON)
 	// Build output Gemini request JSON
 	out := []byte(`{"contents":[]}`)
 	out, _ = sjson.SetBytes(out, "model", modelName)
@@ -141,7 +142,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 						if toolUseID != "" && functionName != "" {
 							toolNameByID[toolUseID] = functionName
 						}
-						functionName = util.SanitizeFunctionName(functionName)
+						functionName = util.MapSanitizedFunctionName(functionNameMap, functionName)
 						functionArgs := contentResult.Get("input").String()
 						argsResult := gjson.Parse(functionArgs)
 						if argsResult.IsObject() && gjson.Valid(functionArgs) {
@@ -170,7 +171,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 						if funcName == "" {
 							funcName = toolCallID
 						}
-						funcName = util.SanitizeFunctionName(funcName)
+						funcName = util.MapSanitizedFunctionName(functionNameMap, funcName)
 						toolResult := util.ConvertClaudeToolResultContent(contentResult.Get("content"))
 						part := []byte(`{"functionResponse":{"name":"","response":{"result":""}}}`)
 						part, _ = sjson.SetBytes(part, "functionResponse.id", toolCallID)
@@ -268,7 +269,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 				}
 				nameResult := toolResult.Get("name")
 				originalName := nameResult.String()
-				sanitizedName := util.SanitizeFunctionName(originalName)
+				sanitizedName := util.MapSanitizedFunctionName(functionNameMap, originalName)
 				if nameResult.Type != gjson.String || sanitizedName != originalName {
 					tool, _ = sjson.SetBytes(tool, "name", sanitizedName)
 				}
@@ -311,7 +312,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 		case "tool":
 			out, _ = sjson.SetBytes(out, "toolConfig.functionCallingConfig.mode", "ANY")
 			if toolChoiceName != "" {
-				out, _ = sjson.SetBytes(out, "toolConfig.functionCallingConfig.allowedFunctionNames", []string{util.SanitizeFunctionName(toolChoiceName)})
+				out, _ = sjson.SetBytes(out, "toolConfig.functionCallingConfig.allowedFunctionNames", []string{util.MapSanitizedFunctionName(functionNameMap, toolChoiceName)})
 			}
 		}
 	} else if hasStrictTool && len(toolItems) > 0 {

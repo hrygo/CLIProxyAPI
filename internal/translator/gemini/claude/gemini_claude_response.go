@@ -35,6 +35,24 @@ type Params struct {
 // toolUseIDCounter provides a process-wide unique counter for tool use identifiers.
 var toolUseIDCounter uint64
 
+// Keep unchanged names in the reverse map too: canonical fallback alone
+// would collapse valid pairs such as Read/read or _lookup/lookup.
+func geminiClaudeFunctionNameMap(original []byte) map[string]string {
+	forward := util.SanitizedFunctionNameMap(original)
+	reverse := make(map[string]string, len(forward))
+	for name, translated := range forward {
+		reverse[translated] = name
+	}
+	return reverse
+}
+
+func restoreGeminiClaudeFunctionName(exact, canonical map[string]string, name string) string {
+	if original, ok := exact[name]; ok {
+		return original
+	}
+	return util.MapToolName(canonical, name)
+}
+
 // ConvertGeminiResponseToClaude performs sophisticated streaming response format conversion.
 // This function implements a complex state machine that translates backend client responses
 // into Claude-compatible Server-Sent Events (SSE) format. It manages different response types
@@ -59,7 +77,7 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 			ResponseType:     0,
 			ResponseIndex:    0,
 			ToolNameMap:      util.ToolNameMapFromClaudeRequest(originalRequestRawJSON),
-			SanitizedNameMap: util.SanitizedToolNameMap(originalRequestRawJSON),
+			SanitizedNameMap: geminiClaudeFunctionNameMap(originalRequestRawJSON),
 			SawToolCall:      false,
 		}
 	}
@@ -193,8 +211,8 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 				// This processes tool usage requests and formats them for Claude API compatibility
 				(*param).(*Params).SawToolCall = true
 				upstreamToolName := functionCallResult.Get("name").String()
-				upstreamToolName = util.RestoreSanitizedToolName((*param).(*Params).SanitizedNameMap, upstreamToolName)
-				clientToolName := util.MapToolName((*param).(*Params).ToolNameMap, upstreamToolName)
+				upstreamToolName = restoreGeminiClaudeFunctionName((*param).(*Params).SanitizedNameMap, (*param).(*Params).ToolNameMap, upstreamToolName)
+				clientToolName := upstreamToolName
 
 				// FIX: Handle streaming split/delta where name might be empty in subsequent chunks.
 				// If we are already in tool use mode and name is empty, treat as continuation (delta).
@@ -298,7 +316,7 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, _ string, origina
 
 	root := gjson.ParseBytes(rawJSON)
 	toolNameMap := util.ToolNameMapFromClaudeRequest(originalRequestRawJSON)
-	sanitizedNameMap := util.SanitizedToolNameMap(originalRequestRawJSON)
+	sanitizedNameMap := geminiClaudeFunctionNameMap(originalRequestRawJSON)
 
 	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
 	out, _ = sjson.SetBytes(out, "id", root.Get("responseId").String())
@@ -383,8 +401,8 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, _ string, origina
 				hasToolCall = true
 
 				upstreamToolName := functionCall.Get("name").String()
-				upstreamToolName = util.RestoreSanitizedToolName(sanitizedNameMap, upstreamToolName)
-				clientToolName := util.MapToolName(toolNameMap, upstreamToolName)
+				upstreamToolName = restoreGeminiClaudeFunctionName(sanitizedNameMap, toolNameMap, upstreamToolName)
+				clientToolName := upstreamToolName
 				toolIDCounter++
 				toolBlock := []byte(`{"type":"tool_use","id":"","name":"","input":{}}`)
 				toolBlock, _ = sjson.SetBytes(toolBlock, "id", util.SanitizeClaudeToolID(fmt.Sprintf("%s-%d", upstreamToolName, toolIDCounter)))
