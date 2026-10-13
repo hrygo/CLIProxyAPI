@@ -374,9 +374,11 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
                     "--settings", str(settings_path), "--strict-mcp-config", "--mcp-config", str(config_path),
                     "--tools", "ToolSearch" if mode == "lazy" else "", "--disable-slash-commands",
                     "--no-session-persistence", "--permission-mode", "dontAsk", "--permission-prompts", "none",
-                    "--allowedTools", ",".join(allowed_tools), "--model", catalog["model"], "--prompt-suggestions", "false"]
+                    "--allowedTools", ",".join(allowed_tools)]
         if denied_tools:
             command += ["--disallowedTools", ",".join(denied_tools)]
+        # Terminate variadic tool options before appending a positional prompt.
+        command += ["--model", catalog["model"], "--prompt-suggestions", "false"]
         expected_mode = "tool-search" if mode == "lazy" else "direct"
     permission_material = profile_permissions(normalized_permissions, structured_output="output_schema" in catalog, coding_task=coding_task)
     return PreparedClient(client_id, ADAPTER_VERSIONS[client_id], expected_mode, command, env, root,

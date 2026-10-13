@@ -12,6 +12,16 @@ Codex/OpenCode/Claude Code permission handling, model quality, or context saving
 
 ## Claude Code protocol probe
 
+Actual-client execution boundaries can be probed independently with
+`python3 ops/tool-loading/claude_boundary_probe.py --output-dir "$task_validation/claude-boundaries"`.
+Eight scripted Messages cases cover both modes with client denial, invalid
+arguments, service revocation after discovery and dispatch-triggered SIGINT.
+Denial requires zero MCP requests, rejection requires zero dispatch/effects,
+and cancellation requires the actual cancelled/released events, no forced
+client cleanup and final zero active callbacks. All starts and framework
+failures stay in the private journal. These are protocol/boundary observations,
+not real-Provider successes or token/cost measurements.
+
 `client_adapters.py` additionally admits an explicitly selected Claude Code
 2.1.289 profile. The live runner admits `--clients claude` explicitly; its
 default remains Codex/OpenCode. Claude cases lock their version, executable,

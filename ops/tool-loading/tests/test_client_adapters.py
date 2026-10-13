@@ -167,6 +167,9 @@ class AdapterTests(unittest.TestCase):
                 denied = command[command.index("--disallowedTools") + 1]
                 allowed = command[command.index("--allowedTools") + 1]
                 self.assertEqual(denied, "mcp__fixture__ledger_budget_lookup")
+                # Claude's variadic deny option must end at another option,
+                # otherwise run_task's positional prompt becomes a tool name.
+                self.assertTrue(any(token.startswith("--") for token in command[command.index("--disallowedTools") + 2:]))
                 self.assertNotIn("mcp__fixture__ledger_budget_lookup", allowed.split(","))
                 self.assertIn("mcp__fixture__ledger_budget_confirm", allowed.split(","))
                 config = json.loads(prepared.config_path.read_text())
