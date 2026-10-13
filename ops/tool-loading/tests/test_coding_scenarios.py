@@ -13,6 +13,47 @@ from live_clients import make_case_spec, result_checks
 
 
 class CodingScenarioTests(unittest.TestCase):
+    def test_selective_discovery_has_separate_prompt_identity_and_same_authority(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config, executable = root / "config", root / "client"
+            config.write_bytes(b"synthetic-config")
+            executable.write_bytes(b"synthetic-client")
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "codex"}
+            with patch("live_clients.shutil.which", return_value=str(executable)):
+                for task in ("budget", "identity", "retry"):
+                    specs = [make_case_spec(config, profile, "codex", mode, "a" * 40,
+                        "ep_" + "b" * 32, 90, scenario=scenario, codex_tool_mode="code_mode_only")
+                        for scenario, mode in (("coding-" + task, "lazy"),
+                            ("coding-" + task + "-selective", "eager"),
+                            ("coding-" + task + "-selective", "lazy"))]
+                    baseline, eager, lazy = specs
+                    self.assertNotEqual(baseline.template_id, lazy.template_id)
+                    self.assertNotEqual(baseline.prompt_hash, lazy.prompt_hash)
+                    self.assertEqual(eager.prompt_hash, lazy.prompt_hash)
+                    self.assertEqual(eager.template_id, lazy.template_id)
+                    self.assertEqual(baseline.gold, lazy.gold)
+                    self.assertEqual(baseline.limits, lazy.limits)
+                    for key in ("catalog_hash", "permission_hash", "fixture_hash"):
+                        self.assertEqual(baseline.scope[key], lazy.scope[key])
+
+    def test_selective_discovery_keeps_code_hash_receipt_and_dispatch_guards(self):
+        answer = {"status": "fixed", "source_sha256": "a" * 64, "verification_code": "fresh"}
+        events = []
+        for tool in ("coding_task_read", "coding_source_replace", "coding_tests_run"):
+            events += [{"phase": "dispatch", "tool": tool},
+                       {"phase": "completed", "tool": tool, "source_sha256": "a" * 64, "tests_passed": True},
+                       {"phase": "released", "tool": tool}]
+        for task in ("budget", "identity", "retry"):
+            name = "coding-" + task + "-selective"
+            self.assertEqual(get_scenario(name).coding_task, task)
+            self.assertTrue(answer_matches(name, answer, "fresh", source_sha256="a" * 64)[0])
+            self.assertFalse(answer_matches(name, answer, "other", source_sha256="a" * 64)[0])
+            self.assertFalse(answer_matches(name, answer, "fresh", source_sha256="b" * 64)[0])
+            self.assertTrue(dispatch_matches(name, events, source_sha256="a" * 64))
+            self.assertFalse(dispatch_matches(name, events[:-1], source_sha256="a" * 64))
+            self.assertFalse(dispatch_matches(name, events[3:], source_sha256="a" * 64))
+
     def test_runner_scores_source_independently_from_a_clients_fixed_claim(self):
         from contextlib import contextmanager
         from types import SimpleNamespace

@@ -86,6 +86,14 @@ the explicit OpenCode title profile), and `scenarios`. Both eager/lazy modes
 are mandatory. Duplicate case identities and unverified wire contracts fail
 preflight; the declaration itself enters the frozen materials.
 
+The opt-in `coding-budget-selective`, `coding-identity-selective` and
+`coding-retry-selective` scenarios add explicit fixture tool names and request
+only their metadata during discovery. They retain the original code, receipt,
+dispatch, permission and budget checks, with separate prompt hashes and template
+IDs (`selective-metadata-v1`). Use them for a guided discovery experiment,
+not as evidence of unguided retrieval quality or native `tool_search` support.
+The original coding scenarios and default client profiles remain unchanged.
+
 Both live entry points require a local Go executable to inspect the candidate
 with `go version -m`. Before creating cases, the binary must report `vcs=git`,
 the exact declared revision and `vcs.modified=false`. Missing/ambiguous build

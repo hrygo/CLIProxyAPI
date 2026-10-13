@@ -46,6 +46,15 @@ for _coding_task in ("budget", "retry", "identity"):
         "shell/edit tools are not authorized for this fixture. Return only a JSON object with status "
         "(fixed only if the actual tests pass), source_sha256 and verification_code from the actual "
         "final test result. Do not modify the tests or invent their outcome.", True, True, _coding_task)
+    _base = SCENARIOS["coding-" + _coding_task]
+    SCENARIOS["coding-" + _coding_task + "-selective"] = TaskScenario(
+        _base.template_id + "-selective-metadata-v1",
+        _base.prompt + " For tool discovery, select only the actual metadata for "
+        "mcp__fixture__coding_task_read, mcp__fixture__coding_source_replace and "
+        "mcp__fixture__coding_tests_run. If using ALL_TOOLS, filter by those exact "
+        "tool names rather than broad fixture keywords, and print only the selected tool metadata. "
+        "Inspect the real schemas before execution. Do not print the entire tool catalog.",
+        _base.requires_dispatch, _base.requires_nonce, _base.coding_task)
 
 
 def get_scenario(name):
