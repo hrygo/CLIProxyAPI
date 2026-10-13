@@ -4,6 +4,8 @@
 
 用户已明确替换线程目标，现行依据为[全任务净收益分阶段方案](../superpowers/plans/2026-10-13-tool-loading-net-benefit-pilot_CN.md)。60 例为覆盖证据，45%／10% 为历史参考，不再作为所有路由统一通过线；正式实验前锁定任务分布、质量非劣界、最小有意义收益、区间方法与投入上限。下文 G1–G5 是旧冻结规则的历史结果，保留而不追溯改判。
 
+**实施边界纠偏：** 使用官方发行的 Codex、Claude Code 等客户端，通过现有受支持配置与扩展接入；停止客户端源码修补、构建和 fork 维护，不以自建客户端作为交付条件。CLIProxyAPI 是主要生产修复载体，客户端缺口交付兼容限制与责任边界。T25 自建候选只保留诊断证据，不计为官方客户端兼容认证。
+
 ## 候选与配置边界
 
 T14/T15 真实 Provider 试验使用候选 `4b428edfa70e98df3780f4850ab1d7129b95ed14`，隔离网关 binary SHA-256 为 `96f4546eae22f39bd07ad7dd8afa457136b44311ce49cd9f28320c08e49485c7`。T17 使用 `ca0758f4943baa97e651545a56c376adcdcb8e3d`，binary SHA-256 为 `f1d0214f3e75808fd457f2d06a2fe9852b05ae4988b9b037aff9bcd73a1fb278`。T19 响应诊断候选为 `58f5523b90d0561ff7812ad8da8257f14acb4ef5`，binary SHA-256 为 `42920710b5c0feda73458abb4bf16e79b57989fdcd8a89b726b8bac59e8e3c9c`。Codex CLI `0.160.0`、Claude CLI `2.1.289`；配置指纹为 `a746ab767d3e1ab33ed5e513f61dd119854b5ebc17db9f1a7e2053f0976a31f7`。
@@ -17,6 +19,8 @@ T22 按用户纠偏暂停 Docker/gold runner 扩建，优先修 CLIProxyAPI 生�
 T23 继续交付生产功能：`c16b5526` 新增精确原生路由 `custom-output-replay: multiple`，`832c8fbf` 修复最终发送层仍错误限制单结果的问题，并按准备阶段数量、完整结果摘要及工具事件顺序防止后处理篡改。最终干净候选 `832c8fbf2414b7ccea6e865444716d485b0e4577` 的隔离 SDK binary SHA-256 为 `033d57377c8bcba869242a976a3e097beb62401d9920e0a1c66905a856473ce8`；GPT `gpt-6-luna` 两次合成 custom bridge 探测均 HTTP 200、实际上游合法完成，文本与数组多结果的内容、身份和交错次序全部保留。默认仍为 `single`；Muse 上游明确拒绝一对多结果，不宣称跨协议已解决。新候选只取得这一精确路由的协议证据，没有继承旧批次的任务质量或收益认证。详见[多输出生产修复与实测边界](../compatibility/codex-code-mode-multiple-results_CN.md)。后续优先补生产闭环，验证只服务具体修复，继续暂停 Docker/gold runner 扩建。
 
 T24 用同一生产候选完成一个真实 Codex 通知编码任务：7 次物理请求、5 次实际 MCP 调用，每次调用的通知和最终结果均保留，代码修改及 11 项独立行为测试通过。原 verdict 因旧验收器不识别 `functions.exec` 源身份与多结果而失败；最小修复观测并做独立原始记录复核后，首轮 fixture 签名未注入、仅加载并调用三个 coding 工具、无 schema 前调用，历史一致。保留原失败，不改判或增加成功分母。该受限任务未提供 eager 配对、代表性编码任务或新的净收益认证。
+
+T25 曾扩展到隔离 Codex 客户端源码修补与构建：底层 request owner 的 scoped 回归通过，但完整运行包下两个 Code Mode 原生取消仍无 MCP 取消通知，且尚未排除默认关闭的 `code_mode_interrupt` 条件。该支线收束，客户端问题保留为能力边界，重新聚焦 CLIProxyAPI 生产修复。未替换客户端、改默认配置或重启原服务；没有新增真实 Provider 或上下文收益认证。局部通过、companion 构建失败和原生失败均见[取消缺口记录](../compatibility/codex-mcp-cancellation-gap_CN.md)。
 
 ## 已取得的证据
 
@@ -56,7 +60,7 @@ GPT lazy 峰值已进一步归因：`functions.exec` 使用 `ALL_TOOLS.filter` �
 | 问题 | 已确认事实 | 下一步责任与交付 |
 | --- | --- | --- |
 | Codex Code Mode 多输出 | `notify` 与终态共享 `call_id`；已交付显式原生 Responses 多结果重放及最终发送保护，GPT 两次合成桥接和一个真实通知编码任务均取得闭环证据，旧验收器失败另保留。Muse 明确要求一个调用一个输出；Chat/Claude 的原有转换不能保真 | GPT 精确原生路由取得有限真实客户端证据，未认证可靠率。其他 Provider/跨协议仍需逐目标支持或新客户端/事件契约；默认有损路径继续 422。见[多输出边界](../compatibility/codex-code-mode-multiple-results_CN.md)。 |
-| Codex MCP 取消 | 两例本机 app-server interrupt 有 ack 与 interrupted 终态，但清理前无取消通知/释放，最后观测 active=1；不经过 Gateway | Codex 客户端单独交付 request token → 实际 MCP request handle 取消，再做编译和实测；网关不能代发其本机 request ID。见[取消缺口](../compatibility/codex-mcp-cancellation-gap_CN.md)。 |
+| Codex MCP 取消 | 两例本机 app-server interrupt 有 ack 与 interrupted 终态，但清理前无取消通知/释放，最后观测 active=1；不经过 Gateway。T25 自建候选仍失败且未排除 feature 条件 | 仅基于官方发行版本及现有受支持配置划定兼容范围；配置条件与客户端能力分别标注，依赖源码修改的路径列为外部上游依赖。本任务不交付自建客户端，网关不能代发其本机 request ID。见[取消缺口](../compatibility/codex-mcp-cancellation-gap_CN.md)。 |
 | Gemini / Claude 可用性 | T14 六例记录上游 HTTP 429；同模型 Codex 五例成功，一例额外 confirm 任务质量失败 | 429 来自 Provider 响应边界，但准确配额条件/持续性和 thinking 因果未证实。不能删除失败或把其他客户端成功追溯改判。 |
 | Gemini 冻结材料漂移 | T20 八例启动回执均为 `credentials / binding_content_mismatch`，默认配置摘要未变；Claude 两例另记录 12 次上游 429 | 保留旧分母；后续先明确稳定身份与执行材料绑定，不能自动刷新/换账号。未知请求与执行计数不补零。 |
 | Gemini 用量 | 原始 scalar counters 确有 thought/total 回退及 prompt 修正；最后 STOP snapshot 加总一致，辅助请求缺计量契约 | 仍缺 Antigravity 最终值权威性与辅助成本契约，输入收益保持未知；不能从内部一致推导账单正确。见[计量边界](2026-10-13-gemini-usage-boundary_CN.md)。 |
