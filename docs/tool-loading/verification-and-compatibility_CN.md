@@ -4,7 +4,7 @@
 
 ## 1. 结论及证据级别
 
-最终代码的工程门禁通过。指定历史候选上，官方 Codex 和 Claude Code 已分别完成发现、有效加载、真实 MCP 执行、代码修改和关联回填，并取得显著输入减少。当前证据不构成最终代码在全部 Provider、模式和传输上的完整验收，不认证普遍可靠率、长期任务质量或账单节省。
+生产代码基准 `743a5e0a` 的既有工程门禁通过；文档整合提交 `1559ce51` 的两次 CI 测试失败单独保留于第 2 节。指定历史候选上，官方 Codex 和 Claude Code 已分别完成发现、有效加载、真实 MCP 执行、代码修改和关联回填，并取得显著输入减少。当前证据不构成最终代码在全部 Provider、模式和传输上的完整验收，不认证普遍可靠率、长期任务质量或账单节省。
 
 | 证据类别 | 本报告如何使用 |
 | --- | --- |
@@ -32,6 +32,15 @@
 | optional live/corpus/TLS | 既有条件跳过不代表对应外部能力通过；新增生产回归未以跳过代替执行。 |
 
 整合后的文档不改变 Go、配置或 CI 行为。最终代码没有新增真实 Provider 复测；后文使用各自历史 revision。旧阶段报告中的 103 包包含两个已移出的实验 Go package，不能用于当前生产包数。
+
+文档提交 `1559ce513937fe38339e42ee5c1bb5228437b532` 的 CI 两次尝试均在 Test 步骤失败，Build 未执行；不能将该提交的 CI 标为通过：
+
+| CI 尝试 | 实际失败 | 复核边界 |
+| --- | --- | --- |
+| [第一次](https://github.com/hrygo/CLIProxyAPI/actions/runs/38481971551/job/115586446466) | `TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless`：上传时连接已关闭 | 本机 Go 1.26.4 对该测试连续 20 次通过；fixture 收到 Pong 后没有等待上传完成即回复并关闭，存在时序竞争可能，未以受控 Linux 复现确认唯一根因。 |
+| [第二次](https://github.com/hrygo/CLIProxyAPI/actions/runs/38481971551/job/115588836183) | `TestAIStudioExecutorExecuteStartsTTFTBeforeRelayWait`：257.66µs，期望至少 40ms | 原断言及 failure 保留；该异常的时序或 usage record 归属根因未确认，未追加重跑。 |
+
+这两个测试及对应 executor 与 `main` 一致，整合提交也没有 Go 变化；范围内未发现文档依赖。上述事实区分历史工程通过、当前 CI 失败和本机定向结果，不构成测试稳定性保证，也没有据此修改生产代码、跳过断言或增加测试设施。
 
 ### 2.1 生产协议与发送保护
 
