@@ -1065,6 +1065,17 @@ missing historical snapshots stay unknown. The launcher retains its cleanup
 budget; no established upstream network timeout is introduced. Production
 requests without an owner scope keep their existing warm-hint lifetime.
 
+Process readiness does not imply that asynchronous Antigravity model discovery
+has published its catalog. The isolated candidate exposes a local, authenticated
+`/acceptance/catalog-state` response with its PID, readiness nonce and active
+auxiliary-work count. When the actual catalog lacks the selected model, the
+live runner waits only while that same candidate has admitted work, within the
+original task deadline. After work settles, it rechecks the actual catalog once
+to cover concurrent publication. A missing model, unverified state, incompatible
+mode or exhausted task budget still fails; metadata is never fabricated. Local
+catalog observations are retained in each summary, and discovery attempts remain
+in physical-request accounting. Existing service behavior is unchanged.
+
 See the [auxiliary accounting and settlement report](../../docs/acceptance/2026-10-13-auxiliary-accounting_CN.md)
 for deterministic tests, actual SDK loopback results and remaining native-route
 work. These results do not establish new Provider success rates or token savings.

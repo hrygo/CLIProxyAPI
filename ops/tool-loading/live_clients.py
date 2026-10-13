@@ -44,7 +44,8 @@ def endpoint_id(value):
 
 class CatalogFailure(ValueError):
     def __init__(self, reason):
-        if reason not in {"body_invalid", "model_unavailable", "tool_mode_mismatch", "search_not_admitted", "http_failure", "transport_failure"}:
+        if reason not in {"body_invalid", "model_unavailable", "tool_mode_mismatch", "search_not_admitted", "http_failure", "transport_failure",
+                          "startup_budget_exhausted", "readiness_unverified"}:
             raise ValueError("invalid catalog diagnostic")
         self.reason = reason
         super().__init__("actual model catalog does not admit the requested profile")
@@ -64,7 +65,7 @@ def select_model_metadata(body, model, client, mode):
     return deepcopy(metadata)
 
 
-def fetch_model_metadata(ready, model, client, mode):
+def _fetch_model_metadata_once(ready, model, client, mode):
     address = urlsplit(ready["base_url"])
     connection = http.client.HTTPConnection(address.hostname, address.port, timeout=5)
     try:
@@ -83,6 +84,59 @@ def fetch_model_metadata(ready, model, client, mode):
         raise CatalogFailure("body_invalid") from None
     finally:
         connection.close()
+
+
+def _catalog_work_active(ready):
+    address = urlsplit(ready["base_url"])
+    connection = http.client.HTTPConnection(address.hostname, address.port, timeout=0.5)
+    try:
+        connection.request("GET", "/acceptance/catalog-state",
+                           headers={"Authorization": "Bearer local-acceptance-placeholder"})
+        response = connection.getresponse()
+        raw = response.read(8193)
+        from http_attempts import _json
+        body = _json(raw)
+        if (response.status != 200 or len(raw) > 8192 or not isinstance(body, dict)
+                or set(body) != {"pid", "ready_nonce", "active_auxiliary_work"}
+                or type(body["pid"]) is not int or body["pid"] != ready["pid"]
+                or body["ready_nonce"] != ready["ready_nonce"]
+                or type(body["active_auxiliary_work"]) is not int or body["active_auxiliary_work"] < 0):
+            raise CatalogFailure("readiness_unverified")
+        return body["active_auxiliary_work"]
+    except (OSError, ValueError, http.client.HTTPException):
+        raise CatalogFailure("readiness_unverified") from None
+    finally:
+        connection.close()
+
+
+def fetch_model_metadata(ready, model, client, mode, *, deadline=None, observations=None):
+    if deadline is None:
+        return _fetch_model_metadata_once(ready, model, client, mode)
+    observations = observations if observations is not None else []
+    started = time.monotonic()
+    while True:
+        if time.monotonic() >= deadline:
+            raise CatalogFailure("startup_budget_exhausted")
+        try:
+            metadata = _fetch_model_metadata_once(ready, model, client, mode)
+            observations.append({"elapsed_ms": round((time.monotonic()-started)*1000), "available": True})
+            return metadata
+        except CatalogFailure as error:
+            if error.reason != "model_unavailable" or ready.get("profile", {}).get("executor") != "antigravity":
+                raise
+            active = _catalog_work_active(ready)
+            observations.append({"elapsed_ms": round((time.monotonic()-started)*1000), "available": False,
+                                 "reason": error.reason, "active_auxiliary_work": active})
+            if active == 0:
+                # Publication can complete between the catalog read and state
+                # read. Recheck once after work settles; never invent metadata.
+                metadata = _fetch_model_metadata_once(ready, model, client, mode)
+                observations.append({"elapsed_ms": round((time.monotonic()-started)*1000), "available": True})
+                return metadata
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise CatalogFailure("startup_budget_exhausted") from None
+            time.sleep(min(0.05, remaining))
 
 
 def result_checks(client, raw, nonce, *, scenario="lookup", native_result=None, source_sha256=None, structured_output=False):
@@ -209,6 +263,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     preparation = None
     auxiliary_work = None
     candidate_diagnostics, catalog_diagnostic = None, None
+    catalog_observations = []
     issues, attempts = [], []
     failure, effective, declaration_bytes = "framework", False, []
     stage = "candidate_start"
@@ -222,7 +277,8 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
         stage = "candidate_start"
         with candidate_process(binary, config, case_root, profile, max_attempts=spec.limits["max_requests"]) as (ready, capture):
             stage = "catalog_validation"
-            metadata = fetch_model_metadata(ready, profile["client_model"], client, mode)
+            metadata = fetch_model_metadata(ready, profile["client_model"], client, mode,
+                                            deadline=started+seconds, observations=catalog_observations)
             write_private(case_root / "actual-model.json", json.dumps(metadata, indent=2))
             nonce = uuid.uuid4().hex
             stage = "client_preparation"
@@ -298,6 +354,8 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                 candidate_diagnostics = error.diagnostics
             if isinstance(error, CatalogFailure):
                 catalog_diagnostic = {"reason": error.reason}
+                if error.reason == "startup_budget_exhausted":
+                    failure = "budget"
             error = error.__context__
     if capture is not None:
         try:
@@ -351,6 +409,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     result["auxiliary_work_diagnostics"] = auxiliary_work
     result["candidate_diagnostics"] = candidate_diagnostics
     result["catalog_diagnostic"] = catalog_diagnostic
+    result["catalog_observations"] = catalog_observations
     if task.coding_task is not None:
         result["code_outcome"] = code_outcome
     write_private(case_root / "summary.json", json.dumps(result, indent=2))

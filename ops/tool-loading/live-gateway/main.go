@@ -404,6 +404,12 @@ func run() error {
 			c.Abort()
 			return
 		}
+		if c.Request.Method == http.MethodGet && c.Request.URL.Path == "/acceptance/catalog-state" {
+			c.JSON(http.StatusOK, gin.H{"pid": os.Getpid(), "ready_nonce": readyNonce,
+				"active_auxiliary_work": auxiliaryWork.Snapshot().Active})
+			c.Abort()
+			return
+		}
 		if c.Request.Method == http.MethodGet && c.Request.URL.Path == "/v1/models" {
 			c.Next()
 			return
