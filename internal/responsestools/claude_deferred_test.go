@@ -96,6 +96,67 @@ func TestClaudeDeferredDoesNotParseTextOrArgumentsAsDiscovery(t *testing.T) {
 	}
 }
 
+func TestClaudeDeferredOrdinaryProtocolWordsPassThrough(t *testing.T) {
+	for name, body := range map[string]string{
+		"string reference": ` {"messages":[{"role":"user","content":"tool_reference"}]} `,
+		"string flag":      `{"messages":[{"role":"user","content":"defer_loading"}]}`,
+		"text block":       `{"tools":[{"name":"ordinary","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"text","text":"tool_reference"}]}]}`,
+		"tool name":        `{"tools":[{"name":"tool_reference","input_schema":{"type":"object"}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"ordinary_1","name":"tool_reference","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"ordinary_1","content":"done"}]}]}`,
+		"tool input":       `{"tools":[{"name":"ordinary","input_schema":{"type":"object"}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"ordinary_1","name":"ordinary","input":{"type":"tool_reference","defer_loading":true}}]}]}`,
+		"result text":      `{"tools":[{"name":"ordinary","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"ordinary_1","content":[{"type":"text","text":"tool_reference"}]}]}]}`,
+		"schema metadata":  `{"tools":[{"name":"ordinary","input_schema":{"type":"object","properties":{"defer_loading":{"type":"boolean"}},"const":"tool_reference"}}],"messages":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			original := []byte(body)
+			prepared, err := PrepareClaudeDeferredTools(original, DefaultLimits())
+			if err != nil || !bytes.Equal(prepared, original) || string(original) != body {
+				t.Fatalf("ordinary request changed or rejected: %s %v", prepared, err)
+			}
+		})
+	}
+}
+
+func TestClaudeDeferredReferencesWithoutFlagsStillValidated(t *testing.T) {
+	body := strings.ReplaceAll(claudeDeferredFixture, `,"defer_loading":true`, "")
+	prepared, err := PrepareClaudeDeferredTools([]byte(body), DefaultLimits())
+	if err != nil || bytes.Contains(prepared, []byte(`"type":"tool_reference"`)) {
+		t.Fatalf("reference-only discovery was not bridged: %s %v", prepared, err)
+	}
+	for name, invalid := range map[string]string{
+		"missing declarations":   `{"messages":[{"role":"user","content":[{"type":"tool_reference","tool_name":"lookup"}]}]}`,
+		"duplicate block type":   strings.Replace(body, `"type":"tool_reference"`, `"type":"tool_reference","type":"text"`, 1),
+		"duplicate result type":  strings.Replace(body, `"type":"tool_result"`, `"type":"tool_result","type":"text"`, 1),
+		"duplicate content":      strings.Replace(body, `"content":[{"type":"tool_reference","tool_name":"lookup"}]`, `"content":[{"type":"tool_reference","tool_name":"lookup"}],"content":"done"`, 1),
+		"duplicate root history": strings.TrimSuffix(body, "}") + `,"messages":[]}`,
+		"hidden deferral flag":   `{"tools":[{"name":"ordinary","defer_loading":true,"defer_loading":false,"input_schema":{"type":"object"}}],"messages":[]}`,
+		"hidden deferral tools":  `{"tools":[{"name":"ordinary","defer_loading":true,"input_schema":{"type":"object"}}],"tools":[],"messages":[]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !json.Valid([]byte(invalid)) || invalid == body {
+				t.Fatal("invalid discovery fixture did not encode the intended mutation")
+			}
+			if _, err := PrepareClaudeDeferredTools([]byte(invalid), DefaultLimits()); err == nil || !IsRequestScopedError(err) {
+				t.Fatalf("invalid reference-only discovery admitted: %v", err)
+			}
+		})
+	}
+}
+
+func TestClaudeDeferredEscapedProtocolMarkers(t *testing.T) {
+	for name, body := range map[string]string{
+		"escaped flag":      `{"tools":[{"name":"ToolSearch","input_schema":{"type":"object"}},{"name":"lookup","defer_\u006coading":true,"input_schema":{"type":"object"}}],"messages":[]}`,
+		"escaped reference": strings.ReplaceAll(strings.ReplaceAll(claudeDeferredFixture, `,"defer_loading":true`, ""), `tool_reference`, `tool_refer\u0065nce`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			prepared, err := PrepareClaudeDeferredTools([]byte(body), DefaultLimits())
+			if err != nil || bytes.Equal(prepared, []byte(body)) || bytes.Contains(prepared, []byte(`defer_\u006coading`)) || bytes.Contains(prepared, []byte(`tool_refer\u0065nce`)) ||
+				bytes.Contains(prepared, []byte(`"defer_loading"`)) || bytes.Contains(prepared, []byte(`"tool_reference"`)) {
+				t.Fatalf("escaped discovery state was not bridged: %s %v", prepared, err)
+			}
+		})
+	}
+}
+
 func TestClaudeDeferredBudgetsAndPassThrough(t *testing.T) {
 	limits := DefaultLimits()
 	limits.MaxActiveToolBytes = 20

@@ -11,19 +11,22 @@ import (
 // or executes a tool. The caller must bypass this helper on native Messages
 // routes, where defer_loading and tool_reference retain their native meaning.
 func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
-	if !bytes.Contains(body, []byte(`"defer_loading"`)) && !bytes.Contains(body, []byte(`"tool_reference"`)) {
+	// JSON escapes can encode either marker and need structural inspection.
+	if !bytes.Contains(body, []byte(`"defer_loading"`)) && !bytes.Contains(body, []byte(`"tool_reference"`)) && !bytes.Contains(body, []byte(`\u`)) {
 		return body, nil
 	}
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(body, &root); err != nil {
 		return nil, syntaxError(fmt.Errorf("invalid Anthropic request JSON"))
 	}
+	if !claudeHasDeferredProtocol(body) {
+		return body, nil
+	}
 	value, ok := decodeValue(root["tools"])
 	tools, toolsOK := value.([]any)
 	if !ok || !toolsOK {
 		return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("deferred search requires tool declarations"))
 	}
-	hasDeferred := false
 	for _, item := range tools {
 		tool, _ := item.(map[string]any)
 		if flag, present := tool["defer_loading"]; present {
@@ -31,12 +34,6 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 				return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("invalid Anthropic deferral flag"))
 			}
 		}
-		if tool["defer_loading"] == true {
-			hasDeferred = true
-		}
-	}
-	if !hasDeferred && !bytes.Contains(root["messages"], []byte(`"tool_reference"`)) {
-		return body, nil
 	}
 	if err := ValidateLimits(limits); err != nil {
 		return nil, err
@@ -168,6 +165,78 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 		return nil, syntaxError(fmt.Errorf("cannot encode Anthropic discovery bridge"))
 	}
 	return bytes.TrimSuffix(output.Bytes(), []byte("\n")), nil
+}
+
+// Inspect protocol positions, never text, schemas, tool names, or arguments.
+// Retain repeated members during detection so last-member decoding cannot
+// hide discovery state from the duplicate-member validation below.
+func claudeHasDeferredProtocol(body []byte) bool {
+	for _, raw := range claudeJSONMemberValues(body, "tools") {
+		tools, _ := rawItemArray(raw)
+		for _, tool := range tools {
+			for _, flag := range claudeJSONMemberValues(tool, "defer_loading") {
+				var deferred bool
+				if json.Unmarshal(flag, &deferred) != nil || string(flag) == "null" || deferred {
+					return true
+				}
+			}
+		}
+	}
+	for _, raw := range claudeJSONMemberValues(body, "messages") {
+		messages, _ := rawItemArray(raw)
+		for _, message := range messages {
+			for _, content := range claudeJSONMemberValues(message, "content") {
+				blocks, _ := rawItemArray(content)
+				for _, block := range blocks {
+					if claudeBlockHasType(block, "tool_reference") {
+						return true
+					}
+					if !claudeBlockHasType(block, "tool_result") {
+						continue
+					}
+					for _, result := range claudeJSONMemberValues(block, "content") {
+						parts, _ := rawItemArray(result)
+						for _, part := range parts {
+							if claudeBlockHasType(part, "tool_reference") {
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+func claudeBlockHasType(raw json.RawMessage, kind string) bool {
+	for _, value := range claudeJSONMemberValues(raw, "type") {
+		var blockType string
+		if json.Unmarshal(value, &blockType) == nil && blockType == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func claudeJSONMemberValues(raw json.RawMessage, member string) []json.RawMessage {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return nil
+	}
+	var values []json.RawMessage
+	for decoder.More() {
+		key, errKey := decoder.Token()
+		var value json.RawMessage
+		if errKey != nil || decoder.Decode(&value) != nil {
+			return nil
+		}
+		if key == member {
+			values = append(values, value)
+		}
+	}
+	return values
 }
 
 // Refuse duplicate JSON members before history interpretation. Otherwise a

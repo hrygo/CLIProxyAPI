@@ -31,7 +31,7 @@ func (m *Manager) prepareClaudeDeferredRequest(ctx context.Context, auth *Auth, 
 		return ctx, req, opts, nil
 	}
 	body := responsesToolsPayload(req, opts)
-	if !bytes.Contains(body, []byte(`"defer_loading"`)) && !bytes.Contains(body, []byte(`"tool_reference"`)) {
+	if !bytes.Contains(body, []byte(`"defer_loading"`)) && !bytes.Contains(body, []byte(`"tool_reference"`)) && !bytes.Contains(body, []byte(`\u`)) {
 		return ctx, req, opts, nil
 	}
 	route := responsesToolsRoute(auth, provider, req.Model, toFormat)

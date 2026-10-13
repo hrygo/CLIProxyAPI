@@ -97,16 +97,27 @@ func TestClaudeDeferredNativeAndEmergencyGateRemainUntouched(t *testing.T) {
 func TestClaudeDeferredDisabledRouteRejectsDiscoveryOnly(t *testing.T) {
 	mgr := responsesToolsTestManagerWithClientSearch("disabled")
 	auth := &Auth{Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth"}}
-	for _, body := range []string{claudeClientSearchRequest, `{"tools":[{"name":"ordinary","defer_loading":false,"input_schema":{"type":"object"}}],"messages":[]}`} {
-		req := cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: []byte(body)}
-		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, OriginalRequest: []byte(body)}
-		_, prepared, _, err := mgr.prepareClaudeDeferredRequest(context.Background(), auth, "codex", sdktranslator.FormatCodex, req, opts)
-		if body == claudeClientSearchRequest {
+	for _, test := range []struct {
+		body      string
+		discovery bool
+	}{
+		{claudeClientSearchRequest, true},
+		{strings.ReplaceAll(strings.ReplaceAll(claudeClientSearchRequest, `defer_loading`, `defer_\u006coading`), `tool_reference`, `tool_refer\u0065nce`), true},
+		{`{"tools":[{"name":"ordinary","defer_loading":false,"input_schema":{"type":"object"}}],"messages":[]}`, false},
+		{`{"messages":[{"role":"user","content":"tool_reference"}]}`, false},
+		{`{"messages":[{"role":"user","content":"defer_loading"}]}`, false},
+		{`{"messages":[{"role":"user","content":"tool_refer\u0065nce"}]}`, false},
+	} {
+		req := cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: []byte(test.body)}
+		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, OriginalRequest: []byte(test.body)}
+		ctx, prepared, preparedOpts, err := mgr.prepareClaudeDeferredRequest(context.Background(), auth, "codex", sdktranslator.FormatCodex, req, opts)
+		if test.discovery {
 			if !responsestools.IsRequestScopedError(err) {
 				t.Fatalf("disabled discovery admitted: %v", err)
 			}
-		} else if err != nil || !bytes.Equal(prepared.Payload, req.Payload) {
-			t.Fatalf("ordinary false flag rejected: %v", err)
+		} else if err != nil || !bytes.Equal(prepared.Payload, req.Payload) || !bytes.Equal(preparedOpts.OriginalRequest, req.Payload) ||
+			cliproxyexecutor.WireContractFromContext(ctx) != nil {
+			t.Fatalf("ordinary request rejected or given a discovery contract: %v", err)
 		}
 	}
 }
