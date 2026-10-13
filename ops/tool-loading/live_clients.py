@@ -27,6 +27,7 @@ from codex_code_mode import requested_codex_mode, metadata_admits_mode, observe_
 from code_mode_wire import normalize_code_mode_wire
 from http_attempts import import_http_attempts, read_admission_diagnostics, read_auxiliary_work_diagnostics
 from preparation_evidence import read_preparation_diagnostics, preparation_failure_class
+from response_evidence import read_response_diagnostics, response_failure_class
 from live_gateway import CandidateFailure, candidate_process, parse_credential_bindings, validate_profile, verify_gateway_revision
 from run_acceptance import CaseJournal, CaseSpec, read_journal, summarize
 from scripted_clients import client_result, claude_structured_result
@@ -195,7 +196,7 @@ def effective_tool_mode(client, mode, tools):
     return "tool_search" in first if client == "codex" else '"execute"' in first
 
 
-def http_failure_class(admission, attempts, preparation):
+def http_failure_class(admission, attempts, preparation, response=None):
     """Classify verified local denials before actual upstream HTTP error statuses."""
     if admission is None or admission["journal_failed"] or admission["closed_rejections"] or admission["failed_rejections"]:
         return "framework"
@@ -204,6 +205,9 @@ def http_failure_class(admission, attempts, preparation):
     local = preparation_failure_class(preparation)
     if local is not None:
         return local
+    response_failure = response_failure_class(response)
+    if response_failure is not None:
+        return response_failure
     if any(type(attempt.get("http_status_code")) is int and attempt["http_status_code"] >= 400 for attempt in attempts):
         return "provider"
     return None
@@ -270,6 +274,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     capture, prepared, process, admission, code_outcome = None, None, None, None, None
     events = []
     preparation = None
+    response_diagnostics = None
     auxiliary_work = None
     candidate_diagnostics, catalog_diagnostic = None, None
     catalog_observations = []
@@ -409,15 +414,26 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             checks["terminal"] = bool(checks["terminal"] and terminals and all(terminals))
             admission = read_admission_diagnostics(capture, max_attempts=spec.limits["max_requests"], request_count=len(attempts))
             preparation = read_preparation_diagnostics(capture)
-            local_failure = http_failure_class(admission, attempts, preparation)
+            response_diagnostics = read_response_diagnostics(capture)
+            if response_diagnostics is None:
+                issues.append("response_diagnostic_missing")
+                raise ValueError("required response diagnostic is missing")
+            if (response_diagnostics is not None and preparation is not None
+                    and response_diagnostics["requests_seen"] != preparation["requests_seen"]):
+                raise ValueError("response and preparation request counts disagree")
+            local_failure = http_failure_class(admission, attempts, preparation, response_diagnostics)
             if local_failure is not None:
                 failure = local_failure
                 checks["answer"] = False
                 issues.append("http_admission_diagnostic_missing" if admission is None else
                               "preparation_diagnostic_missing" if preparation is None else
                               "responses_tools_prepare_rejected" if preparation["failures"] else
+                              "responses_tools_response_rejected" if local_failure != "provider" and response_diagnostics is not None and response_diagnostics["failures"] and not admission["budget_rejections"] else
                               "http_attempt_budget_exhausted" if local_failure == "budget" else
                               "upstream_http_error" if local_failure == "provider" else "http_evidence_admission_failed")
+                if (response_diagnostics is not None and response_diagnostics["failures"]
+                        and "responses_tools_response_rejected" not in issues):
+                    issues.append("responses_tools_response_rejected")
         except (OSError, ValueError):
             checks["answer"] = False
             issues.append("attempt_evidence_import_failed")
@@ -433,6 +449,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
               "failure_class": case["failure_class"], "gate_status": "unverified"}
     result["admission_diagnostics"] = admission
     result["preparation_diagnostics"] = preparation
+    result["response_diagnostics"] = response_diagnostics
     result["auxiliary_work_diagnostics"] = auxiliary_work
     result["candidate_diagnostics"] = candidate_diagnostics
     result["catalog_diagnostic"] = catalog_diagnostic

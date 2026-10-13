@@ -14,7 +14,7 @@ T14/T15 live 数据属于 `4b428edf`，T17 属于 `ca0758f4`，不能合并为�
 
 | 层次 | 结果 | 实际可证明的范围 |
 | --- | --- | --- |
-| 本地协议回归 | Go 1.26.4 全仓 103 个有测试 package 通过；`go vet ./...`、server build 返回 0；验收 Python 更新至 285 tests 通过 | 回归与构建，不是所有 Provider 功能或真实断流的新增认证。最新候选独立构建无警告且 `vcs.modified=false`；早期 build 警告保留原回执。 |
+| 本地协议回归 | Go 1.26.4 全仓 103 个有测试 package 通过；`go vet ./...`、server build 返回 0；验收 Python 更新至 288 tests 通过；响应诊断四个相关 package race 通过 | 回归与构建，不是所有 Provider 功能或真实断流的新增认证。T17 候选独立构建无警告且 `vcs.modified=false`；早期 build 警告保留原回执。新响应诊断版本不得继承 T17 live 认证。 |
 | T14 跨 Provider smoke | 两份冻结计划累计 60 started / 60 finished，44 safe successes，210 已记录请求、55 已知 dispatch | 同一候选的数量覆盖；保留两份 plan/journal 边界，不能据此给跨路线可靠率。所有已开始案例均入统计。 |
 | T15 受限编码 | 24/24 safe；123 已记录请求、81 已知 dispatch；24/24 有代码修改；host gold 288/288 次测试执行通过 | 三个隔离 Python 函数任务，不代表广泛多文件 repository 编码质量。 |
 | T17 Codex 发现策略对照 | 24/24 started/finished，20/24 safe；123 请求、75 dispatch；六个选择性 lazy 全部 safe 且只加载所需三个工具 | 同候选、同 task 的原始/选择性策略校准；有指导的 exact-name discovery，不能当自然语言检索或原生 `tool_search` 认证。四例失败保留。 |
@@ -42,7 +42,7 @@ GPT lazy 峰值已进一步归因：`functions.exec` 使用 `ALL_TOOLS.filter` �
 | Codex MCP 取消 | 两例本机 app-server interrupt 有 ack 与 interrupted 终态，但清理前无取消通知/释放，最后观测 active=1；不经过 Gateway | Codex 客户端单独交付 request token → 实际 MCP request handle 取消，再做编译和实测；网关不能代发其本机 request ID。见[取消缺口](../compatibility/codex-mcp-cancellation-gap_CN.md)。 |
 | Gemini / Claude 可用性 | T14 六例记录上游 HTTP 429；同模型 Codex 五例成功，一例额外 confirm 任务质量失败 | 429 来自 Provider 响应边界，但准确配额条件/持续性和 thinking 因果未证实。不能删除失败或把其他客户端成功追溯改判。 |
 | Gemini 用量 | 原始 scalar counters 确有 thought/total 回退及 prompt 修正；最后 STOP snapshot 加总一致，辅助请求缺计量契约 | 仍缺 Antigravity 最终值权威性与辅助成本契约，输入收益保持未知；不能从内部一致推导账单正确。见[计量边界](2026-10-13-gemini-usage-boundary_CN.md)。 |
-| 响应失败诊断 | T17 Muse 返回空 custom bridge 参数 `{}`，网关执行前拒绝，原 harness 记 framework | 实际边界为模型生成不合规响应与网关 fail-closed；[独立响应诊断实施设计](../compatibility/responses-tool-failure-diagnostics_CN.md)已落盘，尚未实现；不能解析任意错误文本或追溯重写原 verdict。 |
+| 响应失败诊断 | T17 Muse 返回空 custom bridge 参数 `{}`，网关执行前拒绝，原 harness 记 framework | 实际边界为模型生成不合规响应与网关 fail-closed；[独立响应诊断](../compatibility/responses-tool-failure-diagnostics_CN.md)已实现并本地回归，等待新候选 live 复测；旧 verdict 不重写。 |
 | 模型/任务质量 | 部分 GLM、Qwen、Muse 案例缺中间回执重放、发现后加载或规定最终格式，另有未请求 confirm | 客户端与任务策略按固定 oracle 做新版本对照；不能用网关伪造工具执行或回执。 |
 | 正式统计与代表性编码 | 固定模板、单函数任务和未知成本仍不足 | 先锁定代表性任务族、exact case fingerprints 与 family/cluster 设计、路由/版本、冷热缓存和费用上限，再扩大测试。不能删除 fingerprint 来强行池化。 |
 

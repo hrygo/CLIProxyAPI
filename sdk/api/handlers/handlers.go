@@ -500,6 +500,7 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		}
 	}
 	parentCtx = responsestools.CopyPreparationFailureObserver(parentCtx, requestCtx)
+	parentCtx = responsestools.CopyResponseFailureObserver(parentCtx, requestCtx)
 	newCtx, cancel := context.WithCancel(parentCtx)
 
 	endpoint := ""

@@ -120,6 +120,7 @@ func (m *Manager) responsesToolsCallToFormat(
 	}
 	restored, errRestore := attempt.RewriteResponse(resp.Payload)
 	if errRestore != nil {
+		responsestools.ReportResponseFailure(execCtx, "response_restore", errRestore)
 		return cliproxyexecutor.Response{}, errRestore
 	}
 	resp.Payload = restored
@@ -350,6 +351,7 @@ func adaptResponsesToolsStream(parentCtx, attemptCtx context.Context, cancelAtte
 			}
 			frames, errFeed := attempt.Feed(feedPayload)
 			if errFeed != nil {
+				responsestools.ReportResponseFailure(parentCtx, "stream_feed", errFeed)
 				if cancelAttempt != nil {
 					cancelAttempt()
 				}
@@ -365,6 +367,7 @@ func adaptResponsesToolsStream(parentCtx, attemptCtx context.Context, cancelAtte
 	finish:
 		tail, errFinish := attempt.Finish()
 		if errFinish != nil {
+			responsestools.ReportResponseFailure(parentCtx, "stream_finish", errFinish)
 			send(cliproxyexecutor.StreamChunk{Err: errFinish})
 			return
 		}

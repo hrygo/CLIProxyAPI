@@ -904,6 +904,25 @@ or unknown classification. Local rejections do not become synthetic HTTP attempt
 and do not erase previously incurred usage. Older runs cannot be retrospectively
 reclassified without the recorded boundary evidence.
 
+The version 7 isolated candidate also seals `capture/response-failures.json`.
+It records only typed local `RewriteResponse`, stream `Feed`, or `Finish`
+failures with fixed phases `response_restore`, `stream_feed`, `stream_finish`.
+The preparation artifact retains its existing meaning. Error prose from an
+executor cannot become a trusted response-conversion diagnostic. Cancellation
+of the consumer suppresses late conversion reports; an empty snapshot does not
+certify cancellation or resource release. Existing stream errors, cancellation,
+close behavior and retry policy stay unchanged.
+
+The new live runner requires this sealed response artifact and matching request
+counts; version 6 candidates cannot satisfy its readiness contract. Historical
+snapshots without the file remain unknown when read, and historical journals
+are never reclassified. Confirmed local budget reasons remain budget failures;
+other known conversion reasons classify as protocol, rather than a generic
+client exit failure. This identifies the conversion boundary, not necessarily
+a gateway defect. A typed terminal conversion failure takes precedence over
+HTTP errors incurred by earlier retries; every HTTP error remains in the
+attempt journal. See the [diagnostic boundary](../../docs/compatibility/responses-tool-failure-diagnostics_CN.md).
+
 ```sh
 GOTOOLCHAIN=go1.26.4 go build -o "$task_validation/tool-loading-live-gateway" ./ops/tool-loading/live-gateway
 "$task_validation/venv/bin/python" ops/tool-loading/probe_live_gateway.py \

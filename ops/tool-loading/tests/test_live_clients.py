@@ -112,6 +112,7 @@ class LiveClientTests(unittest.TestCase):
             events[3].update(response=artifact(capture, "response-000002.body", body), observed_bytes=len(body))
             (capture / "attempts.jsonl").write_text("".join(json.dumps(event) + "\n" for event in events))
             (capture / "preparation.json").write_text(json.dumps(empty_preparation()))
+            (capture / "response-failures.json").write_text(json.dumps(empty_preparation()))
             (capture / "auxiliary-work.json").write_text(json.dumps({"version": 1, "started": 1,
                 "completed": 1, "rejected": 0, "active": 0, "sealed": True}))
             (capture / "admission.json").write_text(json.dumps({"version": 1, "max_attempts": 8,
@@ -137,6 +138,20 @@ class LiveClientTests(unittest.TestCase):
             self.assertEqual(result["usage"]["auxiliary_request_count"], 1)
             self.assertEqual(result["usage"]["total_input_tokens"], 20)
             self.assertEqual(len(result["declaration_bytes"]), 1)
+            (capture / "response-failures.json").unlink()
+            missing_root = root / "missing-response"
+            missing_root.mkdir()
+            missing_journal = CaseJournal(missing_root / "cases.jsonl", "synthetic-missing-response")
+            with patch("live_clients.shutil.which", return_value=str(executable)), patch("live_clients.candidate_process", candidate), \
+                    patch("live_clients.fetch_model_metadata", return_value={}), patch("live_clients.prepare_isolated_client", return_value=prepared), \
+                    patch("live_clients.result_checks", return_value=dict(CHECKS)):
+                missing = run_case(missing_root, missing_journal, executable, config, profile, "codex", "eager", "a" * 40,
+                                   "ep_" + "b" * 32, 90, scenario="unavailable")
+            self.assertFalse(missing["safe_task_success"])
+            self.assertEqual(missing["failure_class"], "framework")
+            self.assertIn("response_diagnostic_missing", missing["issues"])
+            self.assertEqual(missing["upstream_attempts"], 2)
+            self.assertEqual(missing["usage"]["auxiliary_request_count"], 1)
 
     def test_run_case_records_local_denials_without_adding_http_attempts(self):
         from types import SimpleNamespace
@@ -210,6 +225,15 @@ class LiveClientTests(unittest.TestCase):
         self.assertEqual(http_failure_class(state, [{"http_status_code": 200}], None), "framework")
         preparation = {**empty_preparation(), "failures": [{"request_sequence": 1, "phase": "prepare", "reason": "declaration_budget", "status_code": 413}]}
         self.assertEqual(http_failure_class(state, [{"http_status_code": 200}], preparation), "budget")
+
+    def test_response_diagnostic_distinguishes_protocol_from_framework(self):
+        from test_response_evidence import empty_response
+        state = {"journal_failed": False, "closed_rejections": 0, "failed_rejections": 0, "budget_rejections": 0}
+        response = {**empty_response(), "failures": [{"request_sequence": 1, "phase": "stream_feed", "reason": "upstream_contract", "status_code": 502}]}
+        self.assertEqual(http_failure_class(state, [{"http_status_code": 200}], empty_preparation(), response), "protocol")
+        self.assertEqual(http_failure_class(state, [{"http_status_code": 429}, {"http_status_code": 200}], empty_preparation(), response), "protocol")
+        self.assertEqual(http_failure_class({**state, "budget_rejections": 1}, [], empty_preparation(), response), "budget")
+        self.assertEqual(http_failure_class({**state, "journal_failed": True}, [], empty_preparation(), response), "framework")
 
     def test_native_structured_response_needs_actual_terminal_and_exact_gold(self):
         result = {"client_output_profile": "opencode-http-session-v1", "protocol_terminal_verified": True,

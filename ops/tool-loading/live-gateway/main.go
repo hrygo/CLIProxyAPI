@@ -313,6 +313,7 @@ func run() error {
 	}
 	cfg := isolateConfig(source, *state, *port)
 	preparation := newPreparationEvidence()
+	responseEvidence := newResponseEvidence()
 	auxiliaryWork := helps.NewHTTPAuxiliaryWorkScope()
 	isolateSelectedAPIKeys(cfg, profile)
 	store := newSnapshotStore(auths, profile.Executor)
@@ -322,7 +323,7 @@ func run() error {
 	ready := map[string]any{"version": 1, "scope": "isolated-live-candidate", "pid": os.Getpid(),
 		"base_url": fmt.Sprintf("http://127.0.0.1:%d/v1", *port), "ready_nonce": readyNonce,
 		"profile": profile, "source_config_sha256": fingerprint(raw), "source_policy_sha256": fingerprint(policy),
-		"isolation_version": 6, "credential_refresh_disabled": true}
+		"isolation_version": 7, "credential_refresh_disabled": true}
 	var allowedAuths atomic.Value
 	var auxiliaryRoutes atomic.Value
 	initialAllowed := map[string]bool{}
@@ -335,7 +336,7 @@ func run() error {
 			routes, errRoutes := antigravityAuxiliaryEndpoints(item)
 			if errRoutes != nil {
 				return errors.Join(errRoutes, closeAuxiliaryWork(context.Background(), auxiliaryWork, filepath.Join(*state, "capture")),
-					closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")))
+					closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")), responseEvidence.close(filepath.Join(*state, "capture")))
 			}
 			initialAllowed[id], initialRoutes[id] = true, routes
 		}
@@ -433,13 +434,19 @@ func run() error {
 			return
 		}
 		defer finish()
+		requestCtx, finishResponse, errResponseEvidence := responseEvidence.begin(requestCtx)
+		if errResponseEvidence != nil {
+			c.AbortWithStatus(http.StatusInternalServerError)
+			return
+		}
+		defer finishResponse()
 		requestCtx = helps.WithHTTPAuxiliaryWorkScope(requestCtx, auxiliaryWork)
 		c.Request = c.Request.WithContext(helps.WithHTTPAttemptObserver(requestCtx, observer))
 		c.Next()
 	})).Build()
 	if err != nil {
 		return errors.Join(candidateFailure("startup", "startup_failed", err), closeAuxiliaryWork(context.Background(), auxiliaryWork, filepath.Join(*state, "capture")),
-			closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")))
+			closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")), responseEvidence.close(filepath.Join(*state, "capture")))
 	}
 	serviceCtx := helps.WithHTTPAttemptObserver(helps.WithHTTPAuxiliaryWorkScope(ctx, auxiliaryWork), observer)
 	err = service.Run(serviceCtx)
@@ -449,7 +456,7 @@ func run() error {
 	// The launcher owns the cleanup budget. Do not reuse the canceled service
 	// context or add a network deadline while asynchronous readers release bodies.
 	return errors.Join(err, readyError, closeAuxiliaryWork(context.Background(), auxiliaryWork, filepath.Join(*state, "capture")),
-		closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")), verifySelectedCredentialSources(source, profile))
+		closeEvidence(journal, filepath.Join(*state, "capture")), preparation.close(filepath.Join(*state, "capture")), responseEvidence.close(filepath.Join(*state, "capture")), verifySelectedCredentialSources(source, profile))
 }
 
 func main() {
