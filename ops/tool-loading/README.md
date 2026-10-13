@@ -964,18 +964,19 @@ is derived and validated instead of manually truncating a digest.
   --executor "$task_executor_id" --task-seconds 90
 ```
 
-Explicit OpenAI-compatible Chat and native Codex/Meta Responses profiles are
-admitted here. Wrapped Antigravity observation is tested separately; its live
-candidate profile remains disabled pending route-bound auxiliary admission and
-native result-replay verification.
+Explicit OpenAI-compatible Chat, native Codex/Meta Responses and the separately
+bound Antigravity profile are admitted here. Antigravity catalog publication may
+follow process readiness; the harness waits for the actual catalog within the
+original task budget and records auxiliary work separately. Admission is not a
+closed-loop certificate; see the [Gemini pilot](../../docs/acceptance/2026-10-13-candidate-diagnostics_CN.md).
 Each task is journaled before candidate/client launch, limited to eight physical
 upstream attempts and its declared task time; all failures remain in the replay.
 Client groups and gateway children are isolated and closed after each task.
 The model catalog comes from the actual candidate endpoint; there is no synthetic
 metadata fallback. Codex lazy cases require the catalog's search capability.
 Nullable `tool_mode` admits an explicitly isolated direct profile; a declared
-Code Mode model is rejected. Requested mode still requires actual declaration
-evidence. The OpenCode adapter's explicit context/output limits are preserved
+Code Mode model is rejected by that original profile. Requested mode still
+requires actual declaration evidence. The OpenCode adapter's explicit context/output limits are preserved
 in its private configuration; they do not certify a model's full capacity.
 
 The task requires a real MCP dispatch, a fresh receipt nonce in the final answer,
@@ -995,6 +996,34 @@ requests and unsupported closed wire contracts remain unknown. See the
 Credential/account region and full immutable runtime scope remain unknown, so
 pair certification and confidence gates remain unverified. These diagnostics
 must not be pooled as a final-revision sixty-case matrix.
+
+### Explicit Codex Code Mode profile
+
+For pinned Codex `0.160.0`, opt in with `--clients codex --codex-tool-mode
+code_mode_only`. The isolated profile preserves the actual model's `tool_mode`;
+a conflicting `direct` model is rejected. An omitted model mode can be selected
+by the explicit isolated flags. Eager/lazy use different search visibility while
+retaining the selected Code Mode and bottom-level MCP permissions. Neither the
+operator configuration nor the existing direct profile is changed.
+
+The observed entry is a custom `functions.exec` with a Lark grammar. Eager must
+contain typed signatures for the permission-filtered fixture catalog; lazy must
+omit those signatures and expose `ALL_TOOLS`. Discovery uses that advertised
+Code Mode API, returning typed tool descriptions before dispatch. A forced
+native `tool_search_call` absent from the initial tool declaration does not prove
+discoverability. Matching call identity, schema output and invocation order are
+checked independently of nonce replay and terminal state.
+
+Matrix declaration `schema_version: 2` permits a `codex_tool_mode` string on Codex
+units only (`direct` or `code_mode_only`); version 1 retains its closed original
+shape. Code Mode cases have separate pair IDs and fixture fingerprints and
+cannot inherit direct-profile certification. Native CLI SIGINT and app-server
+`turn/interrupt` are separate cancellation profiles: an interrupted turn without
+MCP cancellation and release still fails.
+
+Following the user's 2026-10-13 priority update, new implementation and route
+diagnosis focus on Codex and Claude Code through CLIProxyAPI. OpenCode remains a
+comparison client; its existing cases and failures are retained.
 
 ## Predeclared paired batches
 

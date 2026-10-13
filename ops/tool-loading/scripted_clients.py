@@ -48,7 +48,7 @@ def tool_receipt(client, request, call_id="invoke"):
     items = request.get("input", []) if client == "codex" else request.get("messages", [])
     for item in reversed(items):
         if client == "codex":
-            if item.get("type") != "function_call_output" or item.get("call_id") != call_id:
+            if item.get("type") not in {"function_call_output", "custom_tool_call_output"} or item.get("call_id") != call_id:
                 continue
             output = item.get("output")
             decoded_output = output.partition("\nOutput:\n")[2] if isinstance(output, str) and "\nOutput:\n" in output else output
@@ -62,9 +62,13 @@ def tool_receipt(client, request, call_id="invoke"):
 
 
 class ScriptedModel:
-    def __init__(self, client, mode, scenario):
-        if client not in VERSIONS or mode not in {"eager", "lazy"} or scenario not in {"allow", "client-denied", "invalid", "revoked", "cancel", "loop", "dispatch-budget", "large-result"}:
+    def __init__(self, client, mode, scenario, *, codex_tool_mode=None):
+        from codex_code_mode import requested_codex_mode
+        self.codex_tool_mode = requested_codex_mode(client, codex_tool_mode)
+        if client not in VERSIONS or mode not in {"eager", "lazy"} or scenario not in {"allow", "client-denied", "service-denied", "invalid", "revoked", "cancel", "loop", "dispatch-budget", "large-result"}:
             raise ValueError("unknown scripted profile")
+        if scenario == "service-denied" and self.codex_tool_mode != "code_mode_only":
+            raise ValueError("service-denied requires the explicit Codex Code Mode profile")
         if scenario in {"loop", "dispatch-budget", "large-result"} and (client, mode) != ("opencode", "lazy"):
             raise ValueError("this execution probe requires OpenCode Code Mode")
         self.client, self.mode, self.scenario = client, mode, scenario
@@ -72,14 +76,18 @@ class ScriptedModel:
         self.nonce_observed = self.invocation_emitted = False
         self.receipt = None
         self.search_result_has_target = False
-        self.target = "fixture_wait" if scenario == "cancel" else "ledger_budget_lookup"
+        self.target = "fixture_wait" if scenario == "cancel" else "fixture_mutation" if scenario == "service-denied" else "ledger_budget_lookup"
 
     def next(self, request):
         stage = self.round
         self.round += 1
         if self.mode == "lazy" and stage == 0:
-            query = "fixture wait until cancelled" if self.scenario == "cancel" else "ledger budget remaining alpha verification code"
+            query = "fixture wait until cancelled" if self.scenario == "cancel" else "fixture mutation increment synthetic counter" if self.scenario == "service-denied" else "ledger budget remaining alpha verification code"
             if self.client == "codex":
+                if self.codex_tool_mode == "code_mode_only":
+                    return {"type": "custom_tool_call", "id": "custom_search", "call_id": "search",
+                            "name": "exec", "namespace": "functions",
+                            "input": 'text(ALL_TOOLS.filter(t => t.name === '+json.dumps("mcp__fixture__"+self.target)+'));'}
                 return {"type": "tool_search_call", "id": "tsc_search", "call_id": "search", "execution": "client",
                         "status": "completed", "arguments": {"query": query, "limit": 8}}
             return {"type": "function_call", "name": "execute", "call_id": "search",
@@ -87,7 +95,7 @@ class ScriptedModel:
         if stage == (1 if self.mode == "lazy" else 0):
             if self.mode == "lazy":
                 if self.client == "codex":
-                    search_result = next((item for item in request.get("input", [])
+                    search_result = tool_receipt(self.client, request, "search") if self.codex_tool_mode == "code_mode_only" else next((item for item in request.get("input", [])
                                           if item.get("type") == "tool_search_output" and item.get("call_id") == "search"), None)
                 else:
                     search_result = tool_receipt(self.client, request, "search")
@@ -95,6 +103,10 @@ class ScriptedModel:
             self.invocation_emitted = True
             arguments = {"project": "beta" if self.scenario == "invalid" else "alpha"}
             if self.client == "codex":
+                if self.codex_tool_mode == "code_mode_only":
+                    return {"type": "custom_tool_call", "id": "custom_invoke", "call_id": "invoke",
+                            "name": "exec", "namespace": "functions",
+                            "input": "text(await tools.mcp__fixture__"+self.target+"("+json.dumps(arguments)+"));"}
                 return {"type": "function_call", "id": "fc_invoke", "call_id": "invoke", "name": self.target,
                         "namespace": "mcp__fixture", "arguments": json.dumps(arguments)}
             if self.mode == "lazy":
@@ -121,6 +133,8 @@ def response_events(item, response_id):
     added = deepcopy(item)
     if item["type"] == "function_call":
         added["arguments"] = ""
+    if item["type"] == "custom_tool_call":
+        added["input"] = ""
     if item["type"] == "message":
         added["content"] = []
     events = [{"type": "response.created", "response": initial},
@@ -130,6 +144,11 @@ def response_events(item, response_id):
                        "item_id": item["id"], "delta": item["arguments"]})
         events.append({"type": "response.function_call_arguments.done", "output_index": 0,
                        "item_id": item["id"], "arguments": item["arguments"]})
+    elif item["type"] == "custom_tool_call":
+        events.append({"type": "response.custom_tool_call_input.delta", "output_index": 0,
+                       "item_id": item["id"], "delta": item["input"]})
+        events.append({"type": "response.custom_tool_call_input.done", "output_index": 0,
+                       "item_id": item["id"], "input": item["input"]})
     elif item["type"] == "message":
         part = item["content"][0]
         refs = {"output_index": 0, "content_index": 0, "item_id": item["id"]}
@@ -239,12 +258,12 @@ def claude_structured_result(raw, schema):
             "invocation_verified": bool(legal and bound), "structured_output": value if legal else None}
 
 
-def run_case(root, client, mode, scenario, *, max_seconds=20, transport="cli"):
+def run_case(root, client, mode, scenario, *, max_seconds=20, transport="cli", codex_tool_mode=None):
     if (transport not in {"cli", "codex-app-server", "opencode-server"}
             or (transport == "codex-app-server" and client != "codex")
             or (transport == "opencode-server" and (client != "opencode" or scenario != "cancel"))):
         raise ValueError("unsupported scripted client transport")
-    model = ScriptedModel(client, mode, scenario)
+    model = ScriptedModel(client, mode, scenario, codex_tool_mode=codex_tool_mode)
     requests, responses = [], []
     lock = threading.Lock()
     prepared = None
@@ -266,7 +285,7 @@ def run_case(root, client, mode, scenario, *, max_seconds=20, transport="cli"):
                     item = {"type": "message", "content": [{"text": "Local fixture title"}]}
                 else:
                     item = model.next(request)
-                    if scenario == "revoked" and item["type"] == "function_call" and item["call_id"] == "invoke":
+                    if scenario == "revoked" and item["type"] in {"function_call", "custom_tool_call"} and item["call_id"] == "invoke":
                         temporary = prepared.run_dir / "permissions-next.json"
                         write_private(temporary, json.dumps({"generation": 2, "denied": ["fixture_mutation", "ledger_budget_lookup"]}))
                         temporary.replace(prepared.run_dir / "permissions.json")
@@ -293,12 +312,18 @@ def run_case(root, client, mode, scenario, *, max_seconds=20, transport="cli"):
     cancel_event, stop_observer = threading.Event(), threading.Event()
     observer = None
     try:
-        prepared = prepare_isolated_client(client, mode, {
-            "run_dir": root / f"{client}-{mode}-{scenario}", "client_version": VERSIONS[client],
+        metadata = synthetic_codex_model("fixture-model")
+        if codex_tool_mode == "code_mode_only":
+            metadata["tool_mode"] = "code_mode_only"
+        inputs = {
+            "run_dir": root / (f"{client}-{mode}-{scenario}" + ("-code-mode-only" if codex_tool_mode == "code_mode_only" else "")), "client_version": VERSIONS[client],
             "executable": shutil.which(client) or client, "fixture_python": sys.executable,
-            "model": "fixture-model", "model_metadata": synthetic_codex_model("fixture-model"),
+            "model": "fixture-model", "model_metadata": metadata,
             "base_url": f"http://127.0.0.1:{server.server_port}/v1", "nonce": nonce,
-            "max_dispatches": 8, "max_result_bytes": 65536},
+            "max_dispatches": 8, "max_result_bytes": 65536}
+        if codex_tool_mode is not None:
+            inputs["codex_tool_mode"] = codex_tool_mode
+        prepared = prepare_isolated_client(client, mode, inputs,
             {"client_denied": ["ledger_budget_lookup"] if scenario == "client-denied" else [], "service_denied": ["fixture_mutation"]})
         write_private(prepared.run_dir / "case-started.json", json.dumps({"client": client, "version": VERSIONS[client], "mode": mode, "scenario": scenario, "transport": transport}))
         if scenario == "cancel":
@@ -348,7 +373,7 @@ def run_case(root, client, mode, scenario, *, max_seconds=20, transport="cli"):
         verified = (verified and dispatches == 1 and receipt_nonce == nonce
                     and any("fixture final: 424242 " + nonce in text for text in observed["final_texts"])
                     and (mode == "eager" or model.search_result_has_target))
-    elif scenario in {"client-denied", "invalid", "revoked"}:
+    elif scenario in {"client-denied", "service-denied", "invalid", "revoked"}:
         verified = verified and dispatches == 0 and receipt_nonce is None
         if scenario == "client-denied":
             verified = verified and not any(event["phase"] == "request" for event in events)
@@ -360,6 +385,12 @@ def run_case(root, client, mode, scenario, *, max_seconds=20, transport="cli"):
                         and (mode == "eager" or model.search_result_has_target))
         if scenario == "invalid":
             verified = verified and any(event.get("reason") == "invalid_arguments" for event in events)
+        if scenario == "service-denied":
+            from codex_code_mode import observe_hidden_tool_rejection
+            service_rejected = any(event.get("reason") == "permission_denied" and event.get("tool") == "fixture_mutation" for event in events)
+            client_rejected = (not any(event["phase"] == "request" for event in events)
+                               and observe_hidden_tool_rejection([request["body"] for request in requests], "fixture_mutation"))
+            verified = verified and (service_rejected or client_rejected)
     elif scenario == "cancel":
         verified = (service_allowed and model.invocation_emitted and result["termination"] == "cancelled"
                     and dispatches == 1 and effects == active == 0
@@ -371,7 +402,25 @@ def run_case(root, client, mode, scenario, *, max_seconds=20, transport="cli"):
         verified = (verified and dispatches == 8 and any(event.get("reason") == "dispatch_budget" for event in events))
     elif scenario == "large-result":
         verified = (verified and dispatches == 1 and any(event.get("reason") == "result_budget" for event in events))
+    code_observation = None
+    if codex_tool_mode == "code_mode_only":
+        from codex_code_mode import observe_code_mode, observe_code_discovery
+        from native_wire import declarations
+        code_observation = observe_code_mode(declarations("openai-responses-v1", requests[0]["body"]), mode,
+            client_denied=["ledger_budget_lookup"] if scenario == "client-denied" else [],
+            service_denied=["fixture_mutation"]) if requests else {"effective":False}
+        if mode == "lazy":
+            code_observation.update(observe_code_discovery([request["body"] for request in requests]))
+            if scenario == "allow":
+                verified = verified and model.target in code_observation["loaded_fixture_schema_tools"]
+            verified = (verified and code_observation["discovery_result_observed"]
+                        and code_observation["history_identity_consistent"]
+                        and not (set(code_observation["invocations_before_schema"])
+                                 & {event["tool"] for event in events if event["phase"] == "dispatch"}))
+        verified = verified and code_observation["effective"]
     summary = {"client": client, "client_version": VERSIONS[client], "mode": mode, "scenario": scenario,
+               "codex_tool_mode": codex_tool_mode,
+               "code_mode_observation": code_observation,
                "scope": "scripted-local-client-boundary", "transport": transport,
                "requests_received": len(requests), "mcp_dispatches": dispatches,
                "mcp_requests": sum(event["phase"] == "request" for event in events), "effects": effects,
@@ -391,9 +440,12 @@ def main():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--clients", nargs="+", choices=list(VERSIONS), default=list(VERSIONS))
     parser.add_argument("--modes", nargs="+", choices=["eager", "lazy"], default=["eager", "lazy"])
+    parser.add_argument("--codex-tool-mode", choices=["direct", "code_mode_only"])
     parser.add_argument("--transport", choices=["cli", "codex-app-server", "opencode-server"], default="cli")
-    parser.add_argument("--cases", nargs="+", choices=["allow", "client-denied", "invalid", "revoked", "cancel", "loop", "dispatch-budget", "large-result"], default=["allow", "client-denied", "invalid", "revoked"])
+    parser.add_argument("--cases", nargs="+", choices=["allow", "client-denied", "service-denied", "invalid", "revoked", "cancel", "loop", "dispatch-budget", "large-result"], default=["allow", "client-denied", "invalid", "revoked"])
     args = parser.parse_args()
+    if args.codex_tool_mode is not None and args.clients != ["codex"]:
+        parser.error("explicit Codex mode requires --clients codex")
     if args.transport == "codex-app-server" and args.clients != ["codex"]:
         parser.error("codex-app-server requires --clients codex")
     if args.transport == "opencode-server" and (args.clients != ["opencode"] or args.cases != ["cancel"]):
@@ -401,13 +453,13 @@ def main():
     for client in args.clients:
         for mode in args.modes:
             for scenario in args.cases:
-                ScriptedModel(client, mode, scenario)
+                ScriptedModel(client, mode, scenario, codex_tool_mode=args.codex_tool_mode)
     args.output_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
     results = []
     for client in args.clients:
         for mode in args.modes:
             for scenario in args.cases:
-                result = run_case(args.output_dir.resolve(), client, mode, scenario, transport=args.transport)
+                result = run_case(args.output_dir.resolve(), client, mode, scenario, transport=args.transport, codex_tool_mode=args.codex_tool_mode)
                 results.append(result)
                 print(json.dumps(result), flush=True)
     write_private(args.output_dir / "summary.json", json.dumps({"gate_status": "unverified", "cases": results}, indent=2))

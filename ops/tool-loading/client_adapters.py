@@ -21,6 +21,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 from catalog_fixture import build_catalog, digest
+from codex_code_mode import requested_codex_mode, metadata_admits_mode
 
 VERSIONS = {"codex": "0.160.0", "opencode": "1.19.0"}
 CLAUDE_VERSION = "2.1.289"
@@ -219,8 +220,11 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
         raise ValueError("unsupported client version")
     allowed = {"run_dir", "client_version", "executable", "model", "base_url", "fixture_python",
                "model_metadata", "nonce", "max_dispatches", "max_result_bytes"}
-    if set(catalog) - {"session_title", "output_schema", "coding_task"} != allowed:
+    if set(catalog) - {"session_title", "output_schema", "coding_task", "codex_tool_mode"} != allowed:
         raise ValueError("missing or unknown adapter configuration keys")
+    if "codex_tool_mode" in catalog and not isinstance(catalog["codex_tool_mode"], str):
+        raise ValueError("explicit Codex tool profile must be a string")
+    codex_mode = requested_codex_mode(client_id, catalog.get("codex_tool_mode"))
     coding_task = catalog.get("coding_task")
     if "coding_task" in catalog:
         from coding_tasks import TASKS
@@ -248,8 +252,8 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
     if not isinstance(catalog["nonce"], str) or not catalog["nonce"]:
         raise ValueError("a fresh nonce is required")
     metadata = deepcopy(catalog["model_metadata"])
-    if client_id == "codex" and (metadata.get("slug") != catalog["model"] or metadata.get("tool_mode") not in (None, "direct")):
-        raise ValueError("selected model metadata must match the direct-mode profile")
+    if client_id == "codex" and (metadata.get("slug") != catalog["model"] or not metadata_admits_mode(metadata, codex_mode)):
+        raise ValueError("selected model metadata must match the explicit tool profile")
     env = {key: os.environ[key] for key in ENV_KEYS if key in os.environ}
     checked = subprocess.run([str(catalog["executable"]), "--version"], env=env,
                              capture_output=True, text=True, check=True)
@@ -276,7 +280,8 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
     write_private(policy, json.dumps({"generation": 1, "denied": normalized_permissions["service_denied"]}))
     catalog_path = root / "catalog.json"
     metadata["supports_search_tool"] = mode == "lazy"
-    metadata["tool_mode"] = "direct"
+    if codex_mode == "direct":
+        metadata["tool_mode"] = "direct"
     write_private(catalog_path, json.dumps({"models": [metadata]}, ensure_ascii=False))
     fixture_command = [str(catalog["fixture_python"]), str(Path(__file__).with_name("catalog_fixture.py").resolve()),
                        "--nonce", catalog["nonce"], "--events", str(events), "--permissions", str(policy),
@@ -303,7 +308,8 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
             "model_catalog_json": str(catalog_path), "approval_policy": "never", "project_doc_max_bytes": 0,
             "features.apps": False, "features.plugins": False, "features.hooks": False,
             "features.multi_agent": False, "features.enable_request_compression": False,
-            "features.code_mode": False, "features.code_mode_only": False, "features.code_mode_host": False,
+            "features.code_mode": codex_mode == "code_mode_only", "features.code_mode_only": codex_mode == "code_mode_only",
+            "features.code_mode_host": codex_mode == "code_mode_only",
             "mcp_servers.fixture.command": fixture_command[0], "mcp_servers.fixture.args": fixture_command[1:],
             "mcp_servers.fixture.default_tools_approval_mode": "approve",
             "mcp_servers.fixture.tool_input_schema_max_bytes": 16000,
@@ -320,7 +326,7 @@ def prepare_isolated_client(client_id: str, mode: str, catalog: dict, permission
             command += ["--output-schema", str(schema_path)]
         for override in overrides:
             command += ["-c", override]
-        expected_mode = "tool-search" if mode == "lazy" else "direct"
+        expected_mode = "code-mode-only-"+mode if codex_mode == "code_mode_only" else "tool-search" if mode == "lazy" else "direct"
     elif client_id == "opencode":
         for key in ("CONFIG", "DATA", "CACHE", "STATE"):
             directory = root / ("xdg-" + key.lower())

@@ -17,6 +17,7 @@ import uuid
 
 from batch_plan import BatchBudget, audit_plan, build_plan, fingerprint_materials, write_plan
 from client_adapters import ADAPTER_VERSIONS, validate_session_title, write_private
+from codex_code_mode import requested_codex_mode
 from http_attempts import _json
 from live_clients import endpoint_id, make_case_spec, run_case
 from live_gateway import validate_profile, verify_gateway_revision
@@ -28,7 +29,7 @@ from task_scenarios import SCENARIOS
 def validate_declaration(value):
     fields = {"schema_version", "units", "task_seconds", "max_requests", "max_dispatches", "schedule_seed"}
     if (not isinstance(value, dict) or set(value) != fields or type(value["schema_version"]) is not int
-            or value["schema_version"] != 1 or type(value["task_seconds"]) is not int
+            or value["schema_version"] not in {1, 2} or type(value["task_seconds"]) is not int
             or not 10 <= value["task_seconds"] <= 300 or not isinstance(value["units"], list)
             or not 1 <= len(value["units"]) <= 32 or not isinstance(value["schedule_seed"], str)
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}", value["schedule_seed"])
@@ -36,12 +37,19 @@ def validate_declaration(value):
                    for key in ("max_requests", "max_dispatches"))):
         raise ValueError("invalid matrix declaration")
     for unit in value["units"]:
-        if (not isinstance(unit, dict) or set(unit) != {"profile", "endpoint_sha256", "client", "structured_output", "opencode_title", "scenarios"}
+        allowed = {"profile", "endpoint_sha256", "client", "structured_output", "opencode_title", "scenarios"}
+        if value["schema_version"] == 2:
+            allowed.add("codex_tool_mode")
+        if (not isinstance(unit, dict) or set(unit) - {"codex_tool_mode"} != allowed - {"codex_tool_mode"}
+                or not set(unit) <= allowed
                 or not isinstance(unit["client"], str) or unit["client"] not in ADAPTER_VERSIONS
                 or type(unit["structured_output"]) is not bool or not isinstance(unit["scenarios"], list)
                 or not unit["scenarios"] or any(not isinstance(name, str) or name not in SCENARIOS for name in unit["scenarios"])
                 or len(set(unit["scenarios"])) != len(unit["scenarios"])):
             raise ValueError("invalid matrix unit")
+        if "codex_tool_mode" in unit and not isinstance(unit["codex_tool_mode"], str):
+            raise ValueError("explicit Codex tool profile must be a string")
+        requested_codex_mode(unit["client"], unit.get("codex_tool_mode"))
         validate_profile(unit["profile"])
         if unit["profile"]["contract"] != wire_contract(unit["profile"]["executor"]):
             raise ValueError("matrix wire contract does not match its executor")
@@ -79,7 +87,7 @@ def compile_cases(declaration, config, revision):
             for mode in ("eager", "lazy"):
                 spec = make_case_spec(config, unit["profile"], unit["client"], mode, revision, endpoint,
                     declaration["task_seconds"], scenario=scenario, opencode_title=unit["opencode_title"],
-                    structured_output=unit["structured_output"])
+                    structured_output=unit["structured_output"], codex_tool_mode=unit.get("codex_tool_mode"))
                 if spec.case_id in contexts:
                     raise ValueError("duplicate matrix case identity")
                 cases.append(spec)
@@ -129,7 +137,8 @@ def main():
             result = run_case(root, journal, args.gateway_binary.resolve(), args.config.resolve(), context["profile"],
                 context["client"], spec.mode, args.gateway_revision, context["endpoint_id"], declaration["task_seconds"],
                 specification=spec, locked_plan=plan, material_paths=material_paths, scenario=context["scenario"],
-                opencode_title=context["opencode_title"], structured_output=context["structured_output"])
+                opencode_title=context["opencode_title"], structured_output=context["structured_output"],
+                codex_tool_mode=context.get("codex_tool_mode"))
             results.append(result)
             print(json.dumps(result), flush=True)
             audit_plan(plan, journal.events)

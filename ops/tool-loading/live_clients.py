@@ -23,6 +23,7 @@ import uuid
 from catalog_fixture import build_catalog, digest
 from batch_plan import build_plan, write_plan, fingerprint_materials, verify_materials, BatchBudget, audit_plan
 from client_adapters import VERSIONS, ADAPTER_VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
+from codex_code_mode import requested_codex_mode, metadata_admits_mode, observe_code_mode, observe_code_discovery
 from http_attempts import import_http_attempts, read_admission_diagnostics, read_auxiliary_work_diagnostics
 from preparation_evidence import read_preparation_diagnostics, preparation_failure_class
 from live_gateway import CandidateFailure, candidate_process, parse_credential_bindings, validate_profile, verify_gateway_revision
@@ -51,21 +52,22 @@ class CatalogFailure(ValueError):
         super().__init__("actual model catalog does not admit the requested profile")
 
 
-def select_model_metadata(body, model, client, mode):
+def select_model_metadata(body, model, client, mode, *, codex_tool_mode=None):
+    requested = requested_codex_mode(client, codex_tool_mode)
     if not isinstance(body, dict) or not isinstance(body.get("models"), list):
         raise CatalogFailure("body_invalid")
     selected = [item for item in body["models"] if isinstance(item, dict) and item.get("slug") == model]
     if len(selected) != 1 or type(selected[0].get("context_window")) is not int or selected[0]["context_window"] < 1:
         raise CatalogFailure("model_unavailable")
     metadata = selected[0]
-    if client == "codex" and metadata.get("tool_mode") not in (None, "direct"):
+    if client == "codex" and not metadata_admits_mode(metadata, requested):
         raise CatalogFailure("tool_mode_mismatch")
     if client == "codex" and mode == "lazy" and metadata.get("supports_search_tool") is not True:
         raise CatalogFailure("search_not_admitted")
     return deepcopy(metadata)
 
 
-def _fetch_model_metadata_once(ready, model, client, mode):
+def _fetch_model_metadata_once(ready, model, client, mode, *, codex_tool_mode=None):
     address = urlsplit(ready["base_url"])
     connection = http.client.HTTPConnection(address.hostname, address.port, timeout=5)
     try:
@@ -75,7 +77,7 @@ def _fetch_model_metadata_once(ready, model, client, mode):
         body = response.read(4 * 1024 * 1024 + 1)
         if response.status != 200 or len(body) > 4 * 1024 * 1024:
             raise CatalogFailure("http_failure")
-        return select_model_metadata(json.loads(body), model, client, mode)
+        return select_model_metadata(json.loads(body), model, client, mode, codex_tool_mode=codex_tool_mode)
     except CatalogFailure:
         raise
     except (OSError, http.client.HTTPException):
@@ -109,16 +111,16 @@ def _catalog_work_active(ready):
         connection.close()
 
 
-def fetch_model_metadata(ready, model, client, mode, *, deadline=None, observations=None):
+def fetch_model_metadata(ready, model, client, mode, *, deadline=None, observations=None, codex_tool_mode=None):
     if deadline is None:
-        return _fetch_model_metadata_once(ready, model, client, mode)
+        return _fetch_model_metadata_once(ready, model, client, mode, codex_tool_mode=codex_tool_mode)
     observations = observations if observations is not None else []
     started = time.monotonic()
     while True:
         if time.monotonic() >= deadline:
             raise CatalogFailure("startup_budget_exhausted")
         try:
-            metadata = _fetch_model_metadata_once(ready, model, client, mode)
+            metadata = _fetch_model_metadata_once(ready, model, client, mode, codex_tool_mode=codex_tool_mode)
             observations.append({"elapsed_ms": round((time.monotonic()-started)*1000), "available": True})
             return metadata
         except CatalogFailure as error:
@@ -130,7 +132,7 @@ def fetch_model_metadata(ready, model, client, mode, *, deadline=None, observati
             if active == 0:
                 # Publication can complete between the catalog read and state
                 # read. Recheck once after work settles; never invent metadata.
-                metadata = _fetch_model_metadata_once(ready, model, client, mode)
+                metadata = _fetch_model_metadata_once(ready, model, client, mode, codex_tool_mode=codex_tool_mode)
                 observations.append({"elapsed_ms": round((time.monotonic()-started)*1000), "available": True})
                 return metadata
             remaining = deadline-time.monotonic()
@@ -206,7 +208,8 @@ def http_failure_class(admission, attempts, preparation):
     return None
 
 
-def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *, scenario="lookup", opencode_title=None, structured_output=False):
+def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *, scenario="lookup", opencode_title=None, structured_output=False, codex_tool_mode=None):
+    codex_mode = requested_codex_mode(client, codex_tool_mode)
     task = get_scenario(scenario)
     if type(structured_output) is not bool:
         raise ValueError("structured output profile must be explicit boolean")
@@ -217,6 +220,8 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
             raise ValueError("explicit session title is supported only by OpenCode")
         validate_session_title(opencode_title)
     pair = client + "-" + profile["client_model"]
+    if codex_mode == "code_mode_only":
+        pair += "-code-mode-only"
     if scenario != "lookup":
         pair += "-" + scenario
     if structured_output:
@@ -227,20 +232,21 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
     executable = Path(shutil.which(client) or client).resolve()
     scope = dict(gateway_revision=revision, policy_generation=hashlib.sha256(config.read_bytes()).hexdigest(),
                  client=client, client_version=ADAPTER_VERSIONS[client], client_revision=hashlib.sha256(executable.read_bytes()).hexdigest(),
-                 client_mode="direct" if mode == "eager" else "tool-search" if client in {"codex", "claude"} else "code-mode",
+                 client_mode="code-mode-only-"+mode if codex_mode == "code_mode_only" else "direct" if mode == "eager" else "tool-search" if client in {"codex", "claude"} else "code-mode",
                  source_format={"codex": "codex", "opencode": "openai", "claude": "claude"}[client], provider=profile["executor"], model=profile["upstream_model"],
                  upstream_format={"openai-chat-v1": "openai", "openai-responses-v1": "openai-response",
                                   "antigravity-generate-v1": "antigravity"}[wire_contract(profile["executor"])],
                  endpoint_id=endpoint, transport="http-sse", region_id="unknown",
                  catalog_hash=digest(build_catalog(task.coding_task)), fixture_hash=digest({
                      "sources": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                                 for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py", "scripted_clients.py", "native_wire.py")
+                                 for name in ("catalog_fixture.py", "client_adapters.py", "codex_code_mode.py", "task_scenarios.py", "opencode_server_adapter.py", "scripted_clients.py", "native_wire.py")
                                  + (("coding_tasks.py",) if task.coding_task is not None else ())},
                      "coding_task": task.coding_task,
                      "isolation_version": 8,
                      "preparation_diagnostic_version": 1,
                      "credential_selection": profile.get("auth_files", []),
                      "structured_output": structured_output,
+                     "codex_tool_mode": codex_tool_mode,
                      "session_title_policy": ("automatic" if client == "opencode" else "not-applicable") if opencode_title is None
                                              else hashlib.sha256(opencode_title.encode()).hexdigest()}),
                  permission_hash=digest(profile_permissions(PERMISSIONS, structured_output=structured_output, coding_task=task.coding_task)))
@@ -249,10 +255,11 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
 
 
 def run_case(root, journal, binary, config, profile, client, mode, revision, endpoint, seconds, *,
-             specification=None, locked_plan=None, material_paths=None, scenario="lookup", opencode_title=None, structured_output=False):
+             specification=None, locked_plan=None, material_paths=None, scenario="lookup", opencode_title=None, structured_output=False, codex_tool_mode=None):
+    codex_mode = requested_codex_mode(client, codex_tool_mode)
     task = get_scenario(scenario)
     started = time.monotonic()
-    spec = specification or make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario, opencode_title=opencode_title, structured_output=structured_output)
+    spec = specification or make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario, opencode_title=opencode_title, structured_output=structured_output, codex_tool_mode=codex_tool_mode)
     case_id = spec.case_id
     journal.start_case(spec)
     case_root = root / case_id
@@ -260,10 +267,12 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     checks = dict.fromkeys(("answer", "dispatch", "nonce", "code", "format", "terminal"))
     boundaries = dict.fromkeys(("mcp_attempts", "dispatch", "forbidden_dispatch", "forbidden_effect", "active"))
     capture, prepared, process, admission, code_outcome = None, None, None, None, None
+    events = []
     preparation = None
     auxiliary_work = None
     candidate_diagnostics, catalog_diagnostic = None, None
     catalog_observations = []
+    code_mode_observation = None
     issues, attempts = [], []
     failure, effective, declaration_bytes = "framework", False, []
     stage = "candidate_start"
@@ -272,13 +281,13 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             stage = "material_validation"
             verify_materials(locked_plan, material_paths)
             stage = "scope_validation"
-            if asdict(spec) != asdict(make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario, opencode_title=opencode_title, structured_output=structured_output)):
+            if asdict(spec) != asdict(make_case_spec(config, profile, client, mode, revision, endpoint, seconds, scenario=scenario, opencode_title=opencode_title, structured_output=structured_output, codex_tool_mode=codex_tool_mode)):
                 raise ValueError("actual task inputs differ from predeclared case")
         stage = "candidate_start"
         with candidate_process(binary, config, case_root, profile, max_attempts=spec.limits["max_requests"]) as (ready, capture):
             stage = "catalog_validation"
             metadata = fetch_model_metadata(ready, profile["client_model"], client, mode,
-                                            deadline=started+seconds, observations=catalog_observations)
+                                            deadline=started+seconds, observations=catalog_observations, codex_tool_mode=codex_tool_mode)
             write_private(case_root / "actual-model.json", json.dumps(metadata, indent=2))
             nonce = uuid.uuid4().hex
             stage = "client_preparation"
@@ -287,6 +296,8 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
                 "run_dir": case_root / "client", "client_version": ADAPTER_VERSIONS[client], "executable": str(executable),
                 "fixture_python": sys.executable, "model": profile["client_model"], "model_metadata": metadata,
                 "base_url": ready["base_url"], "nonce": nonce, "max_dispatches": spec.limits["max_dispatches"], "max_result_bytes": 65536}
+            if codex_tool_mode is not None:
+                client_inputs["codex_tool_mode"] = codex_tool_mode
             if opencode_title is not None:
                 client_inputs["session_title"] = opencode_title
             if structured_output:
@@ -372,7 +383,20 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             declarations = [tools for tools in declarations if tools]
             declaration_bytes = [size for body in bodies if (size := wire_declaration_bytes(profile["contract"], body))]
             if declarations:
-                effective = effective_tool_mode(client, mode, declarations[0])
+                if codex_mode == "code_mode_only":
+                    code_mode_observation = observe_code_mode(declarations[0], mode, coding_task=task.coding_task,
+                        client_denied=PERMISSIONS["client_denied"], service_denied=PERMISSIONS["service_denied"])
+                    effective = code_mode_observation["effective"]
+                    if mode == "lazy":
+                        code_mode_observation.update(observe_code_discovery(bodies, coding_task=task.coding_task))
+                        dispatched = {event["tool"] for event in events if event["phase"] == "dispatch"}
+                        effective = bool(effective and code_mode_observation["discovery_result_observed"]
+                                         and code_mode_observation["history_identity_consistent"]
+                                         and not (set(code_mode_observation["invocations_before_schema"]) & dispatched)
+                                         and dispatched <= set(code_mode_observation["loaded_fixture_schema_tools"])
+                                         and dispatched <= set(code_mode_observation["observed_fixture_invocations"]))
+                else:
+                    effective = effective_tool_mode(client, mode, declarations[0])
             if not model_attempts or not effective:
                 checks["answer"] = False
                 issues.append("effective_tool_mode_not_observed")
@@ -410,6 +434,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
     result["candidate_diagnostics"] = candidate_diagnostics
     result["catalog_diagnostic"] = catalog_diagnostic
     result["catalog_observations"] = catalog_observations
+    result["code_mode_observation"] = code_mode_observation
     if task.coding_task is not None:
         result["code_outcome"] = code_outcome
     write_private(case_root / "summary.json", json.dumps(result, indent=2))
@@ -431,6 +456,7 @@ def main():
     parser.add_argument("--batch-max-dispatches", type=int)
     parser.add_argument("--opencode-title", help="explicit task title; automatic-title profile remains the default")
     parser.add_argument("--structured-output", action="store_true", help="opt-in native JSON-schema output; default profiles remain unchanged")
+    parser.add_argument("--codex-tool-mode", choices=["direct", "code_mode_only"], help="explicit, separately scoped Codex tool profile")
     parser.add_argument("--auth-file-binding", action="append", default=[], help="explicit native OAuth filename SHA-256:content SHA-256; repeat up to eight")
     args = parser.parse_args()
     try:
@@ -443,6 +469,8 @@ def main():
         parser.error("executor has no verified live wire view")
     if not 10 <= args.task_seconds <= 300:
         parser.error("bounded task budget required")
+    if args.codex_tool_mode is not None and "codex" not in args.clients:
+        parser.error("explicit Codex mode requires a Codex case")
     if any(len(set(values)) != len(values) for values in (args.clients, args.modes, args.scenarios)):
         parser.error("duplicate client, mode, or scenario")
     if args.opencode_title is not None:
@@ -477,7 +505,8 @@ def main():
     stop_reason = "interrupted" if paired else "diagnostic-only"
     try:
         cases = [make_case_spec(args.config.resolve(), profile, client, mode, args.gateway_revision, endpoint, args.task_seconds,
-                    scenario=scenario, opencode_title=args.opencode_title if client == "opencode" else None, structured_output=args.structured_output)
+                    scenario=scenario, opencode_title=args.opencode_title if client == "opencode" else None, structured_output=args.structured_output,
+                    codex_tool_mode=args.codex_tool_mode if client == "codex" else None)
                  for client in args.clients for scenario in args.scenarios for mode in args.modes]
         if paired:
             material_paths = {"gateway-binary": args.gateway_binary.resolve(), "source-config": args.config.resolve(),
@@ -505,7 +534,8 @@ def main():
                               selected.scope["client"], selected.mode, args.gateway_revision, endpoint, args.task_seconds,
                               specification=selected, locked_plan=locked_plan, material_paths=material_paths, scenario=scenario,
                               opencode_title=args.opencode_title if selected.scope["client"] == "opencode" else None,
-                              structured_output=args.structured_output)
+                              structured_output=args.structured_output,
+                              codex_tool_mode=args.codex_tool_mode if selected.scope["client"] == "codex" else None)
             results.append(result)
             print(json.dumps(result), flush=True)
             if budget is not None:
