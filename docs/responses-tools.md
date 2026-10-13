@@ -233,6 +233,11 @@ Strategy enums:
   speaking Responses does not prove one-to-many result support. The option
   preserves each payload, original `call_id`, reversible item identity and
   global input order, while keeping duplicate-call and orphan-output guards.
+  The final-send guard binds bridged history to prepared output counts,
+  native tool-event order and canonical hashes of complete output items.
+  Post-rule changes to result content, metadata or identity fail locally
+  before dispatch; exact number tokens are retained when hashing. The
+  context stores hashes and identifiers, not raw results.
 - `custom-grammar`: `reject` (default), `describe` (function mode only:
   folds grammar syntax into the description; sampling constraints are not
   enforced upstream).

@@ -6,9 +6,17 @@
 
 `multiple` 只允许显式匹配 `codex` / `openai-response` 格式的路由，配置编译和直接 `Prepare` 均拒绝非原生格式。请求转换逐项保留结果内容、原 `call_id`、可逆迁移的 item ID 及全局顺序；不合并结果，不伪造调用，不降为 user text。省略选项或显式 `single` 保持原有拒绝行为。配置、身份负例、交错与数组内容回归及 Go 1.26.4 全仓测试、vet、server build 已通过。原生格式是必要条件，真实目标的接受性仍需另验。
 
+发送前保护同时绑定准备阶段确定的输出数量、工具事件顺序和每个完整结果 item 的规范化 SHA-256。它允许合法多结果，但仍拒绝后处理规则删增结果、重复调用、重排、改写内容、metadata、item ID 或 `call_id`；大整数采用 `json.Number`，一位精度差异也会触发拒绝。上下文只保留身份、数量和摘要，不保存原始结果。该保护覆盖 Manager → Codex executor → HTTP 实际发送，九种篡改回归均为本地 422、上游零请求。
+
 T23 对生产候选 `f497d7987b0842335e61623a15958c948bb90217` 的受限协议探测确认：`gpt-6-luna` / Codex 的相邻和交错 `function_call_output` 均得到合法完成事件，模型正确读取全部合成标记；Muse 单结果控制成功，多结果返回 400，明确要求每个 `function_call` 恰好对应一个输出。Muse 还明确只接受 `tool_choice: auto`。这证明 GPT 原生 wire 的接受性及 Muse 的上游限制，尚不证明新增 custom bridge 或真实客户端任务已验收。
 
-探测共保留 7 次物理请求（Codex 4、Muse 3），包括首次响应落盘类型错误及后续排他写入错误；完整上游捕获与候选退出回执已保留，未删除请求或把框架错误改判为客户端成功。材料位于 `.omo/tool-loading-completion/t23-native-multi-output-v1`、`v2`、`v3`；不计算任务通过率、上下文收益或费用节省。尚未扩大试验，默认配置、原服务和凭据刷新均未改变。
+初始探测保留 7 次物理请求（Codex 4、Muse 3），包括首次响应落盘类型错误及后续排他写入错误；上游捕获与候选退出回执已保留，未删除请求或把框架错误改判为客户端成功。材料位于 `.omo/tool-loading-completion/t23-native-multi-output-v1`、`v2`、`v3`。
+
+新增选项首次隔离探测使用 `c16b55262afc84ccb8b3ec457b39c43ee0e710f6`，两次请求在发送保护层被错误拒绝为 422，物理上游请求为零（`v4`）。这暴露了 Prepare 已接受多结果、最终发送层仍限制一个结果的生产缺口；该缺口由 `832c8fbf2414b7ccea6e865444716d485b0e4577` 修复。后续一次 Python 环境导入失败发生在创建案例前；一次隔离入口误用 `cmd/server` 导致候选启动退出 2、没有开始案例或发出上游请求（`v5`）。这些失败保留，不转成成功。
+
+最终隔离 SDK 候选为 `832c8fbf2414b7ccea6e865444716d485b0e4577`，binary SHA-256 为 `033d57377c8bcba869242a976a3e097beb62401d9920e0a1c66905a856473ce8`。`v6` 在同一精确 `gpt-6-luna` / Codex OAuth 路由上完成两次 synthetic custom bridge 探测：相邻结果读回 `NOTICE7|FINAL9`，交错结果读回 `NOTICE7|SIDE3|FINAL9`，均 HTTP 200 且实际上游出现 `response.completed` / `completed`。请求捕获确认所有原 `call_id`、可逆且独立的 item ID、数组与文本内容以及工具事件全局次序保留；真实物理请求为 2，零重试。捕获记录的 transport outcome 为 `closed`、完整 EOF 捕获为 false；合法上游终态有直接证据，不据此宣称完整 EOF 捕获。
+
+T23 总计 9 次物理请求，另保留 `v4` 的两次本地拒绝和上述启动问题。最终候选全仓 103 个有测试 package、`go vet ./...` 和 server build 通过；隔离进程退出 0，最终准备层 active 与 HTTP body active 均为 0，默认配置前后指纹相同，绑定凭据来源复核通过且未请求刷新。证据位于 `.omo/tool-loading-completion/t23-native-multi-output-v6`。**这是指定原生路由的协议可用性证据，合成历史没有真实工具执行，不是 Codex 客户端通知任务、编码质量、可靠率、上下文收益或费用节省认证。** 未扩大试验、未发布、未改默认配置、未重启原服务。
 
 ## 实测触发
 
@@ -43,4 +51,4 @@ Codex Code Mode 的通知契约允许额外 `custom_tool_call_output`。每个�
 | 网关显式事件聚合 | 在版本化封套中记录各项内容、原 ID 与单调用内次序 | 外层只剩一个 item；并发全局交错和迟到结果需要额外规则，opaque history 无法就地展开。需要新协议契约，不能当作当前适配的等价修复。 |
 | 客户端结果收敛 | runtime 按真实调用把进度与终态分别处理；每次执行只回填一个顶层结果 | 需修改 Codex/exec 契约，明确模型如何收到进度内容及完成后的迟到通知；不能静默丢弃通知，也不能改写已有 opaque history。 |
 
-CLIProxyAPI 负责发现此缺口和拒绝有损转换。客户端或 Provider 的新支持需要单独交付和版本声明；本轮未发布、未改默认配置、未重启原服务。
+CLIProxyAPI 已交付精确原生路由的逐结果重放和发送保护，同时继续拒绝未经支持的有损转换。其他客户端或 Provider 的新支持需要单独交付和版本声明；本轮未发布、未改默认配置、未重启原服务。

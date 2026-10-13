@@ -6,13 +6,15 @@
 
 ## 候选与配置边界
 
-T14/T15 真实 Provider 试验使用候选 `4b428edfa70e98df3780f4850ab1d7129b95ed14`，隔离网关 binary SHA-256 为 `96f4546eae22f39bd07ad7dd8afa457136b44311ce49cd9f28320c08e49485c7`。T17 使用 `ca0758f4943baa97e651545a56c376adcdcb8e3d`，binary SHA-256 为 `f1d0214f3e75808fd457f2d06a2fe9852b05ae4988b9b037aff9bcd73a1fb278`。最新 T19 响应诊断候选为 `58f5523b90d0561ff7812ad8da8257f14acb4ef5`，binary SHA-256 为 `42920710b5c0feda73458abb4bf16e79b57989fdcd8a89b726b8bac59e8e3c9c`。Codex CLI `0.160.0`、Claude CLI `2.1.289`；配置指纹为 `a746ab767d3e1ab33ed5e513f61dd119854b5ebc17db9f1a7e2053f0976a31f7`。
+T14/T15 真实 Provider 试验使用候选 `4b428edfa70e98df3780f4850ab1d7129b95ed14`，隔离网关 binary SHA-256 为 `96f4546eae22f39bd07ad7dd8afa457136b44311ce49cd9f28320c08e49485c7`。T17 使用 `ca0758f4943baa97e651545a56c376adcdcb8e3d`，binary SHA-256 为 `f1d0214f3e75808fd457f2d06a2fe9852b05ae4988b9b037aff9bcd73a1fb278`。T19 响应诊断候选为 `58f5523b90d0561ff7812ad8da8257f14acb4ef5`，binary SHA-256 为 `42920710b5c0feda73458abb4bf16e79b57989fdcd8a89b726b8bac59e8e3c9c`。Codex CLI `0.160.0`、Claude CLI `2.1.289`；配置指纹为 `a746ab767d3e1ab33ed5e513f61dd119854b5ebc17db9f1a7e2053f0976a31f7`。
 
 用户已确认 12:07 的默认配置变化属于其他任务的预期改动。本任务不回退它；原指纹下失效的 10-case 批次保留原始分母、失败与未知值，随后新建冻结基线。确认来源不等于已验证所有配置字段；当前声明只覆盖冻结材料与实际 route。
 
 T14/T15 live 数据属于 `4b428edf`，T17 属于 `ca0758f4`，T19/T20 属于 `58f5523b`，不同执行候选不能合并认证。T20 已完成当前候选的 60-case 数量覆盖，但只有 41 safe，代表性编码和正式统计仍未认证。此前 50% → 45% 调整保留在历史记录；最新目标以预登记的质量与实际净收益界评价，不能用放宽数字追溯升级认证。
 
 T22 按用户纠偏暂停 Docker/gold runner 扩建，优先修 CLIProxyAPI 生产路径。已复现并修复 portable native 路由的发现工具声明改成别名、`tool_choice` 仍保留原名的问题；直接强制选择和 `allowed_tools` 均与激活声明及调用历史对齐，原生搜索选择不被 bridge 化。Go 1.26.4 定向回归、`internal/responsestools`、`sdk/cliproxy/auth`、`test` 三包完整回归及 server build 通过；本轮没有新增真实 Provider 复测，T19/T20 结果不转移为新源码认证。Code Mode 同一 `call_id` 的多输出仍未实现跨协议兼容。
+
+T23 继续交付生产功能：`c16b5526` 新增精确原生路由 `custom-output-replay: multiple`，`832c8fbf` 修复最终发送层仍错误限制单结果的问题，并按准备阶段数量、完整结果摘要及工具事件顺序防止后处理篡改。最终干净候选 `832c8fbf2414b7ccea6e865444716d485b0e4577` 的隔离 SDK binary SHA-256 为 `033d57377c8bcba869242a976a3e097beb62401d9920e0a1c66905a856473ce8`；GPT `gpt-6-luna` 两次合成 custom bridge 探测均 HTTP 200、实际上游合法完成，文本与数组多结果的内容、身份和交错次序全部保留。默认仍为 `single`；Muse 上游明确拒绝一对多结果，不宣称跨协议已解决。新候选只取得这一精确路由的协议证据，没有继承旧批次的任务质量或收益认证。详见[多输出生产修复与实测边界](../compatibility/codex-code-mode-multiple-results_CN.md)。后续优先补生产闭环，验证只服务具体修复，继续暂停 Docker/gold runner 扩建。
 
 ## 已取得的证据
 
@@ -25,6 +27,7 @@ T22 按用户纠偏暂停 Docker/gold runner 扩建，优先修 CLIProxyAPI 生�
 | T19 新响应诊断校准 | 4/4 safe；20 请求、12 dispatch；代码修改与 host gold 44/44 测试执行通过；四份响应回执正常封存 | Codex GPT/Muse 一个 selective budget task 的 E/L；真实 collector 正常路径，不是全部 route 或真实拒绝事件认证。 |
 | T20 当前候选跨 Provider 复测 | 60 started / finished，41 safe；161 已记录请求、46 已知 dispatch；52 份响应诊断正常封存；8 例凭据材料不匹配启动失败 | 当前候选数量覆盖；未知计数不补零，实际请求/dispatch 总量及全部预算未知。三个非编码固定模板，仍不是正式任务质量认证。 |
 | T21 仓库 fixture 基础 | 四模块 allowlist、真实 MCP read/patch、23 项定向及 327 项完整 Python 回归通过 | 仓库 revision、提交回执、预算与权限边界；未提供模型代码测试执行或隔离，不证明代表性编码质量。见[执行端边界](2026-10-13-repository-fixture-boundaries_CN.md)。 |
+| T23 原生多结果生产修复 | 配置与 Prepare 支持精确原生路由逐项重放；最终发送保护允许合法多结果、九种篡改零上游请求；103 包、vet、server build 通过；最终 GPT 两次相邻/交错请求均合法完成 | 合成历史的协议能力；没有真实工具执行、Codex 通知任务或新的上下文收益证据。保留此前两次本地拒绝及启动问题，不与旧候选池化。 |
 | 可观测安全与释放 | T14/T15/T17/T19 各 case 记录的 forbidden dispatch、forbidden effect、最终 active 均为 0；进程退出回执均为 0 | 仅对应各批观测；不能覆盖独立取消缺口，也不能用退出码替代任务成功。 |
 
 详细数据：[T14 覆盖审计](2026-10-13-primary-60-coverage_CN.md)、[T15 编码试验](2026-10-13-primary-coding-pilot_CN.md)、[T17 选择性发现](2026-10-13-codex-selective-discovery_CN.md)、[T19 响应诊断校准](2026-10-13-response-diagnostics-calibration_CN.md)、[T20 六十例复测](2026-10-13-final-candidate-60-retest_CN.md)、[新基线及失效批次](2026-10-13-primary-routes-refreeze_CN.md)、[本地诊断回归回执](../../.omo/tool-loading-completion/t16-diagnostic-verification.json)。
@@ -49,7 +52,7 @@ GPT lazy 峰值已进一步归因：`functions.exec` 使用 `ALL_TOOLS.filter` �
 
 | 问题 | 已确认事实 | 下一步责任与交付 |
 | --- | --- | --- |
-| Codex Code Mode 多输出 | `notify` 与终态共享 `call_id`；现有 Chat/Claude 适配会降级、丢弃或折叠额外结果。本轮改成 availability-neutral、request-scoped `422 unsupported_protocol`，仍拒绝有损转换 | Gateway 已交付准确诊断；完整支持须逐 Provider 保真转发，或另订客户端/事件封套契约。见[多输出边界](../compatibility/codex-code-mode-multiple-results_CN.md)。原生本地透传不代表 Provider 接受。 |
+| Codex Code Mode 多输出 | `notify` 与终态共享 `call_id`；已交付显式原生 Responses 多结果重放及最终发送保护，GPT 两次合成桥接成功。Muse 明确要求一个调用一个输出；Chat/Claude 的原有转换不能保真 | GPT 精确原生路由的网关能力已交付，真实 Codex 通知任务待验。其他 Provider/跨协议仍需逐目标支持或新客户端/事件契约；默认有损路径继续 422。见[多输出边界](../compatibility/codex-code-mode-multiple-results_CN.md)。 |
 | Codex MCP 取消 | 两例本机 app-server interrupt 有 ack 与 interrupted 终态，但清理前无取消通知/释放，最后观测 active=1；不经过 Gateway | Codex 客户端单独交付 request token → 实际 MCP request handle 取消，再做编译和实测；网关不能代发其本机 request ID。见[取消缺口](../compatibility/codex-mcp-cancellation-gap_CN.md)。 |
 | Gemini / Claude 可用性 | T14 六例记录上游 HTTP 429；同模型 Codex 五例成功，一例额外 confirm 任务质量失败 | 429 来自 Provider 响应边界，但准确配额条件/持续性和 thinking 因果未证实。不能删除失败或把其他客户端成功追溯改判。 |
 | Gemini 冻结材料漂移 | T20 八例启动回执均为 `credentials / binding_content_mismatch`，默认配置摘要未变；Claude 两例另记录 12 次上游 429 | 保留旧分母；后续先明确稳定身份与执行材料绑定，不能自动刷新/换账号。未知请求与执行计数不补零。 |
