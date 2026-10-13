@@ -16,6 +16,22 @@ def output(value):
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_claude_result_replay_requires_bound_successful_tool_result(self):
+        def history(value, *, call_id="lookup", result_id="lookup", role="user", error=False, name="mcp__fixture__ledger_budget_lookup"):
+            return {"messages": [
+                {"role": "assistant", "content": [{"type": "tool_use", "id": call_id, "name": name, "input": {}}]},
+                {"role": role, "content": [{"type": "tool_result", "tool_use_id": result_id,
+                    "is_error": error, "content": [{"type": "text", "text": json.dumps(value) + '\n<system-reminder>fixture</system-reminder>'}]}]}]}
+        first = history({"verification_code": "fresh"})
+        second = history({"confirmation_code": confirmation_code("fresh")}, call_id="confirm", result_id="confirm", name="mcp__fixture__ledger_budget_confirm")
+        self.assertTrue(intermediate_receipt_replayed([first, second], "fresh"))
+        self.assertFalse(intermediate_receipt_replayed([second, first], "fresh"))
+        for changes in ({"result_id": "unknown"}, {"role": "assistant"}, {"error": True}, {"name": "ToolSearch"}):
+            self.assertFalse(intermediate_receipt_replayed([history({"verification_code": "fresh"}, **changes), second], "fresh"))
+        self.assertFalse(intermediate_receipt_replayed([{"messages": first["messages"][1:]}, second], "fresh"))
+        fake = {"messages": [{"role": "user", "content": [{"type": "text", "text": json.dumps({"verification_code": "fresh"})}]}]}
+        self.assertFalse(intermediate_receipt_replayed([fake, second], "fresh"))
+
     def test_antigravity_model_role_result_requires_paired_call_identity(self):
         def wrapped(value, name="fixture_lookup", response_id="call-1", mixed=False):
             parts = [{"functionResponse": {"name": name, "id": response_id, "response": {"result": value}}}]

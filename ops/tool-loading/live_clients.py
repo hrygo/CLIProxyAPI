@@ -22,7 +22,7 @@ import uuid
 
 from catalog_fixture import build_catalog, digest
 from batch_plan import build_plan, write_plan, fingerprint_materials, verify_materials, BatchBudget, audit_plan
-from client_adapters import VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
+from client_adapters import VERSIONS, ADAPTER_VERSIONS, prepare_isolated_client, write_private, validate_session_title, profile_permissions
 from http_attempts import import_http_attempts, read_admission_diagnostics, read_auxiliary_work_diagnostics
 from preparation_evidence import read_preparation_diagnostics, preparation_failure_class
 from live_gateway import candidate_process, parse_credential_bindings, validate_profile
@@ -105,6 +105,18 @@ def chat_terminal(body):
     return successful_terminal("openai-chat-v1", body)
 
 
+def effective_tool_mode(client, mode, tools):
+    if mode == "eager":
+        return len(tools) >= 60
+    if not tools or len(tools) >= 60:
+        return False
+    names = {tool.get("name") or tool.get("function", {}).get("name") for tool in tools}
+    if client == "claude":
+        return "ToolSearch" in names
+    first = json.dumps(tools)
+    return "tool_search" in first if client == "codex" else '"execute"' in first
+
+
 def http_failure_class(admission, attempts, preparation):
     """Classify verified local denials before actual upstream HTTP error statuses."""
     if admission is None or admission["journal_failed"] or admission["closed_rejections"] or admission["failed_rejections"]:
@@ -123,6 +135,10 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
     task = get_scenario(scenario)
     if type(structured_output) is not bool:
         raise ValueError("structured output profile must be explicit boolean")
+    if client not in ADAPTER_VERSIONS or mode not in {"eager", "lazy"}:
+        raise ValueError("unsupported pinned client profile")
+    if structured_output and client == "claude":
+        raise ValueError("Claude native structured output is not a verified profile")
     if opencode_title is not None:
         if client != "opencode":
             raise ValueError("explicit session title is supported only by OpenCode")
@@ -137,20 +153,20 @@ def make_case_spec(config, profile, client, mode, revision, endpoint, seconds, *
     case_id = pair + "-" + mode
     executable = Path(shutil.which(client) or client).resolve()
     scope = dict(gateway_revision=revision, policy_generation=hashlib.sha256(config.read_bytes()).hexdigest(),
-                 client=client, client_version=VERSIONS[client], client_revision=hashlib.sha256(executable.read_bytes()).hexdigest(),
-                 client_mode="direct" if mode == "eager" else "tool-search" if client == "codex" else "code-mode",
-                 source_format="codex" if client == "codex" else "openai", provider=profile["executor"], model=profile["upstream_model"],
+                 client=client, client_version=ADAPTER_VERSIONS[client], client_revision=hashlib.sha256(executable.read_bytes()).hexdigest(),
+                 client_mode="direct" if mode == "eager" else "tool-search" if client in {"codex", "claude"} else "code-mode",
+                 source_format={"codex": "codex", "opencode": "openai", "claude": "claude"}[client], provider=profile["executor"], model=profile["upstream_model"],
                  upstream_format="openai" if wire_contract(profile["executor"]) == "openai-chat-v1" else "openai-response", endpoint_id=endpoint, transport="http-sse", region_id="unknown",
                  catalog_hash=digest(build_catalog(task.coding_task)), fixture_hash=digest({
                      "sources": {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-                                 for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py")
+                                 for name in ("catalog_fixture.py", "client_adapters.py", "task_scenarios.py", "opencode_server_adapter.py", "scripted_clients.py", "native_wire.py")
                                  + (("coding_tasks.py",) if task.coding_task is not None else ())},
                      "coding_task": task.coding_task,
-                     "isolation_version": 6,
+                     "isolation_version": 7,
                      "preparation_diagnostic_version": 1,
                      "credential_selection": profile.get("auth_files", []),
                      "structured_output": structured_output,
-                     "session_title_policy": ("not-applicable" if client == "codex" else "automatic") if opencode_title is None
+                     "session_title_policy": ("automatic" if client == "opencode" else "not-applicable") if opencode_title is None
                                              else hashlib.sha256(opencode_title.encode()).hexdigest()}),
                  permission_hash=digest(profile_permissions(PERMISSIONS, structured_output=structured_output, coding_task=task.coding_task)))
     return CaseSpec(case_id, pair, task.template_id, mode, "unknown", scope, hashlib.sha256(task.prompt.encode()).hexdigest(),
@@ -190,7 +206,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             stage = "client_preparation"
             executable = Path(shutil.which(client) or client).resolve()
             client_inputs = {
-                "run_dir": case_root / "client", "client_version": VERSIONS[client], "executable": str(executable),
+                "run_dir": case_root / "client", "client_version": ADAPTER_VERSIONS[client], "executable": str(executable),
                 "fixture_python": sys.executable, "model": profile["client_model"], "model_metadata": metadata,
                 "base_url": ready["base_url"], "nonce": nonce, "max_dispatches": spec.limits["max_dispatches"], "max_result_bytes": 65536}
             if opencode_title is not None:
@@ -263,9 +279,7 @@ def run_case(root, journal, binary, config, profile, client, mode, revision, end
             declarations = [tools for tools in declarations if tools]
             declaration_bytes = [size for body in bodies if (size := wire_declaration_bytes(profile["contract"], body))]
             if declarations:
-                first = json.dumps(declarations[0])
-                effective = (len(declarations[0]) >= 60 if mode == "eager" else len(declarations[0]) < 60 and
-                             ("tool_search" in first if client == "codex" else '"execute"' in first))
+                effective = effective_tool_mode(client, mode, declarations[0])
             if not model_attempts or not effective:
                 checks["answer"] = False
                 issues.append("effective_tool_mode_not_observed")
@@ -312,7 +326,7 @@ def main():
         parser.add_argument("--" + name, type=Path, required=True)
     for name in ("gateway-revision", "endpoint-sha256", "client-model", "upstream-model", "executor"):
         parser.add_argument("--" + name, required=True)
-    parser.add_argument("--clients", nargs="+", choices=list(VERSIONS), default=list(VERSIONS))
+    parser.add_argument("--clients", nargs="+", choices=list(ADAPTER_VERSIONS), default=list(VERSIONS))
     parser.add_argument("--modes", nargs="+", choices=["eager", "lazy"], default=["eager", "lazy"])
     parser.add_argument("--scenarios", nargs="+", choices=list(SCENARIOS), default=["lookup"])
     parser.add_argument("--task-seconds", type=int, default=90)
@@ -331,6 +345,8 @@ def main():
         parser.error("bounded task budget required")
     if any(len(set(values)) != len(values) for values in (args.clients, args.modes, args.scenarios)):
         parser.error("duplicate client, mode, or scenario")
+    if args.structured_output and "claude" in args.clients:
+        parser.error("Claude native structured output is not a verified profile")
     if args.opencode_title is not None:
         if "opencode" not in args.clients:
             parser.error("explicit title requires an OpenCode case")

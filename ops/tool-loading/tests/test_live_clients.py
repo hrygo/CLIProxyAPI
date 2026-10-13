@@ -15,6 +15,59 @@ from test_preparation_evidence import empty_preparation
 
 
 class LiveClientTests(unittest.TestCase):
+    def test_claude_scope_is_explicit_without_expanding_legacy_default_clients(self):
+        from client_adapters import VERSIONS, CLAUDE_VERSION
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config, executable = root / "config", root / "claude"
+            config.write_bytes(b"synthetic-config")
+            executable.write_bytes(b"synthetic-client")
+            profile = {"client_model": "fixture", "upstream_model": "fixture", "executor": "openai-compatible-fixture"}
+            with patch("live_clients.shutil.which", return_value=str(executable)):
+                lazy = make_case_spec(config, profile, "claude", "lazy", "a" * 40, "ep_" + "b" * 32, 90)
+                eager = make_case_spec(config, profile, "claude", "eager", "a" * 40, "ep_" + "b" * 32, 90)
+                with self.assertRaises(ValueError):
+                    make_case_spec(config, profile, "claude", "lazy", "a" * 40, "ep_" + "b" * 32, 90, structured_output=True)
+            self.assertEqual(lazy.scope["client_version"], CLAUDE_VERSION)
+            self.assertEqual(lazy.scope["source_format"], "claude")
+            self.assertEqual(lazy.scope["client_mode"], "tool-search")
+            self.assertEqual(eager.scope["client_mode"], "direct")
+            self.assertEqual(set(VERSIONS), {"codex", "opencode"})
+
+    def test_claude_final_result_requires_success_and_no_assistant_error(self):
+        answer = json.dumps({"remaining_budget": 424242, "verification_code": "fresh"})
+        result = {"type": "result", "subtype": "success", "is_error": False, "result": answer}
+        raw = json.dumps(result) + "\n"
+        checks = result_checks("claude", raw, "fresh")
+        self.assertTrue(all(checks[name] for name in ("answer", "nonce", "format", "terminal")))
+        for bad in (raw.rstrip(), json.dumps({**result, "is_error": True}) + "\n",
+                    json.dumps({**result, "subtype": "error_max_turns"}) + "\n",
+                    json.dumps({"type": "assistant", "error": "invalid_request"}) + "\n" + raw,
+                    '42\n' + raw, raw + '{"type":"system"}\n'):
+            self.assertFalse(result_checks("claude", bad, "fresh")["terminal"])
+        earlier = json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": answer}]}}) + "\n"
+        self.assertFalse(result_checks("claude", earlier + json.dumps({**result, "result": "wrong"}) + "\n", "fresh")["answer"])
+
+    def test_claude_effective_mode_is_observed_on_translated_wire(self):
+        from live_clients import effective_tool_mode
+        search = {"type": "function", "function": {"name": "ToolSearch", "parameters": {"type": "object"}}}
+        self.assertTrue(effective_tool_mode("claude", "lazy", [search]))
+        self.assertFalse(effective_tool_mode("claude", "lazy", [{"type": "function", "function": {"name": "Other"}}]))
+        self.assertFalse(effective_tool_mode("claude", "lazy", [search] * 60))
+        self.assertTrue(effective_tool_mode("claude", "eager", [{"name": f"tool_{i}"} for i in range(67)]))
+
+    def test_claude_structured_output_rejected_before_run_directory(self):
+        from contextlib import redirect_stderr
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "absent"
+            argv = ["live_clients.py", "--gateway-binary", "unused", "--config", "unused", "--output-dir", str(output),
+                    "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
+                    "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "claude", "--structured-output"]
+            with patch("live_clients.sys.argv", argv), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as exit:
+                main()
+            self.assertEqual(exit.exception.code, 2)
+            self.assertFalse(output.exists())
+
     def test_auxiliary_capture_is_budgeted_without_becoming_model_terminal_or_schema(self):
         from types import SimpleNamespace
         from unittest.mock import Mock
@@ -225,6 +278,35 @@ class LiveClientTests(unittest.TestCase):
             self.assertEqual(audit["started_cases"], 6)
             self.assertEqual(audit["safe_successes"], 0)
             self.assertEqual(json.loads((output / "summary.json").read_text())["batch_stop_reason"], "complete")
+
+    def test_explicit_claude_batch_locks_both_modes_and_retains_started_failures(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            binary, config, executable = (root / name for name in ("gateway", "config", "client"))
+            for path in (binary, config, executable):
+                path.write_bytes(b"synthetic-file")
+            output, observed = root / "run", []
+            def task(root, journal, *args, specification, locked_plan, **kwargs):
+                self.assertEqual(specification.scope["client"], "claude")
+                self.assertEqual(len(locked_plan["cases"]), 2)
+                observed.append(specification.mode)
+                journal.start_case(specification)
+                counts = {field: 0 for field in ("mcp_attempts", "dispatch", "forbidden_dispatch", "forbidden_effect", "active")}
+                journal.finish_case(specification.case_id, checks=dict.fromkeys(("answer", "dispatch", "nonce", "code", "format", "terminal"), False),
+                                    boundary_counts=counts, elapsed_ms=1, failure_class="framework")
+                return {"safe_task_success": False, "upstream_attempts": 0, "issues": [], "boundary_counts": counts}
+            argv = ["live_clients.py", "--gateway-binary", str(binary), "--config", str(config), "--output-dir", str(output),
+                    "--gateway-revision", "a" * 40, "--endpoint-sha256", "b" * 64, "--client-model", "fixture",
+                    "--upstream-model", "fixture", "--executor", "openai-compatible-fixture", "--clients", "claude"]
+            with patch("live_clients.sys.argv", argv), patch("live_clients.shutil.which", return_value=str(executable)), \
+                    patch("live_clients.run_case", side_effect=task), redirect_stdout(io.StringIO()), self.assertRaises(SystemExit) as exit:
+                main()
+            self.assertEqual(exit.exception.code, 1)
+            self.assertEqual(set(observed), {"eager", "lazy"})
+            audit = json.loads((output / "batch-audit.json").read_text())
+            self.assertEqual(audit["started_cases"], 2)
+            self.assertEqual(audit["safe_successes"], 0)
+            self.assertEqual(audit["unfinished_cases"], 0)
 
     def test_client_preparation_keeps_executable_after_spec_extraction(self):
         from types import SimpleNamespace

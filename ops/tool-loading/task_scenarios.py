@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import json
+import re
 
 from catalog_fixture import confirmation_code
 
@@ -143,7 +144,17 @@ def intermediate_receipt_replayed(bodies, nonce):
             try:
                 return receipts(json.loads(value), depth + 1)
             except ValueError:
-                return False, False
+                # Claude adds a system reminder after the actual MCP JSON text.
+                # Admit only this bounded, recognizable suffix, not arbitrary
+                # trailing prose or a receipt embedded in an unrelated string.
+                try:
+                    decoded, end = json.JSONDecoder().raw_decode(value.lstrip())
+                except ValueError:
+                    return False, False
+                suffix = value.lstrip()[end:].strip()
+                if not re.fullmatch(r"<system-reminder>.*</system-reminder>", suffix, re.DOTALL):
+                    return False, False
+                return receipts(decoded, depth + 1)
         if isinstance(value, dict):
             lookup = value.get("verification_code") == nonce
             confirmed = value.get("confirmation_code") == expected_confirmation
@@ -163,6 +174,29 @@ def intermediate_receipt_replayed(bodies, nonce):
         def items(value):
             return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
         results = [item.get("content") for item in items(body.get("messages")) if item.get("role") == "tool"]
+        pending, seen = {}, set()
+        for message in items(body.get("messages")):
+            for part in items(message.get("content")):
+                if message.get("role") == "assistant" and part.get("type") == "tool_use":
+                    call_id = part.get("id")
+                    if isinstance(call_id, str) and call_id:
+                        if call_id in seen:
+                            pending.pop(call_id, None)
+                        else:
+                            seen.add(call_id)
+                            pending[call_id] = part.get("name")
+                elif message.get("role") == "user" and part.get("type") == "tool_result":
+                    call_id = part.get("tool_use_id")
+                    name = pending.pop(call_id, None) if isinstance(call_id, str) else None
+                    if not isinstance(name, str) or name not in {"mcp__fixture__ledger_budget_lookup", "mcp__fixture__ledger_budget_confirm"}:
+                        continue
+                    if part.get("is_error", False) is False:
+                        content = part.get("content")
+                        if isinstance(content, str):
+                            results.append(content)
+                        elif isinstance(content, list):
+                            results.extend(block["text"] for block in content if isinstance(block, dict)
+                                           and block.get("type") == "text" and isinstance(block.get("text"), str))
         results += [item.get("output") for item in items(body.get("input")) if item.get("type") == "function_call_output"]
         request = body.get("request")
         if isinstance(request, dict):

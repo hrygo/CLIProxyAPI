@@ -19,7 +19,7 @@ from catalog_fixture import build_catalog, canonical_bytes, confirmation_code
 from client_adapters import CLAUDE_VERSION, prepare_isolated_client, synthetic_codex_model, write_private
 from http_attempts import read_http_attempts, read_admission_diagnostics, read_auxiliary_work_diagnostics
 from live_gateway import candidate_process
-from scripted_clients import chat_chunks
+from scripted_clients import chat_chunks, client_result
 
 LOOKUP = "mcp__fixture__ledger_budget_lookup"
 CONFIRM = "mcp__fixture__ledger_budget_confirm"
@@ -35,15 +35,9 @@ def inspect_claude_tools(mode, tools):
 
 
 def claude_result(raw):
-    try:
-        events = [json.loads(line) for line in raw.splitlines()]
-    except ValueError:
-        return {"terminal": False, "text": ""}
-    last = events[-1] if events and isinstance(events[-1], dict) else {}
-    good = bool(raw.endswith("\n") and last.get("type") == "result" and last.get("subtype") == "success"
-                and last.get("is_error") is False and isinstance(last.get("result"), str)
-                and not any(isinstance(event, dict) and event.get("type") == "assistant" and event.get("error") for event in events))
-    return {"terminal": good, "text": last.get("result", "") if good else ""}
+    observed = client_result("claude", raw)
+    return {"terminal": observed["legal_terminal"],
+            "text": observed["final_texts"][-1] if observed["final_texts"] else ""}
 
 
 def _result(body, contract, call_id):

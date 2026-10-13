@@ -171,6 +171,12 @@ def client_result(client, raw):
         if client == "opencode" and event.get("type") == "text":
             texts.append(event.get("part", {}).get("text", ""))
     last = events[-1] if events else {}
+    if client == "claude":
+        terminal = (last.get("type") == "result" and last.get("subtype") == "success"
+                    and last.get("is_error") is False and isinstance(last.get("result"), str)
+                    and not any(event.get("type") == "assistant" and event.get("error") for event in events))
+        return {"final_texts": [last["result"]] if complete and terminal else [],
+                "legal_terminal": bool(complete and terminal), "parse_complete": complete}
     terminal = (last.get("type") == "turn.completed" if client == "codex"
                 else last.get("type") == "step_finish" and last.get("part", {}).get("reason") == "stop")
     return {"final_texts": texts, "legal_terminal": bool(complete and terminal), "parse_complete": complete}

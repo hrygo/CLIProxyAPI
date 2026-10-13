@@ -13,7 +13,11 @@ Codex/OpenCode/Claude Code permission handling, model quality, or context saving
 ## Claude Code protocol probe
 
 `client_adapters.py` additionally admits an explicitly selected Claude Code
-2.1.289 profile. It does not add Claude to existing live batch scheduling:
+2.1.289 profile. The live runner admits `--clients claude` explicitly; its
+default remains Codex/OpenCode. Claude cases lock their version, executable,
+Messages source format and direct/ToolSearch mode in the ordinary paired plan,
+and retain all starts/failures in `CaseJournal`. Claude native structured output
+is not an admitted profile. The protocol probe remains separate:
 Provider usage, coding, permissions and statistical scopes need separate admission.
 The isolated profile uses a fresh home/config directory, explicit MCP, filtered
 environment, exact tool permission rules, no permission bypass and no updates.
@@ -866,7 +870,8 @@ cases, coding success, context savings or confidence intervals.
 
 ## Real Provider calibration
 
-`live_clients.py` runs installed, version-pinned Codex/OpenCode against the
+`live_clients.py` runs installed, version-pinned Codex/OpenCode (or explicitly
+selected Claude Code with `--clients claude`) against the
 read-only SDK candidate and the synthetic MCP catalog. It consumes real Provider
 quota. Declare the exact configured alias, upstream model, executor and full
 endpoint SHA-256; no raw endpoint or credential is exported. The endpoint ID
