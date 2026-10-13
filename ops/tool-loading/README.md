@@ -211,7 +211,8 @@ rejects Codex JSON schema is not made compatible by this fixture. Every started
 case, failed code check, request and MCP attempt remains in the same journal.
 Three templates are insufficient for the formal non-inferiority gate.
 
-`client_adapters.py` supports exactly Codex CLI `0.160.0` and OpenCode `1.19.0`.
+`client_adapters.py` pins Codex CLI `0.160.0`, OpenCode `1.19.0`, and the explicitly
+selected Claude Code `2.1.289` profile described above.
 It checks the installed version before creating artifacts, rejects unknown
 adapter keys/modes and non-loopback endpoints, and never inherits credentials
 or broad experimental flags. All configuration, catalogs, XDG state and the
