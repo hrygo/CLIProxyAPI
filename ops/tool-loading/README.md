@@ -1020,6 +1020,9 @@ shape. Code Mode cases have separate pair IDs and fixture fingerprints and
 cannot inherit direct-profile certification. Native CLI SIGINT and app-server
 `turn/interrupt` are separate cancellation profiles: an interrupted turn without
 MCP cancellation and release still fails.
+The [Code Mode report](../../docs/acceptance/2026-10-13-codex-code-mode_CN.md)
+records the native boundary probes, both real GPT batches, strict failures and
+paired input/latency results. It is bounded evidence, not certification.
 
 Following the user's 2026-10-13 priority update, new implementation and route
 diagnosis focus on Codex and Claude Code through CLIProxyAPI. OpenCode remains a
