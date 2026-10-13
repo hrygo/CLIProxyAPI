@@ -1,7 +1,8 @@
 # Claude Code 工具检索与跨协议闭环实测
 
 核验日期：2026-10-13。范围：Claude Code 2.1.289、synthetic MCP fixture、本地脚本化模型、
-独立 CLIProxyAPI 候选。状态：协议验证；完整目标仍未认证。
+独立 CLIProxyAPI 候选 **243cd59ea64529ffe9f98560a9f4d33380d729df**，
+Go 1.26.4，`vcs.modified=false`。状态：协议验证；完整目标仍未认证。
 
 ## 结论
 
@@ -37,7 +38,7 @@ verification_code 与 confirmation_code，最终输出与工具服务的独立 g
 
 ## 计量边界
 
-Gateway→Chat 的工作树探针记录如下；用于理解传输优化，不是 Provider token 指标。
+Gateway→Chat 的干净提交复测记录如下；用于理解传输优化，不是 Provider token 指标。
 
 | 模式 | 物理上游请求 | 首轮声明字节 | 后续每轮声明字节 | MCP dispatch |
 |---|---:|---:|---:|---:|
@@ -66,12 +67,21 @@ python3 ops/tool-loading/claude_client_probe.py \
 
 依赖沿用已有 fixture Python 环境，输出目录必须是新的。
 原始 body、随机回执、客户端输出、MCP event journal 与 HTTP capture 只保存在私有输出目录。
+最终四例均通过，私有证据为 `.omo/tool-loading-completion/t7-claude-probe-final/`；
+`probe-events.jsonl` 保留 4 starts/4 finishes，整个 summary 仍标 `unverified`，不取得任务认证。
 初始 `--bare` 和标准模式故障首包探针均保留；两组每模式各启动 2 个请求，第二个为
 客户端能力降级重试，不能按单请求处理，也不进入真实模型成功率样本。
 脚本化协议通过不覆盖这些故障记录。
 
 代码入口：`ops/tool-loading/client_adapters.py`、`claude_client_probe.py`、
 `internal/responsestools/claude_deferred.go`、`sdk/cliproxy/auth/claude_deferred_execution.go`。
+
+同源码验证：Go 全量 103 个测试包通过；Python 全量 229 tests 通过；
+responsestools/auth/live-gateway 三包 race 通过；`go vet ./...` 和 server build 通过。
+所有长脚本异步启动，等待期间推进 adapter、回归、边界复核和文档；结论以原 handle 的终态为准。
+默认 config SHA-256 仍为
+`3a6ab28f1605437c2cd9358b7a5320781718f30266353c93953882469b9f46fe`。
+本轮仅本地提交，未发布、未更新远端 PR、未切换默认配置、未重启原服务。
 
 ## 剩余认证条件
 
