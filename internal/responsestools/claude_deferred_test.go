@@ -3,6 +3,7 @@ package responsestools
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -172,6 +173,64 @@ func TestClaudeDeferredBudgetsAndPassThrough(t *testing.T) {
 	prepared, err := PrepareClaudeDeferredTools(body, DefaultLimits())
 	if err != nil || !bytes.Equal(prepared, body) {
 		t.Fatalf("ordinary contract changed: %s %v", prepared, err)
+	}
+}
+
+func TestClaudeDeferredBudgetCountsOnlyActiveDeclarations(t *testing.T) {
+	for _, discovered := range []bool{false, true} {
+		name := "first turn"
+		if discovered {
+			name = "discovered lookup"
+		}
+		t.Run(name, func(t *testing.T) {
+			var root map[string]any
+			if err := json.Unmarshal([]byte(claudeDeferredFixture), &root); err != nil {
+				t.Fatal(err)
+			}
+			tools := root["tools"].([]any)
+			tools[3].(map[string]any)["description"] = strings.Repeat("x", DefaultLimits().MaxActiveToolBytes)
+			wantTools := []any{tools[0]}
+			if discovered {
+				lookup := make(map[string]any)
+				for key, value := range tools[2].(map[string]any) {
+					if key != "defer_loading" {
+						lookup[key] = value
+					}
+				}
+				wantTools = append(wantTools, lookup)
+			} else {
+				root["messages"] = []any{map[string]any{"role": "user", "content": "lookup"}}
+			}
+			body, err := json.Marshal(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, _ := json.Marshal(wantTools)
+			catalog, _ := json.Marshal(tools)
+			if len(catalog) <= DefaultLimits().MaxActiveToolBytes {
+				t.Fatal("fixture catalog must exceed the default active declaration budget")
+			}
+			for _, maximum := range []int{DefaultLimits().MaxActiveToolBytes, len(want)} {
+				limits := DefaultLimits()
+				limits.MaxActiveToolBytes = maximum
+				prepared, errPrepared := PrepareClaudeDeferredTools(body, limits)
+				if errPrepared != nil {
+					t.Fatalf("unloaded catalog charged to active budget %d: %v", maximum, errPrepared)
+				}
+				var wire map[string]json.RawMessage
+				if err := json.Unmarshal(prepared, &wire); err != nil || !bytes.Equal(wire["tools"], want) {
+					t.Fatalf("active declarations changed: %s %v", wire["tools"], err)
+				}
+			}
+			limits := DefaultLimits()
+			limits.MaxActiveToolBytes = len(want) - 1
+			_, errBudget := PrepareClaudeDeferredTools(body, limits)
+			var toolError *ToolCompatibilityError
+			if !errors.As(errBudget, &toolError) || toolError.Reason != ReasonDeclarationBudget {
+				t.Fatalf("active overflow was not rejected: %v", errBudget)
+			}
+			t.Logf("catalog declaration bytes=%d, active declaration bytes=%d", len(catalog), len(want))
+		})
 	}
 }
 

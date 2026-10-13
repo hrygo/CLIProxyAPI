@@ -18,7 +18,10 @@ func TestClaudeDeferredPreparationAtAllExecutorEntries(t *testing.T) {
 		t.Run(entry, func(t *testing.T) {
 			mgr := responsesToolsTestManager()
 			exec := &fakeResponsesExecutor{provider: "codex", toFormat: sdktranslator.FormatCodex, response: []byte(`{"content":[]}`)}
-			body := []byte(claudeClientSearchRequest)
+			unloaded := `{"name":"unloaded","defer_loading":true,"input_schema":{"type":"object"},"description":"` +
+				strings.Repeat("x", responsestools.DefaultLimits().MaxActiveToolBytes) + `"},`
+			original := strings.Replace(claudeClientSearchRequest, `"tools":[`, `"tools":[`+unloaded, 1)
+			body := []byte(original)
 			req := cliproxyexecutor.Request{Model: "fixture", Payload: body}
 			opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude, OriginalRequest: body}
 			auth := &Auth{ID: "fixture", Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth"}}
@@ -60,10 +63,10 @@ func TestClaudeDeferredPreparationAtAllExecutorEntries(t *testing.T) {
 			if !bytes.Equal(exec.wire[0], exec.originals[0]) {
 				t.Fatal("executor payload views diverged")
 			}
-			if !bytes.Equal(body, []byte(claudeClientSearchRequest)) {
+			if !bytes.Equal(body, []byte(original)) {
 				t.Fatal("original input mutated")
 			}
-			bad := strings.Replace(claudeClientSearchRequest, `"tool_name":"lookup"`, `"tool_name":"missing"`, 1)
+			bad := strings.Replace(original, `"tool_name":"lookup"`, `"tool_name":"missing"`, 1)
 			req.Payload, opts.OriginalRequest = []byte(bad), []byte(bad)
 			_, _, err = mgr.responsesToolsStreamCall(context.Background(), auth, "codex", exec, req, opts,
 				func(ctx context.Context, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {

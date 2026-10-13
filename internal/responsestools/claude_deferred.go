@@ -41,9 +41,6 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 	if err := validateClaudeDiscoveryJSON(body, limits.MaxDepth); err != nil {
 		return nil, err
 	}
-	if len(root["tools"]) > limits.MaxActiveToolBytes {
-		return nil, budgetError(ReasonDeclarationBudget, fmt.Errorf("Anthropic declarations exceed the tool byte budget"))
-	}
 	declared := make(map[string]map[string]any, len(tools))
 	for _, item := range tools {
 		tool, valid := item.(map[string]any)
@@ -155,6 +152,9 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 		filtered = append(filtered, tool)
 	}
 	root["tools"], _ = json.Marshal(filtered)
+	if len(root["tools"]) > limits.MaxActiveToolBytes {
+		return nil, budgetError(ReasonDeclarationBudget, fmt.Errorf("active Anthropic declarations exceed the tool byte budget"))
+	}
 	if changedHistory {
 		root["messages"], _ = json.Marshal(messages)
 	}
