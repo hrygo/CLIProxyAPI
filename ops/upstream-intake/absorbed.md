@@ -6,18 +6,27 @@ commits were ported onto our `main` **and** `verify-absorb.sh` exited 0.
 | Upstream | Assessed | Ported | Skipped | Gate | Recorded |
 | --- | --- | --- | --- | --- | --- |
 | v8.0.7 | 2026-10-01 | `82f8e92b` `a8ffd5a8` `67cb32b6` `9e71c20d` `97f244b8` | none | PASS | 2026-10-01 |
-
 | v8.0.13 | 2026-10-03 | 28 substantive ports + 1 test-only port (initial and follow-up mappings below) | 6 entries, including 3 merge wrappers (final decisions below) | PASS; follow-up effective on merge to main | 2026-10-03 |
-
-| v8.0.16 | 2026-10-09 | 24 ports (mapping below) | 16 non-merge + 7 merge wrappers (decisions below) | PASS on intake branch | 2026-10-09 |
+| v8.0.16 | 2026-10-09 | 24 ports (mapping below) | 16 non-merge + 7 merge wrappers (decisions below) | PASS; merged to main in #22 | 2026-10-09 |
+| v8.0.23 | 2026-10-14 | 26 upstream ports, including 1 equivalent-fix regression port (mapping below) | 15 non-merge + 6 merge wrappers (decisions below) | PASS; effective on merge | 2026-10-14 |
 
 ## Comparison baseline
 
-**Baseline: `v8.0.13`** (`d7914afdedca7af95ee974a42453dc49fc1388ce`), selectively advanced from
-`v8.0.7` on 2026-10-03. This advancement takes effect only when the verified
-intake branch and this ledger reach our `main`. The retained/deferred work below
-is deliberately outside this alignment; reconsider it explicitly if a future
-release depends on it.
+**Selective alignment: `v8.0.23`** (`d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5`),
+effective only with the verified intake and this ledger merged to our `main`.
+The table and assessment below enumerate what is actually present; alignment
+does not mean the complete upstream release is incorporated.
+
+**Accepted comparison baseline for this intake: `v8.0.16`**
+(`a2976eb8a303f11b4ea5177bce9f9ff752634dfc`). Its reviewed ports were merged in
+PR #22 at `d11564c0aeee2c75af4122441db541bb989ed0de`, an ancestor of the clean
+starting main `5349958cfc0d4ca1e805dbecee219fce646afe2e`. The previous ledger's
+intake-branch wording was stale; fetched tags were not used as absorption proof.
+Once this v8.0.23 intake is merged, use v8.0.23 for the next comparison and
+continue to track all retained/deferred work explicitly.
+
+Earlier selective baseline: `v8.0.13`
+(`d7914afdedca7af95ee974a42453dc49fc1388ce`), advanced from v8.0.7 on 2026-10-03.
 
 Previous baseline: `v8.0.7` (`97f244b8ddb9cbf564b6e6faab0159102cca8617`), advanced
 from `v8.0.5` on 2026-10-01 when every commit in `v8.0.5..v8.0.7` was ported.
@@ -308,15 +317,17 @@ module-path, workflow or permanent intake-gate change was made.
 The detailed owner-facing Chinese report is
 [upstream-v8.0.13-deep-review.zh-CN.md](../../docs/upstream-v8.0.13-deep-review.zh-CN.md).
 
-### v8.0.16 — selective absorption, intake branch, 2026-10-09
+### v8.0.16 — selective absorption, effective on main, 2026-10-09
 
 Baseline `v8.0.13`, candidate `v8.0.16` (`a2976eb8a303f11b4ea5177bce9f9ff752634dfc`),
 our clean baseline `main` `6eff48fba9564a03610b98d437d6a2a7ba54ea65`. The range
 contains 47 commits (40 non-merge + 7 merge wrappers). `v8.0.16` was published
 `2026-10-05T21:46:28Z` and cleared the 72-hour window normally; later releases
 (`v8.0.17`–`v8.0.22`) had not settled at assessment time and are out of scope.
-Intake branch `codex/upstream-v8.0.16-intake`, head `87ced434`. This entry
-becomes effective only when the verified branch reaches our `main`.
+Reviewed intake branch `codex/upstream-v8.0.16-intake`, initial head `87ced434`.
+Its selected changes reached main through PR #22, merge
+`d11564c0aeee2c75af4122441db541bb989ed0de`; this was verified by ancestry on
+2026-10-14. This confirmation does not add replay evidence to that intake.
 
 This intake also records the new conflict-resolution rule: when an upstream
 commit and our fork solve the same problem, prefer the upstream
@@ -381,12 +392,154 @@ note the fork delta retained.
 branch head: PASS (maintenance fixtures, gofmt, vet, responses-tools
 invariants, full suite, all race-sensitive packages, server build).
 
-**Request/response replay: not performed yet.** No baseline-vs-candidate fixture
-replay was run for this intake's protocol changes; record coverage before merge
-or state its limits in the merge record.
+**Request/response replay: not recorded for this historical intake.** The
+current ledger supplies no baseline-vs-candidate fixture evidence for v8.0.16;
+its main ancestry and automated gate must not be presented as a live replay.
 
 **Real client/provider replay: not performed.** Credential-free checks only. No
 release, tap, installation, production config or service restart was performed.
+
+### v8.0.23 — selective intake, effective with this ledger's merge, 2026-10-14
+
+Comparison baseline v8.0.16; clean main
+`5349958cfc0d4ca1e805dbecee219fce646afe2e`; candidate upstream
+`d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5`. Upstream release metadata was checked
+on `2026-10-14T04:10:57Z`: v8.0.23 was published `2026-10-09T14:32:57Z`,
+109 hours before assessment. `assess-release.sh v8.0.23 v8.0.16` passed the
+normal 72-hour gate. Newer published releases through v8.0.28 had not cleared
+that window at assessment and were not candidates for absorption.
+
+The assessed range contains 47 commits: 41 non-merge commits and 6 merge
+wrappers. Decisions cover all 47. The task branch is
+`codex/upstream-v8.0.23-intake`; selected source and adapted regressions are
+frozen at `439e9f12`. No dependency, public SDK request-converter signature,
+configuration schema or service lifecycle migration is included.
+
+#### Ported commits
+
+All 26 upstream commits were selected individually and carry `-x` provenance.
+The local mapping identifies the reviewed commits before a protected-main
+squash/rebase, rather than claiming the upstream commits are main ancestors.
+
+| Upstream | Reviewed local | User-visible result |
+| --- | --- | --- |
+| `d510dccf` | `5c271bab` | fix(gemini): support camelCase systemInstruction in request translation |
+| `a0d31924` | `a5a173b8` | fix(gemini): map refusal finish reasons and handle partless stream completion in Claude response translation |
+| `68ea171d` | `2fd069d8` | fix(gemini): handle carrier thinking blocks for signed visible text and tool calls in Claude response translation |
+| `50d5fe18` | `e6eb1566` | fix(cliproxy): avoid selecting rejected credentials during refresh and preserve active quota cooldowns |
+| `6920ed5d` | `17ea97af` | fix(cliproxy): propagate credential version and registration epoch in execution results |
+| `935aa6e3` | `f3ebf7f5` | fix(cliproxy): prevent in-flight token refresh from overwriting concurrently updated credentials |
+| `dbc4aad9` | `23be272e` | fix(gemini): ignore context cancellation after terminal chunk in Vertex stream |
+| `eca1d113` | `d7f42380` | fix(claude): keep system prompt at top level for single terminal user turn |
+| `39632e52` | `6b0ea1f4` | fix(claude): keep system prompt at top level for leading user message runs |
+| `14dc4e05` | `d872e35e` | fix(claude): relocate caller system prompt to messages for OAuth requests |
+| `cd9e5ace` | `9cda842d` | fix(api): compact json error response bodies for SSE compatibility |
+| `e7b22260` | `c43b02f5` | fix(claude): support plain-text and structured response bodies for missing thread errors |
+| `249e9ef9` | `fbe0a532` | fix(meta): preserve foreign reasoning encrypted content in responses requests |
+| `0a23627d` | `cf1f1d3b` | fix(config): normalize collection styles and unquote mapping keys in v8 api |
+| `7c2133e2` | `c91e2401` | fix(cliproxy): reconcile concurrent auth updates during batch model registration |
+| `ab151f5d` | `18d02909` | fix(antigravity): include thoughts token count in openai completion tokens |
+| `80809679` | `9a4b402c` | fix(claude): ignore overage billing resets in unified rate limit parsing |
+| `a881c036` | `fc0d336f` | fix(claude): respect registry completion limit for default responses max tokens |
+| `67465884` | `bd9e2bf7` | fix(pluginhost): detach unselected plugins on config apply |
+| `51bde0ff` | `a922ae50` | fix(codex): preserve resolved upstream model in direct openai image requests |
+| `9a7db8e3` | `ba2fcbc1` | fix(claude): defer stream message delta emission to trailing usage chunk |
+| `2d8ec73b` | `3dbe5d5c` | fix(claude): preserve mid-conversation effort directives during system insertion |
+| `f8e4a840` | `397d7a8f` | fix(openai-compat): measure streaming TTFT on effective token frames |
+| `4a8ecf5c` | `ad42a57f` | fix(auth): skip local filtering for home dispatch |
+| `e9c8769a` | `9fa5e112` | fix(executor): normalize and restore non-portable tool call IDs |
+| `76c87ce9` | `7db9b260` | fix(xai): reset terminal error on websocket connection configuration |
+
+#### Fork compatibility and convergence
+
+- `76c87ce9` is equivalent to fork follow-up `70dac18f`: the existing
+  `resetTerminalError(conn)` call already matches upstream. Only the missing
+  upstream replacement-connection regression was added. The behavior is now
+  attributed to upstream; no second reset or parallel implementation exists.
+- Gemini response translation retains exact tool-name restoration, including
+  case/underscore collisions. Auth result version/registration guards also cover
+  the fork-only availability-neutral tool-contract failure paths, so a stale
+  stream cannot penalize refreshed or re-registered credentials.
+- Claude system-placement changes retain fork CLI detection, session-date
+  pinning, OAuth tool aliases, caller cache behavior and the original count_tokens
+  contract. Tests requiring the previously deferred explicit-cache subsystem
+  were adapted to existing helpers; its unrelated test file was not imported.
+- Upstream `51bde0ff` preserves configured image-model identities. Follow-up
+  `7811431c` applies payload rules once after JSON/multipart normalization;
+  explicit model overrides and filters remain authoritative on the wire.
+- Upstream `e9c8769a` provides reversible Devin IDs and collision-safe Claude
+  history repair. Follow-up `439e9f12` repairs IDs before generation payload
+  rules, preserving explicit final overrides/filters; local and native upstream
+  count_tokens paths also repair call/result pairs. Tests inspect the actual
+  Connect protobuf rather than requiring the deferred production finalizer.
+  Finalizer-only payload rules for Devin/count_tokens are not claimed supported.
+- `dbc4aad9` ignores only `context.Canceled` after a terminal chunk has actually
+  been delivered. The fork's real-read-error handling remains intact: truncated
+  streams do not receive synthetic completion. Both Vertex authentication paths
+  are covered by local HTTP fixtures.
+- Home selection now bypasses redundant local availability filtering. Existing
+  Home wire fields and dispatch/result contracts are unchanged, so no companion
+  CLIProxyAPIHome source update is required for this local fix. A live Home
+  deployment was not exercised.
+
+#### Deferred or inapplicable non-merge commits
+
+These are explicit exclusions from this selective alignment, not validated
+features. The decision is based on changed contracts and dependencies, not a
+commit's `feat`/`fix` prefix.
+
+| Upstream | Decision and remaining boundary |
+| --- | --- |
+| `6a853dce` | Defer new Grok TTS endpoints, speech handler and model registration. This adds a public audio surface beyond current coding-client compatibility intake. |
+| `306c9bd8` | Defer the coupled speech-only routing, TTS payload finalization and speech error-scoping fixes with `6a853dce`; the speech executor/entrypoint they repair is not adopted. |
+| `da5f109f` | Inapplicable catalog-restore test update: the custom catalog test/source subsystem was not adopted in v8.0.16 and the target test file does not exist in this fork. |
+| `57bde351` | Defer apply_patch-bridge failure usage buffering with the previously deferred bridge/finalizer. Its `RecordApplyPatchStreamFailureWithUsage`/translation-error paths are absent here; keep the fork's responses-tools accounting. |
+| `3b69068e` | Defer attachment/empty-turn conversion changes as a coupled error-propagation change. Its initial checked-request wrapper preserves the old converter signature, but it still changes dispatch rejection and shared translation contracts. Review with the two following converter commits and the fork tool pipeline. |
+| `f51624aa` | Defer unsendable-attachment rejection across converters/executors with `3b69068e`; do not silently discard attachment-only turns or claim this rejection contract is implemented here. |
+| `0f96f568` | Defer the public SDK `RequestTransform`/request converters changing from `[]byte` to `([]byte, error)` (140 files). The fork deliberately retains its existing public signature. |
+| `7c41cd05` | Defer global `github-token`, reload precedence and plugin-store fallback credentials. HTTPS api.github.com scoping exists upstream, but config/persistence and cross-consumer credential precedence require separate adoption review. |
+| `90654da5` | Defer the npm-backed Grok version updater and new background lifecycle/outbound dependency; keep the pinned client version. The lookup uses an HTTP/context timeout outside credential acquisition, conflicting with this fork's current timeout rule. |
+| `34e73c75` | Defer proxy/semver/lifecycle corrections with the updater. They do not remove its lookup timeout contract; no updater is introduced partially. |
+| `2d5351b3` | Defer opt-in Vertex native Interactions mode, credential flag and new streaming path; it depends on the unadopted translation-error/apply_patch helper chain. Existing Vertex generateContent repairs are ported independently. |
+| `54946fa3` | Inapplicable removal of upstream community/QQ README content; fork READMEs already omit that section. |
+| `6331b38b` | Defer new `response.interrupt` control protocol, async downstream reader, session interruption capability and HTTP fallback `response.incomplete`. It needs joint validation with fork frame authorization, delivery/usage accounting, and turn lifecycle; current WS support is retained without claiming interrupts. |
+| `d318bcc3` | Defer late-interrupt response-ID tracking, lifecycle locks and sanitized diagnostics with `6331b38b`. This corrects the new interrupt mechanism, not existing fork behavior; the pair must be adopted together. |
+| `2bc236d2` | Defer Claude Responses compaction: it introduces an extra model request and opaque Antigravity-style capsules, rewrites orphan tool history, and changes budget/replay semantics. It needs separate validation against fork tool contracts and accounting. |
+
+Merge wrappers have no additional independently ported behavior:
+`061001f8` (TTS), `f3703e82` (GitHub token), `7cd8f7ba` (attachments),
+`298649f6` (Grok updater), `84740392` (TTFT), `9612b7ac` (Home).
+Their constituent changes are accounted for above.
+
+#### Validation and evidence boundary
+
+| Check | Baseline / candidate | Result |
+| --- | --- | --- |
+| Full maintenance gate with Go 1.26.4 | clean `5349958c` | PASS: maintenance tooling, pinned gofmt, vet, responses-tools invariants, full suite, seven race-sensitive packages, server build |
+| Same full maintenance gate | source `439e9f12` | PASS: the same seven stages, including full suite and race checks |
+| Identical fixed-request fixtures on complete source trees | baseline `5349958c` / candidate `439e9f12` | Four expected assertion failures on baseline; all four pass on candidate |
+| Remove pre-policy Claude tool-ID repair with a temporary Go overlay | candidate mutation | Both Execute and ExecuteStream regressions fail on the expected behavioral assertion; unmodified source passes |
+
+The paired fixture replay uses identical test inputs, local/no-auth configuration
+and Go 1.26.4 on a complete archived baseline source tree and the candidate.
+The same three frozen regression test files are supplied to both trees (copies
+in the temporary baseline and a Go overlay for the candidate). The four
+leaf cases cover camelCase Gemini system instructions, compact JSON SSE errors,
+and Antigravity completion-token accounting with and without visible tokens.
+A failure counts only after compilation and the expected assertion is observed.
+This is targeted compatibility evidence, not a statistical success-rate estimate.
+
+Raw gate logs, frozen test copies, source archive, overlays and one-off replay
+scripts are under the OS temporary directory, outside Git. Reusable regression
+cases are ordinary Go tests beside the production packages; no test framework
+or process report is added.
+
+**Real client/provider and performance replay: not performed in this intake.**
+There is no new official-client closure rate, provider coverage or token/cost
+saving measurement. Earlier tool-loading reports retain their stated candidate
+and scope; this intake does not promote them to measurements of this new tree.
+No release/tag, tap publication, installation, production configuration change
+or service restart is included.
 
 ## How to fill this in
 
