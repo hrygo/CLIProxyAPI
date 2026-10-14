@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -52,6 +53,34 @@ func getVertexAction(model string, isStream bool) string {
 		return "streamGenerateContent"
 	}
 	return "generateContent"
+}
+
+func isGeminiVertexTerminalStreamChunk(chunk []byte) bool {
+	for _, line := range bytes.Split(chunk, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if bytes.Equal(trimmed, []byte("data: [DONE]")) || bytes.Equal(trimmed, []byte("[DONE]")) {
+			return true
+		}
+		payload := helps.JSONPayload(line)
+		if len(payload) == 0 {
+			continue
+		}
+		eventType := gjson.GetBytes(payload, "type").String()
+		if eventType == "response.completed" || eventType == "response.incomplete" || eventType == "response.done" || eventType == "message_stop" {
+			return true
+		}
+		for _, path := range []string{
+			"choices.0.finish_reason",
+			"response.choices.0.finish_reason",
+			"candidates.0.finishReason",
+			"response.candidates.0.finishReason",
+		} {
+			if finishReason := gjson.GetBytes(payload, path); finishReason.Exists() && strings.TrimSpace(finishReason.String()) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // convertImagenToGeminiResponse converts Imagen API response to Gemini format
@@ -686,6 +715,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
+		var terminalDelivered bool
 		var param any
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -698,12 +728,18 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			for i := range lines {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
+					if isGeminiVertexTerminalStreamChunk(lines[i]) {
+						terminalDelivered = true
+					}
 				case <-ctx.Done():
 					return
 				}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			if terminalDelivered && errors.Is(errScan, context.Canceled) {
+				return
+			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
@@ -840,6 +876,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
+		var terminalDelivered bool
 		var param any
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -852,12 +889,18 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			for i := range lines {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
+					if isGeminiVertexTerminalStreamChunk(lines[i]) {
+						terminalDelivered = true
+					}
 				case <-ctx.Done():
 					return
 				}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
+			if terminalDelivered && errors.Is(errScan, context.Canceled) {
+				return
+			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
 			reporter.PublishFailure(ctx, errScan)
 			select {
