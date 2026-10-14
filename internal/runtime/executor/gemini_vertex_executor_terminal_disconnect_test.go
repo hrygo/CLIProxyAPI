@@ -86,7 +86,7 @@ func TestGeminiVertexStream_ClientDisconnectAfterTerminalEventIsNotFailed(t *tes
 						transport := http.DefaultTransport.(*http.Transport).Clone()
 						transport.Proxy = nil
 						t.Cleanup(transport.CloseIdleConnections)
-						ctx = context.WithValue(ctx, "cliproxy.roundtripper", issue6258RedirectTransport{target: target, base: transport})
+						ctx = context.WithValue(ctx, "cliproxy.roundtripper", vertexTerminalRedirectTransport{target: target, base: transport})
 					}
 
 					capture := &vertexTerminalDisconnectUsageCapture{authID: auth.ID, records: make(chan usage.Record, 1)}
@@ -144,4 +144,17 @@ func TestGeminiVertexStream_ClientDisconnectAfterTerminalEventIsNotFailed(t *tes
 func parseTestURL(t *testing.T, rawURL string) (*url.URL, error) {
 	t.Helper()
 	return url.Parse(rawURL)
+}
+
+type vertexTerminalRedirectTransport struct {
+	target *url.URL
+	base   http.RoundTripper
+}
+
+func (transport vertexTerminalRedirectTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	local := request.Clone(request.Context())
+	local.URL.Scheme = transport.target.Scheme
+	local.URL.Host = transport.target.Host
+	local.Host = transport.target.Host
+	return transport.base.RoundTrip(local)
 }

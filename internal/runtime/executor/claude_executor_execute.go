@@ -141,6 +141,7 @@ func (e *ClaudeExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
+	body = helps.NormalizeClaudeToolCallIDs(body)
 	var touchedPayloadPaths map[string]bool
 	body, touchedPayloadPaths = helps.ApplyPayloadConfigWithTrackedPaths(
 		e.cfg,

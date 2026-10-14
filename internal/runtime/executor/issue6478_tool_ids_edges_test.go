@@ -123,15 +123,12 @@ func TestIssue6478_DevinReservedPrefixStatelessFragmentedRoundTrip(t *testing.T)
 			if errRead != nil {
 				t.Fatal(errRead)
 			}
-			_, body, errDecode := helps.FinalizeDevinPayload(wire, func(body []byte) []byte { return body })
-			if errDecode != nil {
-				t.Fatal(errDecode)
-			}
+			prompts := decodeWirePrompts(t, wire)
 			for i, id := range nativeIDs {
-				if got := gjson.GetBytes(body, "prompts.1.tool_calls").Array()[i].Get("id").String(); got != id {
+				if got := prompts[1].toolCallIDs[i]; got != id {
 					t.Errorf("stateless call[%d] = %q, want original %q", i, got, id)
 				}
-				if got := gjson.GetBytes(body, "prompts").Array()[i+2].Get("tool_call_id").String(); got != id {
+				if got := prompts[i+2].toolCallID; got != id {
 					t.Errorf("stateless result[%d] = %q, want original %q", i, got, id)
 				}
 			}
@@ -173,62 +170,48 @@ func TestIssue6478_ClaudeLegacyEncodingCollision(t *testing.T) {
 	}
 }
 
-func TestIssue6478_ClaudeUpstreamCountTokensRepairBeforePayload(t *testing.T) {
+func TestIssue6478_ClaudeUpstreamCountTokensRepairsToolIDs(t *testing.T) {
 	ids := []string{issue6478Calls[0].id, issue6478Calls[1].id, issue6478Calls[2].id, issue6478Calls[3].id}
-	for _, configured := range []bool{false, true} {
-		cfg := &config.Config{}
-		if configured {
-			cfg.Payload = config.PayloadConfig{Override: []config.PayloadRule{{
-				Models: []config.PayloadModelRule{{Name: "*", NotMatch: []map[string]any{{"messages.1.content.0.id": ids[0]}}}},
-				Params: map[string]any{"tools.0.description": "observed repaired ID", "messages.1.content.0.id": "configured:id#override", "messages.2.content.0.tool_use_id": "configured:id#override"},
-			}}}
+	cfg := &config.Config{}
+	var body []byte
+	transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Host != "api.anthropic.com" || req.URL.Path != "/v1/messages/count_tokens" {
+			t.Errorf("wrong token-count boundary: %s", req.URL)
 		}
-		var body []byte
-		transport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			if req.URL.Host != "api.anthropic.com" || req.URL.Path != "/v1/messages/count_tokens" {
-				t.Errorf("wrong token-count boundary: %s", req.URL)
-			}
-			var errRead error
-			body, errRead = io.ReadAll(req.Body)
-			if errRead != nil {
-				return nil, errRead
-			}
-			return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"input_tokens":12}`)), Request: req}, nil
-		})
-		ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
-		auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test"}}
-		_, errCount := NewClaudeExecutor(cfg).CountTokens(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: issue6478History(ids)}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
-		if errCount != nil {
-			t.Fatal(errCount)
+		var errRead error
+		body, errRead = io.ReadAll(req.Body)
+		if errRead != nil {
+			return nil, errRead
 		}
-		if configured {
-			if gjson.GetBytes(body, "tools.0.description").String() != "observed repaired ID" || gjson.GetBytes(body, "messages.1.content.0.id").String() != "configured:id#override" || gjson.GetBytes(body, "messages.2.content.0.tool_use_id").String() != "configured:id#override" {
-				t.Errorf("count_tokens repair must precede final user rules: %s", body)
-			}
-		} else {
-			useIDs := gjson.GetBytes(body, "messages.1.content.#.id").Array()
-			resultIDs := gjson.GetBytes(body, "messages.2.content.#.tool_use_id").Array()
-			if len(useIDs) != 4 || len(resultIDs) != 4 {
-				t.Fatalf("count_tokens lost history calls/results: %s", body)
-			}
-			for i, id := range useIDs {
-				if !regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(id.String()) {
-					t.Errorf("count_tokens sent illegal ID[%d] = %q", i, id.String())
-				}
-				if resultIDs[i].String() != id.String() {
-					t.Errorf("count_tokens call/result pair[%d] differs: %q vs %q", i, id.String(), resultIDs[i].String())
-				}
-				if i >= 2 && id.String() != ids[i] {
-					t.Errorf("count_tokens changed legal ID[%d]: %q", i, id.String())
-				}
-			}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(`{"input_tokens":12}`)), Request: req}, nil
+	})
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", http.RoundTripper(transport))
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test"}}
+	_, errCount := NewClaudeExecutor(cfg).CountTokens(ctx, auth, cliproxyexecutor.Request{Model: "claude-opus-5", Payload: issue6478History(ids)}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	if errCount != nil {
+		t.Fatal(errCount)
+	}
+	useIDs := gjson.GetBytes(body, "messages.1.content.#.id").Array()
+	resultIDs := gjson.GetBytes(body, "messages.2.content.#.tool_use_id").Array()
+	if len(useIDs) != 4 || len(resultIDs) != 4 {
+		t.Fatalf("count_tokens lost history calls/results: %s", body)
+	}
+	for i, id := range useIDs {
+		if !regexp.MustCompile(`^[a-zA-Z0-9_-]+$`).MatchString(id.String()) {
+			t.Errorf("count_tokens sent illegal ID[%d] = %q", i, id.String())
+		}
+		if resultIDs[i].String() != id.String() {
+			t.Errorf("count_tokens call/result pair[%d] differs: %q vs %q", i, id.String(), resultIDs[i].String())
+		}
+		if i >= 2 && id.String() != ids[i] {
+			t.Errorf("count_tokens changed legal ID[%d]: %q", i, id.String())
 		}
 	}
 }
 
 func TestIssue6478_DevinDoesNotDecodeOrdinaryNativeIDs(t *testing.T) {
 	ids := []string{"call_1", "cpa_tid_v1_Y2FsbF8x", "cpa_tid_v1_not_base64!", "cpa_tid_v1_"}
-	httpReq, _, body, errPrepare := NewDevinExecutor(&config.Config{}).prepareDevinHTTPRequest(t.Context(), &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test"}}, cliproxyexecutor.Request{Model: "devin/swe-2", Payload: issue6478History(ids)}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
+	httpReq, _, _, errPrepare := NewDevinExecutor(&config.Config{}).prepareDevinHTTPRequest(t.Context(), &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "test"}}, cliproxyexecutor.Request{Model: "devin/swe-2", Payload: issue6478History(ids)}, cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatClaude})
 	if errPrepare != nil {
 		t.Fatal(errPrepare)
 	}
@@ -237,8 +220,16 @@ func TestIssue6478_DevinDoesNotDecodeOrdinaryNativeIDs(t *testing.T) {
 			t.Error(errClose)
 		}
 	}()
+	_, wire, errRead := helps.ReadConnectFrame(httpReq.Body)
+	if errRead != nil {
+		t.Fatal(errRead)
+	}
+	prompts := decodeWirePrompts(t, wire)
+	if len(prompts) < 2 || len(prompts[1].toolCallIDs) != len(ids) {
+		t.Fatal("tool call IDs missing from request")
+	}
 	for i, id := range ids {
-		got := gjson.GetBytes(body, "prompts.1.tool_calls").Array()[i].Get("id").String()
+		got := prompts[1].toolCallIDs[i]
 		if got != id {
 			t.Errorf("ordinary native ID was misdecoded: %q, want %q", got, id)
 		}

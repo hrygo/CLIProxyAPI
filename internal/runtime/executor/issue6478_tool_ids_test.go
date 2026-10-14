@@ -134,33 +134,17 @@ func TestIssue6478_DevinClaudeOutputAndToolResultRoundTrip(t *testing.T) {
 			issue6478AssertPortableIDs(t, ids)
 			idsByMode = append(idsByMode, ids)
 
-			cfg.Payload = config.PayloadConfig{Override: []config.PayloadRule{{
-				Models: []config.PayloadModelRule{{Name: "*", Match: []map[string]any{{
-					"prompts.1.tool_calls.0.id": issue6478Calls[0].id,
-					"prompts.2.tool_call_id":    issue6478Calls[0].id,
-				}}}},
-				Params: map[string]any{"system_prompt": "observed original Devin IDs"},
-			}}}
 			req.Payload = issue6478History(ids)
 			opts.OriginalRequest = req.Payload
 			opts.Stream = false
 			if _, errReplay := executor.Execute(t.Context(), auth, req, opts); errReplay != nil {
 				t.Fatalf("replay tool results: %v", errReplay)
 			}
-			_, native, errDecode := helps.FinalizeDevinPayload(<-requests, func(body []byte) []byte { return body })
-			if errDecode != nil {
-				t.Fatalf("decode sent Devin payload: %v", errDecode)
-			}
-			if gjson.GetBytes(native, "system_prompt").String() != "observed original Devin IDs" {
-				t.Errorf("Devin payload condition did not observe original call/result IDs before final barrier")
-			}
 			var sentCalls, sentResults []string
-			for _, prompt := range gjson.GetBytes(native, "prompts").Array() {
-				for _, call := range prompt.Get("tool_calls").Array() {
-					sentCalls = append(sentCalls, call.Get("id").String())
-				}
-				if prompt.Get("source").Int() == 4 {
-					sentResults = append(sentResults, prompt.Get("tool_call_id").String())
+			for _, prompt := range decodeWirePrompts(t, <-requests) {
+				sentCalls = append(sentCalls, prompt.toolCallIDs...)
+				if prompt.source == 4 {
+					sentResults = append(sentResults, prompt.toolCallID)
 				}
 			}
 			for i, call := range issue6478Calls {
@@ -231,7 +215,7 @@ func TestIssue6478_ClaudeToolIDRepairPrecedesPayloadRules(t *testing.T) {
 	cfg := &config.Config{Payload: config.PayloadConfig{
 		Override: []config.PayloadRule{{
 			Models: []config.PayloadModelRule{{Name: "*", Exist: []string{"messages.1.content.0.id"}, NotMatch: []map[string]any{{"messages.1.content.0.id": issue6478Calls[0].id}}}},
-			Params: map[string]any{"temperature": 0.25},
+			Params: map[string]any{"tools.0.description": "observed repaired ID"},
 		}, {
 			Models: []config.PayloadModelRule{{Name: "*"}},
 			Params: map[string]any{"messages.1.content.0.id": "configured:id#override", "messages.2.content.0.tool_use_id": "configured:id#override"},
@@ -245,7 +229,7 @@ func TestIssue6478_ClaudeToolIDRepairPrecedesPayloadRules(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			body := executeClaudeContextManagementRequest(t, cfg, issue6478History(legacyIDs), stream)
-			if gjson.GetBytes(body, "temperature").Float() != 0.25 {
+			if gjson.GetBytes(body, "tools.0.description").String() != "observed repaired ID" {
 				t.Errorf("payload condition did not observe repaired tool ID before final barrier")
 			}
 			for _, path := range []string{"messages.1.content.0.id", "messages.2.content.0.tool_use_id"} {

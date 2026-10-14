@@ -2487,10 +2487,11 @@ func TestDevinExecutor_ClaudeToolResultEndToEnd(t *testing.T) {
 }
 
 type decodedWirePrompt struct {
-	source     int
-	content    string
-	toolCallID string
-	images     []helps.DevinImage
+	toolCallIDs []string
+	source      int
+	content     string
+	toolCallID  string
+	images      []helps.DevinImage
 }
 
 func decodeWirePrompts(t *testing.T, reqBytes []byte) []decodedWirePrompt {
@@ -2533,6 +2534,33 @@ func decodeWirePrompts(t *testing.T, reqBytes []byte) []decodedWirePrompt {
 					}
 					p.content = val
 					pb = pb[vm:]
+				case pnum == 6 && ptyp == protowire.BytesType:
+					call, consumed := protowire.ConsumeBytes(pb)
+					if consumed < 0 {
+						t.Fatal("invalid tool call bytes")
+					}
+					pb = pb[consumed:]
+					for len(call) > 0 {
+						number, kind, tagSize := protowire.ConsumeTag(call)
+						if tagSize < 0 {
+							t.Fatal("invalid tool call tag")
+						}
+						call = call[tagSize:]
+						if number == 1 && kind == protowire.BytesType {
+							id, size := protowire.ConsumeString(call)
+							if size < 0 {
+								t.Fatal("invalid tool call ID")
+							}
+							p.toolCallIDs = append(p.toolCallIDs, id)
+							call = call[size:]
+						} else {
+							size := protowire.ConsumeFieldValue(number, kind, call)
+							if size < 0 {
+								t.Fatal("invalid tool call field")
+							}
+							call = call[size:]
+						}
+					}
 				case pnum == 7 && ptyp == protowire.BytesType:
 					val, vm := protowire.ConsumeString(pb)
 					if vm < 0 {
