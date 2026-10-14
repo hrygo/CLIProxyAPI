@@ -2261,12 +2261,10 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			return nil
 		})
 
+		requestRead := make(chan error, 1)
 		go func() {
-			for {
-				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
-					return
-				}
-			}
+			_, _, errRead := conn.ReadMessage()
+			requestRead <- errRead
 		}()
 
 		select {
@@ -2286,6 +2284,18 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_WithSession(t *testing.T) {
 			pongDeliveredOnce.Do(func() { close(pongDeliveredDuringWrite) })
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress")
+			return
+		}
+
+		// Do not complete the response until the released upload reaches the server.
+		select {
+		case errRead := <-requestRead:
+			if errRead != nil {
+				t.Errorf("read request after pong delivery: %v", errRead)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for request after pong delivery")
 			return
 		}
 
@@ -2361,12 +2371,10 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			return nil
 		})
 
+		requestRead := make(chan error, 1)
 		go func() {
-			for {
-				if _, _, errReadLoop := conn.ReadMessage(); errReadLoop != nil {
-					return
-				}
-			}
+			_, _, errRead := conn.ReadMessage()
+			requestRead <- errRead
 		}()
 
 		select {
@@ -2386,6 +2394,18 @@ func TestXAIWebsockets_KeepalivePingDuringUpload_Sessionless(t *testing.T) {
 			pongDeliveredOnce.Do(func() { close(pongDeliveredDuringWrite) })
 		case <-time.After(2 * time.Second):
 			t.Errorf("pong was not received while payload write was in progress on sessionless connection")
+			return
+		}
+
+		// Do not complete the response until the released upload reaches the server.
+		select {
+		case errRead := <-requestRead:
+			if errRead != nil {
+				t.Errorf("read request after pong delivery: %v", errRead)
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Error("timed out waiting for request after pong delivery")
 			return
 		}
 
