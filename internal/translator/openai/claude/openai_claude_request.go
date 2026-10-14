@@ -31,6 +31,11 @@ func ConvertClaudeRequestToOpenAIWithCompat(modelName string, inputRawJSON []byt
 
 func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool, preserveThinkingBlocks bool) []byte {
 	rawJSON := inputRawJSON
+	// GLM's strict Chat endpoint rejects the non-standard name member on tool
+	// results. Keep call identity in tool_call_id and the preceding function
+	// call. Other compatibility routes retain their existing name extension,
+	// including Gemini-backed endpoints that require it (upstream #5859).
+	strictToolResults := strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "glm-")
 	// Base OpenAI Chat Completions API template
 	out := []byte(`{"model":"","messages":[]}`)
 
@@ -242,7 +247,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						toolUseID := part.Get("tool_use_id").String()
 						toolResultJSON := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 						toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "tool_call_id", toolUseID)
-						if toolName := toolNameByID[toolUseID]; toolName != "" {
+						if toolName := toolNameByID[toolUseID]; toolName != "" && !strictToolResults {
 							toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "name", toolName)
 						}
 						toolResultContent, toolResultImages := convertClaudeToolResultContent(part.Get("content"))

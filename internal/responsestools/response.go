@@ -210,18 +210,35 @@ func restoreSyntheticNullPath(value any, path []string) bool {
 }
 
 func isOrdinaryToolSearchCall(item map[string]any, contract *ToolContract) bool {
-	if stringField(item, "type") != "function_call" || contract == nil || !contract.SearchBridged {
-		return false
-	}
-	name, ok := item["name"].(string)
-	expected := ToolSearchName
-	if contract.SearchAlias != "" {
-		expected = contract.SearchAlias
-	}
-	return ok && name == expected
+	return stringField(item, "type") == "function_call" &&
+		isSearchFunctionIdentity(contract, stringField(item, "name"), stringField(item, "namespace"))
 }
 
-// rewriteToolSearchItemChecked turns one bridged function call back into the
+func isSearchFunctionIdentity(contract *ToolContract, name, namespace string) bool {
+	if contract == nil {
+		return false
+	}
+	if contract.SearchBridged {
+		expected := ToolSearchName
+		if contract.SearchAlias != "" {
+			expected = contract.SearchAlias
+		}
+		return name == expected
+	}
+	// Codex Responses Lite sometimes exposes this native built-in as a
+	// function. Match both names exactly and never steal a declared tool.
+	if !contract.ClientSearch || namespace != ToolSearchName || name != "tool_search_tool" {
+		return false
+	}
+	for _, identity := range contract.Identities {
+		if identity.Namespace == namespace && identity.Name == name {
+			return false
+		}
+	}
+	return true
+}
+
+// rewriteToolSearchItemChecked turns one search function alias back into the
 // client search item. The upstream minted the id in the function_call
 // namespace and the client stores it as given, so it has to leave in the
 // namespace the new type requires.

@@ -714,6 +714,10 @@ type usageTTFTRoundTripper struct {
 }
 
 func (t usageTTFTRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return observeHTTPAttempt(req, t.roundTrip, t.reporter.httpAttemptIdentity)
+}
+
+func (t usageTTFTRoundTripper) roundTrip(req *http.Request) (*http.Response, error) {
 	cliproxyexecutor.MarkUpstreamAttempt(req.Context())
 	t.reporter.StartResponseTTFT()
 	resp, errRoundTrip := t.base.RoundTrip(req)

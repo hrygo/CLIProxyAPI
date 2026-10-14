@@ -1,6 +1,8 @@
 package responsestools
 
 import (
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -11,6 +13,98 @@ func bridgeAttemptPolicy() RoutePolicy {
 		CustomTools:   CustomToolsFunction,
 		CustomGrammar: CustomGrammarDescribe,
 		Schema:        SchemaPolicy{LocalRefs: LocalRefsPreserve},
+	}
+}
+
+func TestPrepareCustomNotificationsRejectUnsupportedBridge(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{"notification and final text", `{"tools":[{"type":"custom","name":"exec"}],"input":[{"type":"custom_tool_call","id":"ctc_exec","call_id":"c1","name":"exec","input":"notify(\"hello\"); text(\"done\")"},{"type":"custom_tool_call_output","id":"ctco_notice","call_id":"c1","output":"hello"},{"type":"custom_tool_call_output","id":"ctco_final","call_id":"c1","output":"Script completed"}]}`},
+		{"structured result after notification", `{"tools":[{"type":"custom","name":"exec"}],"input":[{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"notify(\"hello\")"},{"type":"custom_tool_call_output","call_id":"c1","output":"hello"},{"type":"custom_tool_call_output","call_id":"c1","output":[{"type":"input_text","text":"Script completed\n結果"}]}]}`},
+		{"late output after another call", `{"tools":[{"type":"custom","name":"exec"}],"input":[{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"notify(\"started\")"},{"type":"custom_tool_call_output","call_id":"c1","output":"started"},{"type":"custom_tool_call","call_id":"c2","name":"exec","input":"text(\"second\")"},{"type":"custom_tool_call_output","call_id":"c2","output":"second"},{"type":"custom_tool_call_output","call_id":"c1","output":"first finished"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			for _, mode := range []CustomToolsMode{CustomToolsFunction, CustomToolsStrip} {
+				policy := bridgeAttemptPolicy()
+				policy.CustomTools = mode
+				prepared, err := Prepare([]byte(test.body), policy, DefaultLimits(), NewLimiter(DefaultLimits()))
+				var compatibility *ToolCompatibilityError
+				if !errors.As(err, &compatibility) || compatibility.Reason != ReasonUnsupportedProtocol {
+					t.Fatalf("mode %s reason = %v, want unsupported protocol", mode, err)
+				}
+				if compatibility.StatusCode() != http.StatusUnprocessableEntity || !compatibility.IsRequestScoped() || !compatibility.AvailabilityNeutral() {
+					t.Fatalf("mode %s rejection could affect upstream availability: %v", mode, err)
+				}
+				if prepared.Attempt != nil || len(prepared.Body) != 0 {
+					t.Fatalf("mode %s produced an outbound attempt for unsupported outputs", mode)
+				}
+			}
+		})
+	}
+}
+
+func TestPrepareCustomNotificationsKeepIdentityGuards(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{"duplicate call", `{"input":[{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"one"},{"type":"custom_tool_call_output","call_id":"c1","output":"notice"},{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"two"}]}`},
+		{"orphan output", `{"input":[{"type":"custom_tool_call_output","call_id":"c1","output":"notice"}]}`},
+		{"output before call", `{"input":[{"type":"custom_tool_call_output","call_id":"c1","output":"notice"},{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"one"}]}`},
+		{"missing output call id", `{"input":[{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"one"},{"type":"custom_tool_call_output","output":"notice"}]}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			multiple := bridgeAttemptPolicy()
+			multiple.Match.UpstreamFormat = "codex"
+			multiple.CustomOutputReplay = CustomOutputReplayMultiple
+			for _, policy := range []RoutePolicy{bridgeAttemptPolicy(), multiple} {
+				prepared, err := Prepare([]byte(test.body), policy, DefaultLimits(), NewLimiter(DefaultLimits()))
+				var compatibility *ToolCompatibilityError
+				if !errors.As(err, &compatibility) || compatibility.Reason != ReasonInvalidCustomInput {
+					t.Fatalf("reason = %v, want invalid custom input", err)
+				}
+				if prepared.Attempt != nil || len(prepared.Body) != 0 {
+					t.Fatal("invalid custom identity history produced an outbound attempt")
+				}
+			}
+		})
+	}
+}
+
+func TestPrepareMultipleCustomOutputsRequiresNativeRoute(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{"", "openai", "claude", "gemini", "unknown"} {
+		policy := bridgeAttemptPolicy()
+		policy.Match.UpstreamFormat = format
+		policy.CustomOutputReplay = CustomOutputReplayMultiple
+		limits := DefaultLimits()
+		limiter := NewLimiter(limits)
+		prepared, err := Prepare([]byte(`{"input":[]}`), policy, limits, limiter)
+		var compatibility *ToolCompatibilityError
+		if !errors.As(err, &compatibility) || compatibility.Reason != ReasonInvalidConfiguration || prepared.Attempt != nil {
+			t.Fatalf("format %q enabled unbound multi-output adaptation: %v", format, err)
+		}
+		if n, b := limiter.Usage(); n != 0 || b != 0 {
+			t.Fatalf("invalid policy reserved state: %d/%d", n, b)
+		}
+	}
+}
+
+func TestPrepareNativeCustomNotificationsRemainUnchanged(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"tools":[{"type":"custom","name":"exec"}],"input":[{"type":"custom_tool_call","call_id":"c1","name":"exec","input":"notify(\"hello\")"},{"type":"custom_tool_call_output","call_id":"c1","output":"hello"},{"type":"custom_tool_call_output","call_id":"c1","output":"Script completed"}]}`)
+	prepared, err := Prepare(body, reviewRoutePolicy(ClientSearchNative, CustomToolsInherit), DefaultLimits(), NewLimiter(DefaultLimits()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if prepared.Attempt != nil || string(prepared.Body) != string(body) {
+		t.Fatal("native custom notification history was adapted")
 	}
 }
 

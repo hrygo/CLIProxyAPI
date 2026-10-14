@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
@@ -39,7 +40,7 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 	trimmed := bytes.TrimSpace(payload)
 	if len(trimmed) == 0 {
 		if wire.SearchBridgeActive || len(wire.SearchAliases) > 0 || len(wire.CustomAliases) > 0 ||
-			len(wire.HistoryAliases) > 0 || len(wire.HistoryCalls) > 0 {
+			len(wire.HistoryAliases) > 0 || len(wire.HistoryCalls) > 0 || len(wire.RequiredFunctionNames) > 0 {
 			return wireError(http.StatusUnprocessableEntity, "post rule removed all bridged tool declarations")
 		}
 		return nil
@@ -61,7 +62,7 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 		len(wire.RequiredFunctionNames) == 0 {
 		return nil
 	}
-	declared := collectOutboundToolNames(root)
+	declared, declarationCounts := collectOutboundToolNames(root)
 	if (wire.SearchBridgeActive || len(wire.SearchAliases) > 0) && containsOutboundToolSearchDeclaration(root) {
 		return wireError(http.StatusUnprocessableEntity, "post rule reintroduced the bridged tool_search built-in")
 	}
@@ -81,6 +82,25 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 			return wireError(http.StatusUnprocessableEntity, "post rule removed required function tool %q", name)
 		}
 	}
+	if wire.ExactFunctionNames {
+		allowed := make(map[string]struct{}, len(wire.RequiredFunctionNames))
+		for _, name := range wire.RequiredFunctionNames {
+			allowed[name] = struct{}{}
+		}
+		for name := range declared {
+			if _, ok := allowed[name]; !ok {
+				return wireError(http.StatusUnprocessableEntity, "post rule introduced an inactive function tool %q", name)
+			}
+		}
+		for name, count := range declarationCounts {
+			if count != 1 {
+				return wireError(http.StatusUnprocessableEntity, "post rule duplicated active function tool %q", name)
+			}
+		}
+		if err := validateExactOutboundToolChoice(root, allowed); err != nil {
+			return err
+		}
+	}
 	if len(wire.HistoryCalls) > 0 {
 		expected := make(map[string]map[string]struct{}, len(wire.HistoryCalls))
 		bridgedAliases := make(map[string]struct{}, len(wire.SearchAliases)+len(wire.CustomAliases)+len(wire.HistoryAliases))
@@ -94,6 +114,7 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 			bridgedAliases[alias] = struct{}{}
 		}
 		expectedCallIDs := make(map[string]struct{}, len(wire.HistoryCalls))
+		expectedOutputs := make(map[string]int, len(wire.HistoryCalls))
 		for _, call := range wire.HistoryCalls {
 			if call.CallID == "" || call.Name == "" {
 				return wireError(http.StatusUnprocessableEntity, "bridged history reference is incomplete")
@@ -110,8 +131,12 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 			}
 			expected[call.CallID] = allowedNames
 			expectedCallIDs[call.CallID] = struct{}{}
+			expectedOutputs[call.CallID] = 1
+			if wire.MultipleCustomOutputs && call.OutputCount > 1 {
+				expectedOutputs[call.CallID] = call.OutputCount
+			}
 		}
-		history := collectOutboundToolHistory(root, bridgedAliases, expectedCallIDs)
+		history := collectOutboundToolHistory(root, bridgedAliases, expectedCallIDs, expectedOutputs)
 		if history.invalid {
 			return wireError(http.StatusUnprocessableEntity, "post rule duplicated or corrupted outbound tool history")
 		}
@@ -121,8 +146,14 @@ func ValidateOutboundToolContract(ctx context.Context, payload []byte, maxActive
 			if !exists || !allowedName || history.callCounts[call.CallID] != 1 {
 				return wireError(http.StatusUnprocessableEntity, "post rule changed bridged history identity")
 			}
-			if history.outputCounts[call.CallID] != 1 {
+			if history.outputCounts[call.CallID] != expectedOutputs[call.CallID] {
 				return wireError(http.StatusUnprocessableEntity, "post rule removed bridged history output")
+			}
+		}
+		if wire.MultipleCustomOutputs {
+			events, err := cliproxyexecutor.NativeWireToolHistoryEvents(payload)
+			if err != nil || !slices.Equal(events, wire.NativeHistoryEvents) {
+				return wireError(http.StatusUnprocessableEntity, "post rule changed native tool call arguments, result content, identity or order")
 			}
 		}
 		for callID, name := range history.calls {
@@ -162,23 +193,24 @@ func ValidateOutboundToolContractRequest(ctx context.Context, request *http.Requ
 	return ValidateOutboundToolContract(ctx, payload, maxActiveToolBytes)
 }
 
-func collectOutboundToolNames(root map[string]any) map[string]struct{} {
+func collectOutboundToolNames(root map[string]any) (map[string]struct{}, map[string]int) {
 	out := make(map[string]struct{})
+	counts := make(map[string]int)
 	for _, toolRoot := range outboundToolRoots(root) {
-		collectOutboundToolArray(toolRoot["tools"], "", out)
+		collectOutboundToolArray(toolRoot["tools"], "", out, counts)
 		if input, ok := toolRoot["input"].([]any); ok {
 			for _, rawItem := range input {
 				item, okItem := rawItem.(map[string]any)
 				if okItem && responsestools.IsToolDeclarationInput(item) {
-					collectOutboundToolArray(item["tools"], "", out)
+					collectOutboundToolArray(item["tools"], "", out, counts)
 				}
 			}
 		}
 	}
-	return out
+	return out, counts
 }
 
-func collectOutboundToolArray(value any, inheritedNamespace string, names map[string]struct{}) {
+func collectOutboundToolArray(value any, inheritedNamespace string, names map[string]struct{}, counts map[string]int) {
 	tools, ok := value.([]any)
 	if !ok {
 		return
@@ -196,7 +228,7 @@ func collectOutboundToolArray(value any, inheritedNamespace string, names map[st
 			} else if inheritedNamespace != "" {
 				namespace = inheritedNamespace
 			}
-			collectOutboundToolArray(tool["tools"], namespace, names)
+			collectOutboundToolArray(tool["tools"], namespace, names, counts)
 			continue
 		}
 		namespace := strings.TrimSpace(stringField(tool, "namespace"))
@@ -206,9 +238,10 @@ func collectOutboundToolArray(value any, inheritedNamespace string, names map[st
 		if name := outboundFunctionName(tool); name != "" {
 			names[strings.TrimSpace(name)] = struct{}{}
 			names[qualifyOutboundToolName(namespace, name)] = struct{}{}
+			counts[qualifyOutboundToolName(namespace, name)]++
 		}
-		collectFunctionDeclarationNames(tool["function_declarations"], namespace, names)
-		collectFunctionDeclarationNames(tool["functionDeclarations"], namespace, names)
+		collectFunctionDeclarationNames(tool["function_declarations"], namespace, names, counts)
+		collectFunctionDeclarationNames(tool["functionDeclarations"], namespace, names, counts)
 	}
 }
 
@@ -259,7 +292,7 @@ func outboundToolRoots(root map[string]any) []map[string]any {
 	return roots
 }
 
-func collectFunctionDeclarationNames(value any, inheritedNamespace string, names map[string]struct{}) {
+func collectFunctionDeclarationNames(value any, inheritedNamespace string, names map[string]struct{}, counts map[string]int) {
 	declarations, ok := value.([]any)
 	if !ok {
 		return
@@ -276,8 +309,70 @@ func collectFunctionDeclarationNames(value any, inheritedNamespace string, names
 			}
 			names[strings.TrimSpace(name)] = struct{}{}
 			names[qualifyOutboundToolName(namespace, name)] = struct{}{}
+			counts[qualifyOutboundToolName(namespace, name)]++
 		}
 	}
+}
+
+// validateExactOutboundToolChoice checks active function identities and requires
+// selected hosted tools to have a final declaration. Hosted declaration policy
+// remains provider-owned; this does not grant or verify execution permission.
+func validateExactOutboundToolChoice(root map[string]any, allowed map[string]struct{}) error {
+	check := func(name string) error {
+		if _, ok := allowed[name]; !ok {
+			return wireError(http.StatusUnprocessableEntity, "post rule forced an inactive function tool %q", name)
+		}
+		return nil
+	}
+	for _, toolRoot := range outboundToolRoots(root) {
+		checkChoice := func(choice map[string]any) error {
+			toolType := stringField(choice, "type")
+			switch toolType {
+			case "function":
+				return check(outboundToolName(choice))
+			case "", "auto", "none", "required", "allowed_tools":
+				return nil
+			}
+			tools, _ := toolRoot["tools"].([]any)
+			for _, rawTool := range tools {
+				tool, _ := rawTool.(map[string]any)
+				if stringField(tool, "type") != toolType {
+					continue
+				}
+				// A provider-hosted MCP choice must refer to its declared server.
+				if label := stringField(choice, "server_label"); label != "" && label != stringField(tool, "server_label") {
+					continue
+				}
+				return nil
+			}
+			return wireError(http.StatusUnprocessableEntity, "post rule selected an undeclared hosted tool %q", toolType)
+		}
+		if choice, ok := toolRoot["tool_choice"].(map[string]any); ok {
+			if err := checkChoice(choice); err != nil {
+				return err
+			}
+			if stringField(choice, "type") == "allowed_tools" {
+				tools, _ := choice["tools"].([]any)
+				for _, rawTool := range tools {
+					tool, _ := rawTool.(map[string]any)
+					if err := checkChoice(tool); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		toolConfig, _ := toolRoot["toolConfig"].(map[string]any)
+		callingConfig, _ := toolConfig["functionCallingConfig"].(map[string]any)
+		if names, ok := callingConfig["allowedFunctionNames"].([]any); ok {
+			for _, rawName := range names {
+				name, _ := rawName.(string)
+				if err := check(name); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func qualifyOutboundToolName(namespace, name string) string {
@@ -319,7 +414,7 @@ type outboundToolHistory struct {
 	invalid      bool
 }
 
-func collectOutboundToolHistory(root map[string]any, bridgedAliases, expectedCallIDs map[string]struct{}) outboundToolHistory {
+func collectOutboundToolHistory(root map[string]any, bridgedAliases, expectedCallIDs map[string]struct{}, expectedOutputs map[string]int) outboundToolHistory {
 	history := outboundToolHistory{
 		calls:        make(map[string]string),
 		callCounts:   make(map[string]int),
@@ -349,7 +444,11 @@ func collectOutboundToolHistory(root map[string]any, bridgedAliases, expectedCal
 	recordOutput := func(callID string) {
 		callID = strings.TrimSpace(callID)
 		if callID != "" {
-			if history.outputCounts[callID] > 0 {
+			limit := expectedOutputs[callID]
+			if limit < 1 {
+				limit = 1
+			}
+			if history.outputCounts[callID] >= limit {
 				history.invalid = true
 			}
 			history.outputCounts[callID]++

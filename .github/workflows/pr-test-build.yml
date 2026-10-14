@@ -34,6 +34,12 @@ jobs:
           cache: true
       - name: Check maintenance tooling
         run: python3 ops/tests/test_maintenance.py
+      - name: Check performance accounting
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/tool-loading-pycache
+        run: |
+          python3 -m unittest discover -s ops/tool-loading/tests -p test_report.py
+          python3 -m unittest discover -s ops/tool-loading/tests -p test_usage.py
       # Upstream refreshes this catalog from the network in its PR CI. We
       # validate the tracked copy offline instead, so the gate stays hermetic
       # and never mutates the checkout.

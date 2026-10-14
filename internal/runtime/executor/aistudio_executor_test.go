@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
@@ -233,7 +234,7 @@ func TestAIStudioExecutorWithoutRelaySessionDoesNotMarkUpstreamAttempt(t *testin
 }
 
 func TestAIStudioExecutorExecuteStartsTTFTBeforeRelayWait(t *testing.T) {
-	const authID = "aistudio-ttft-auth"
+	authID := "aistudio-ttft-" + uuid.NewString()
 	delay := 40 * time.Millisecond
 	connected := make(chan struct{})
 	var connectedOnce sync.Once
@@ -319,7 +320,7 @@ func TestAIStudioExecutorExecuteStartsTTFTBeforeRelayWait(t *testing.T) {
 		t.Fatal(errClient)
 	}
 
-	record := waitForAIStudioUsageRecord(t, plugin.records, "gemini-3.1-pro-preview")
+	record := waitForAIStudioUsageRecord(t, plugin.records, "gemini-3.1-pro-preview", authID)
 	if record.TTFT < delay {
 		t.Fatalf("ttft = %v, want >= %v", record.TTFT, delay)
 	}
@@ -339,17 +340,32 @@ func (p *captureAIStudioUsagePlugin) HandleUsage(_ context.Context, record usage
 	}
 }
 
-func waitForAIStudioUsageRecord(t *testing.T, records <-chan usage.Record, model string) usage.Record {
+func waitForAIStudioUsageRecord(t *testing.T, records <-chan usage.Record, model, authID string) usage.Record {
 	t.Helper()
 	timeout := time.After(2 * time.Second)
 	for {
 		select {
 		case record := <-records:
-			if record.Provider == "aistudio" && record.Model == model {
+			if record.Provider == "aistudio" && record.Model == model && record.AuthID == authID {
 				return record
 			}
 		case <-timeout:
 			t.Fatalf("timed out waiting for AI Studio usage record")
 		}
+	}
+}
+
+func TestWaitForAIStudioUsageRecordIgnoresOtherExecutions(t *testing.T) {
+	const model = "gemini-3.1-pro-preview"
+	records := make(chan usage.Record, 4)
+	records <- usage.Record{Provider: "aistudio", Model: model, AuthID: "previous-execution", TTFT: time.Microsecond}
+	records <- usage.Record{Provider: "other", Model: model, AuthID: "current-execution"}
+	records <- usage.Record{Provider: "aistudio", Model: "other-model", AuthID: "current-execution"}
+	want := usage.Record{Provider: "aistudio", Model: model, AuthID: "current-execution", TTFT: 40 * time.Millisecond}
+	records <- want
+
+	got := waitForAIStudioUsageRecord(t, records, model, want.AuthID)
+	if got.AuthID != want.AuthID || got.TTFT != want.TTFT {
+		t.Fatalf("selected usage from another execution: auth = %q, ttft = %v", got.AuthID, got.TTFT)
 	}
 }

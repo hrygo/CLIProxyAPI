@@ -175,7 +175,26 @@ func rewriteToolList(value any, contract *ToolContract) bool {
 	return changed
 }
 
-// RewriteToolChoice converts a tool_search choice into the ordinary function
+// rewriteDiscoveredToolChoice aligns discovered function choices with their
+// active declarations without changing the route's search protocol.
+func rewriteDiscoveredToolChoice(value any, contract *ToolContract) bool {
+	choice, ok := value.(map[string]any)
+	if !ok || contract == nil {
+		return false
+	}
+	changed := rewriteDiscoveredFunctionChoice(choice, contract)
+	if stringField(choice, "type") == "allowed_tools" {
+		tools, _ := choice["tools"].([]any)
+		for _, rawTool := range tools {
+			if tool, okTool := rawTool.(map[string]any); okTool {
+				changed = rewriteDiscoveredFunctionChoice(tool, contract) || changed
+			}
+		}
+	}
+	return changed
+}
+
+// rewriteToolChoice converts a tool_search choice into the ordinary function
 // the upstream receives. Both the dedicated choice type and allowed_tools
 // entries are rejected by chat-shaped upstreams.
 func rewriteToolChoice(value any, contract *ToolContract) bool {
@@ -184,12 +203,10 @@ func rewriteToolChoice(value any, contract *ToolContract) bool {
 		return false
 	}
 	alias := contract.SearchAlias
-	changed := false
+	changed := rewriteDiscoveredToolChoice(choice, contract)
 	if stringField(choice, "type") == "tool_search" {
 		choice["type"] = "function"
 		choice["name"] = alias
-		changed = true
-	} else if rewriteDiscoveredFunctionChoice(choice, contract) {
 		changed = true
 	}
 	tools, okTools := choice["tools"].([]any)
@@ -206,9 +223,6 @@ func rewriteToolChoice(value any, contract *ToolContract) bool {
 			tool["name"] = alias
 			changed = true
 			continue
-		}
-		if rewriteDiscoveredFunctionChoice(tool, contract) {
-			changed = true
 		}
 	}
 	return changed

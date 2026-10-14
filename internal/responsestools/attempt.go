@@ -13,30 +13,35 @@ import (
 // feed, and the budget lease. Attempts are never shared across requests; a
 // retry rebuilds from the original client contract with a fresh Prepare.
 type Attempt struct {
-	Body     []byte
-	contract *ToolContract
-	bridge   *CustomBridge
-	feed     *StreamFeed
-	lease    *Lease
-	limits   Limits
-	policy   RoutePolicy
-	adapted  bool
-	closed   bool
+	Body         []byte
+	contract     *ToolContract
+	bridge       *CustomBridge
+	feed         *StreamFeed
+	lease        *Lease
+	limits       Limits
+	policy       RoutePolicy
+	adapted      bool
+	responseOnly bool
+	closed       bool
 }
 
 // Prepared is the result of Prepare: the wire body plus the attempt when the
 // route needs adaptation, or the original body with a nil attempt when the
 // request passes through untouched.
 type Prepared struct {
-	Body    []byte
-	Attempt *Attempt
+	Body           []byte
+	Attempt        *Attempt
+	Transformation TransformationReport
 }
 
 // Prepare parses one raw client request body against the effective route
 // policy and returns the normalized wire body. Pure computation: it starts no
-// network or tool execution. Unchanged requests return the original slice
-// with no state.
+// network or tool execution. Unchanged requests return the original slice;
+// native Lite requests may retain state for response-only alias repair.
 func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (Prepared, error) {
+	if err := validateCustomOutputReplayPolicy(policy); err != nil {
+		return Prepared{}, err
+	}
 	originalBody := body
 	// Replayed tool items are repaired before anything else looks at the
 	// request. The migration is pure id bookkeeping, so it must not depend on
@@ -46,6 +51,21 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		return Prepared{}, err
 	}
 	body = repaired
+	// Native requests also expose position diagnostics, including when no
+	// response adapter is needed. Also inspect ordinary declarations when
+	// local schema preparation is enabled, even without discovery metadata.
+	localSchemaPolicy := policy.Schema.LocalRefs == LocalRefsInline || policy.Schema.LocalRefs == LocalRefsFlatten
+	if root == nil && (bytes.Contains(body, []byte("\"additional_tools\"")) || bytes.Contains(body, []byte(`\u`)) ||
+		(localSchemaPolicy && bytes.Contains(body, []byte("\"tools\"")))) {
+		value, ok := decodeValue(body)
+		if ok {
+			root, _ = value.(map[string]any)
+		}
+	}
+	report := TransformationReport{PositionPreserved: true}
+	if hasAdditionalToolsInput(root) {
+		report.Positions = AnalyzeToolPositions(root)
+	}
 	contract := ParseContract(body)
 	customDeclarations := hasCustomDeclarations(body)
 	customHistory := hasCustomHistory(body)
@@ -55,8 +75,11 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}
 	needsCustomHistory := (policy.CustomTools == CustomToolsFunction || policy.CustomTools == CustomToolsStrip) && customHistory
-	if contract == nil && !customHistory {
-		return Prepared{Body: body}, nil
+	portableAdditional := policy.ClientSearch == ClientSearchNative && policy.CustomTools == CustomToolsFunction &&
+		hasAdditionalToolsInput(root)
+	schemaDeclarations := localSchemaPolicy && hasDeclarationToolArrays(root)
+	if contract == nil && !customHistory && !portableAdditional && !schemaDeclarations {
+		return Prepared{Body: body, Transformation: report}, nil
 	}
 	if contract == nil {
 		contract = NewToolContract()
@@ -80,30 +103,55 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 		root, ok = value.(map[string]any)
 		if !ok {
-			return Prepared{Body: body}, nil
+			return Prepared{Body: body, Transformation: report}, nil
 		}
 	}
 	if needsCustomHistory {
-		if err := validateCustomHistory(root); err != nil {
+		if err := validateCustomHistory(root, policy.CustomOutputReplay == CustomOutputReplayMultiple); err != nil {
 			return Prepared{}, err
 		}
 	}
 	needsSearch := contract.ClientSearch && policy.ClientSearch == ClientSearchBridge
+	needsNativeSearch := contract.ClientSearch && policy.ClientSearch == ClientSearchNative && hasAdditionalToolsInput(root)
+	needsPortableDeclarations := policy.ClientSearch == ClientSearchNative &&
+		policy.CustomTools == CustomToolsFunction && hasAdditionalToolsInput(root)
+	needsNativeActivation := contract.ClientSearch && policy.ClientSearch == ClientSearchNative &&
+		policy.CustomTools == CustomToolsFunction && len(contract.Discovered) > 0
+	needsNativeIdentity := false
+	if policy.ClientSearch == ClientSearchNative && policy.CustomTools == CustomToolsFunction {
+		for _, identity := range contract.Identities {
+			if _, discovered := contract.Discovered[identity]; identity.Namespace != "" && !contract.Deferred[identity] && !discovered {
+				needsNativeIdentity = true
+				break
+			}
+		}
+	}
 	contract.SearchBridged = needsSearch
 	needsCustom := policy.CustomTools == CustomToolsFunction || policy.CustomTools == CustomToolsStrip
 	needsSchema := policy.Schema.CompletesSearchSchemas() || policy.Schema.LocalRefs == LocalRefsInline ||
 		policy.Schema.LocalRefs == LocalRefsFlatten
 	needsCustomConversion := (policy.CustomTools == CustomToolsFunction || policy.CustomTools == CustomToolsStrip) &&
 		(customDeclarations || customHistory)
-	if contract.discoveryConflict && (needsSearch || needsCustomConversion) {
+	if contract.discoveryConflict && (needsSearch || needsNativeActivation || needsCustomConversion) {
 		return Prepared{}, unprocessableError(ReasonAmbiguousIdentity, fmt.Errorf("discovery round contains conflicting declarations for one tool identity"))
 	}
-	if hasOpaqueResponseHistory(root) && (needsSearch || needsCustomConversion ||
+	if hasOpaqueResponseHistory(root) && (needsSearch || needsCustomConversion || needsPortableDeclarations ||
 		(policy.Schema.CompletesSearchSchemas() && contract.ClientSearch)) {
 		return Prepared{}, unprocessableError(ReasonOpaqueHistory, fmt.Errorf("tool adaptation cannot resolve opaque response or item history"))
 	}
-	if !needsSearch && !needsCustom && !needsSchema {
-		return Prepared{Body: body}, nil
+	if !needsSearch && !needsNativeSearch && !needsCustom && !needsSchema {
+		return Prepared{Body: body, Transformation: report}, nil
+	}
+
+	// Portable native routes cannot accept Lite declaration input items. Lift
+	// only these containers before recording the identities of conversation
+	// items; every remaining item's id and position must survive adaptation.
+	changed := false
+	if needsPortableDeclarations {
+		if err := liftAdditionalTools(root, limits); err != nil {
+			return Prepared{}, err
+		}
+		changed = true
 	}
 
 	// The adapters below change item types, and a type change moves an id.
@@ -129,7 +177,6 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}()
 
-	changed := false
 	if needsSchema && policy.Schema.LocalRefs == LocalRefsInline {
 		if tools, okTools := root["tools"].([]any); okTools {
 			if errDepth := ValidateToolArrayDepth(tools, 1, limits.MaxDepth); errDepth != nil {
@@ -231,6 +278,23 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 			changed = true
 		}
 	}
+	if needsNativeActivation {
+		activationChanged, err := injectDiscoveredTools(root, contract, limits)
+		if err != nil {
+			return Prepared{}, err
+		}
+		changed = changed || activationChanged
+		changed = rewriteDiscoveredToolChoice(root["tool_choice"], contract) || changed
+		// Portable native routes inject flat function declarations too. Replay
+		// those calls with the same wire aliases, while keeping search history
+		// native and letting the custom adapter handle custom call envelopes.
+		input, _ := root["input"].([]any)
+		for _, raw := range input {
+			if item, ok := raw.(map[string]any); ok && stringField(item, "type") == "function_call" {
+				changed = rewriteActivatedToolCallForRequest(item, contract) || changed
+			}
+		}
+	}
 	if policy.CustomTools == CustomToolsFunction {
 		var customChanged bool
 		customChanged, err = rewriteCustomDeclarationsValue(root, bridge)
@@ -255,9 +319,19 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 		}
 	}
 	if !changed {
+		if needsNativeSearch || needsNativeIdentity {
+			// Native requests stay byte-identical. Portable upstreams may return
+			// qualified eager names or the Lite search built-in as a function;
+			// retain the existing identity adapter without changing declarations.
+			attempt.adapted = true
+			attempt.responseOnly = true
+			attempt.feed = NewStreamFeed(attempt.contract, attempt.bridge, lease, limits)
+			closeOnError = false
+			return Prepared{Body: body, Attempt: attempt, Transformation: report}, nil
+		}
 		closeOnError = false
 		attempt.Close()
-		return Prepared{Body: body}, nil
+		return Prepared{Body: body, Transformation: report}, nil
 	}
 	if err := checkAdaptedInputItemIDs(originalOwners, originalInputLength, root); err != nil {
 		return Prepared{}, err
@@ -283,7 +357,33 @@ func Prepare(body []byte, policy RoutePolicy, limits Limits, limiter *Limiter) (
 	attempt.adapted = true
 	attempt.feed = NewStreamFeed(attempt.contract, attempt.bridge, lease, limits)
 	closeOnError = false
-	return Prepared{Body: out, Attempt: attempt}, nil
+	report.comparePositions(root)
+	return Prepared{Body: out, Attempt: attempt, Transformation: report}, nil
+}
+
+func hasAdditionalToolsInput(root map[string]any) bool {
+	input, _ := root["input"].([]any)
+	for _, raw := range input {
+		if item, ok := raw.(map[string]any); ok && stringField(item, "type") == "additional_tools" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDeclarationToolArrays(root map[string]any) bool {
+	if tools, ok := root["tools"].([]any); ok && len(tools) > 0 {
+		return true
+	}
+	input, _ := root["input"].([]any)
+	for _, raw := range input {
+		if item, ok := raw.(map[string]any); ok && IsToolDeclarationInput(item) {
+			if tools, ok := item["tools"].([]any); ok && len(tools) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasOpaqueResponseHistory(root map[string]any) bool {
@@ -375,7 +475,8 @@ func (a *Attempt) RewriteResponse(body []byte) ([]byte, error) {
 	}
 	if !bytes.Contains(trimmed, []byte("function_call")) &&
 		!bytes.Contains(trimmed, []byte("custom_tool_call")) &&
-		!bytes.Contains(trimmed, []byte("tool_search_call")) {
+		!bytes.Contains(trimmed, []byte("tool_search_call")) &&
+		!bytes.Contains(trimmed, []byte(`\u`)) {
 		return body, nil
 	}
 	value, ok := decodeValue(body)
@@ -402,39 +503,32 @@ func (a *Attempt) RewriteResponse(body []byte) ([]byte, error) {
 }
 
 func hasCustomHistory(body []byte) bool {
-	if !bytes.Contains(body, []byte("custom_tool_call")) {
+	if !bytes.Contains(body, []byte("custom_tool_call")) && !bytes.Contains(body, []byte(`\u`)) {
 		return false
 	}
 	value, ok := decodeValue(body)
 	if !ok {
 		return false
 	}
-	var visit func(any) bool
-	visit = func(current any) bool {
-		switch typed := current.(type) {
-		case map[string]any:
-			itemType := stringField(typed, "type")
-			if itemType == "custom_tool_call" || itemType == "custom_tool_call_output" {
-				return true
-			}
-			for _, child := range typed {
-				if visit(child) {
-					return true
-				}
-			}
-		case []any:
-			for _, child := range typed {
-				if visit(child) {
-					return true
-				}
-			}
-		}
+	root, ok := value.(map[string]any)
+	if !ok {
 		return false
 	}
-	return visit(value)
+	input, _ := root["input"].([]any)
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemType := stringField(item, "type")
+		if itemType == "custom_tool_call" || itemType == "custom_tool_call_output" {
+			return true
+		}
+	}
+	return false
 }
 
-func validateCustomHistory(root map[string]any) error {
+func validateCustomHistory(root map[string]any, allowMultipleOutputs bool) error {
 	input, ok := root["input"].([]any)
 	if !ok {
 		return nil
@@ -466,8 +560,10 @@ func validateCustomHistory(root map[string]any) error {
 			if _, exists := calls[callID]; !exists {
 				return unprocessableError(ReasonInvalidCustomInput, fmt.Errorf("custom history output has no matching call"))
 			}
-			if _, exists := outputs[callID]; exists {
-				return unprocessableError(ReasonInvalidCustomInput, fmt.Errorf("custom history repeats output for call_id"))
+			if _, exists := outputs[callID]; exists && !allowMultipleOutputs {
+				// Custom executions can notify before returning. Adapted routes
+				// require explicit upstream support before replaying every result.
+				return unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("selected route cannot preserve multiple custom outputs for one call_id"))
 			}
 			outputs[callID] = struct{}{}
 		}
@@ -502,9 +598,15 @@ func (a *Attempt) Close() {
 	}
 }
 
-// Adapted reports whether the attempt rewrote the wire body.
+// Adapted reports whether the attempt adapts request or response tool semantics.
 func (a *Attempt) Adapted() bool {
 	return a != nil && a.adapted
+}
+
+// ResponseOnly reports a native compatibility repair that introduces no
+// outbound tool identities and must preserve the route's existing post rules.
+func (a *Attempt) ResponseOnly() bool {
+	return a != nil && a.responseOnly
 }
 
 // MaxActiveToolBytes returns the validated declaration ceiling that was
@@ -521,32 +623,46 @@ func hasCustomDeclarations(body []byte) bool {
 	if len(trimmed) == 0 {
 		return false
 	}
-	if !bytes.Contains(trimmed, []byte("\"custom\"")) {
+	if !bytes.Contains(trimmed, []byte("\"custom\"")) && !bytes.Contains(trimmed, []byte(`\u`)) {
 		return false
 	}
 	value, ok := decodeValue(body)
 	if !ok {
 		return false
 	}
-	return scanCustomDeclarations(value)
-}
-
-func scanCustomDeclarations(value any) bool {
-	switch typed := value.(type) {
+	switch root := value.(type) {
 	case map[string]any:
-		if stringsEqualFold(stringField(typed, "type"), "custom") {
+		if scanCustomDeclarations(root["tools"]) {
 			return true
 		}
-		for _, child := range typed {
-			if scanCustomDeclarations(child) {
+		input, _ := root["input"].([]any)
+		for _, rawItem := range input {
+			item, ok := rawItem.(map[string]any)
+			if ok && IsToolDeclarationInput(item) && scanCustomDeclarations(item["tools"]) {
 				return true
 			}
 		}
 	case []any:
-		for _, child := range typed {
-			if scanCustomDeclarations(child) {
-				return true
-			}
+		return scanCustomDeclarations(root)
+	}
+	return false
+}
+
+func scanCustomDeclarations(value any) bool {
+	tools, _ := value.([]any)
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringsEqualFold(stringField(tool, "type"), "custom") {
+			return true
+		}
+		if strings.TrimSpace(stringField(tool, "type")) == NamespaceToolType && scanCustomDeclarations(tool["tools"]) {
+			return true
+		}
+		if scanCustomDeclarations(tool[DeferredToolsKey]) {
+			return true
 		}
 	}
 	return false

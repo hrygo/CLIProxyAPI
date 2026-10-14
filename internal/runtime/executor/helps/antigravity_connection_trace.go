@@ -24,9 +24,17 @@ func WithAntigravityHTTPClientTrace(client *http.Client, auth *cliproxyauth.Auth
 	if auth != nil {
 		authIndex = auth.Index
 	}
-	clone.Transport = &antigravityConnectionTraceTransport{
+	trace := &antigravityConnectionTraceTransport{
 		base: base, auth: cliproxyauth.Auth{Index: authIndex}, operation: operation,
 	}
+	switch operation {
+	case "credits_query", "oauth_refresh", "project_discovery", "model_discovery", "http_request":
+		trace.identity = HTTPAttemptIdentity{Executor: "antigravity", Operation: operation}
+		if auth != nil {
+			trace.identity.AuthSHA256 = httpAttemptFingerprint(auth.ID)
+		}
+	}
+	clone.Transport = trace
 	return &clone
 }
 
@@ -34,10 +42,16 @@ type antigravityConnectionTraceTransport struct {
 	base      http.RoundTripper
 	auth      cliproxyauth.Auth
 	operation string
+	identity  HTTPAttemptIdentity
 }
 
 func (t *antigravityConnectionTraceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	return t.base.RoundTrip(WithAntigravityConnectionTrace(req, &t.auth, t.operation))
+	request := WithAntigravityConnectionTrace(req, &t.auth, t.operation)
+	if t.identity.Operation == "" {
+		// Generate transports already use their model-bound usage reporter.
+		return t.base.RoundTrip(request)
+	}
+	return observeHTTPAttempt(request, t.base.RoundTrip, func() HTTPAttemptIdentity { return t.identity })
 }
 
 // CloseIdleConnections preserves the underlying transport cleanup behavior.

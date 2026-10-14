@@ -217,6 +217,30 @@ func TestResponsesToolsExecutePassesWireContractToExecutor(t *testing.T) {
 	}
 }
 
+func TestResponsesToolsNativeLiteResponseOnlyContract(t *testing.T) {
+	mgr := responsesToolsTestManagerWithClientSearch("native")
+	responsesToolsTestAuth(t, mgr)
+	exec := &fakeResponsesExecutor{
+		provider: "codex", toFormat: sdktranslator.FormatCodex,
+		response: []byte(`{"output":[{"type":"function_call","id":"fc_search","call_id":"s1","namespace":"tool_search","name":"tool_search_tool","arguments":"{\"query\":\"budget\"}"}]}`),
+	}
+	mgr.RegisterExecutor(exec)
+	body := []byte(`{"input":[{"type":"additional_tools","role":"developer","tools":[{"type":"tool_search","execution":"client"},{"type":"function","name":"collaboration__followup_task","parameters":{"type":"object"}}]}]}`)
+	req := cliproxyexecutor.Request{Model: "gpt-5.6-sol", Payload: body}
+	opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatCodex, OriginalRequest: body}
+	resp, err := mgr.Execute(context.Background(), []string{"codex"}, req, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(resp.Payload), `"type":"tool_search_call"`) {
+		t.Fatalf("native alias was not restored: %s", resp.Payload)
+	}
+	if exec.wireGuard == nil || len(exec.wireGuard.RequiredFunctionNames) != 0 ||
+		exec.wireGuard.SearchBridgeActive || len(exec.wireGuard.CustomAliases) != 0 {
+		t.Fatalf("response-only repair must not negotiate new outbound identities: %+v", exec.wireGuard)
+	}
+}
+
 type failingResponsesToolsStreamAttempt struct {
 	closed chan struct{}
 }

@@ -16,7 +16,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/interfaces"
-	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -970,11 +969,11 @@ func responsesWebsocketPreviousResponseNotFoundError() *interfaces.ErrorMessage 
 }
 
 // responsesWebsocketRequiresToolsReplay reports whether one downstream turn
-// carries tool metadata that the core Responses tool protocol would rewrite.
+// needs request or response adaptation, or a local preparation rejection.
 // Such turns run as tools-replay (HTTP replay normalization) instead of
 // native duplex passthrough, so request, history, response, and stream
-// recovery share one mapping. Turns without tool metadata, routes outside
-// the core policy, and a disabled feature never trigger replay here.
+// recovery share one mapping. Unchanged requests and a disabled feature keep
+// the native path; unmatched routes still use the HTTP convention policy.
 func (h *OpenAIResponsesAPIHandler) responsesWebsocketRequiresToolsReplay(payload []byte) bool {
 	if h == nil || h.AuthManager == nil || !h.AuthManager.ResponsesToolsEnabled() {
 		return false
@@ -987,17 +986,17 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketRequiresToolsReplay(payloa
 }
 
 func (h *OpenAIResponsesAPIHandler) responsesWebsocketRequiresToolsReplayForRoute(payload []byte, provider, upstreamModel string) bool {
-	if h == nil || h.AuthManager == nil || !responsestools.PayloadUsesToolProtocol(payload) {
+	if h == nil || h.AuthManager == nil {
 		return false
 	}
-	return h.AuthManager.ResponsesToolsMayApplyToRoute(provider, upstreamModel)
+	return h.AuthManager.ResponsesToolsRequiresReplayForRoute(payload, provider, upstreamModel)
 }
 
 func (h *OpenAIResponsesAPIHandler) responsesWebsocketRequiresToolsReplayForClientModel(payload []byte, modelID, provider, authID string) bool {
-	if h == nil || h.AuthManager == nil || !responsestools.PayloadUsesToolProtocol(payload) {
+	if h == nil || h.AuthManager == nil {
 		return false
 	}
-	return h.AuthManager.ResponsesToolsMayApplyToClientModel(modelID, provider, authID)
+	return h.AuthManager.ResponsesToolsRequiresReplayForClientModel(payload, modelID, provider, authID)
 }
 
 func (h *OpenAIResponsesAPIHandler) responsesWebsocketResolveToolMode(
@@ -1010,6 +1009,8 @@ func (h *OpenAIResponsesAPIHandler) responsesWebsocketResolveToolMode(
 ) (bool, bool) {
 	var toolsReplay bool
 	switch {
+	case strings.TrimSpace(authID) != "" && strings.TrimSpace(modelID) != "":
+		toolsReplay = h.responsesWebsocketRequiresToolsReplayForClientModel(payload, modelID, provider, authID)
 	case strings.TrimSpace(upstreamModel) != "":
 		toolsReplay = h.responsesWebsocketRequiresToolsReplayForRoute(payload, provider, upstreamModel)
 	case strings.TrimSpace(modelID) != "":

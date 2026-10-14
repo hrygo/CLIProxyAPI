@@ -46,6 +46,7 @@ type trackedCall struct {
 	outputIndex *int
 	callID      string
 	alias       string
+	namespace   string
 	wireType    string
 	buffer      strings.Builder
 	bufferBytes int
@@ -61,7 +62,7 @@ func trackedCallStateBytes(tracked *trackedCall) int {
 	if tracked == nil {
 		return 0
 	}
-	return trackedCallStateOverhead + len(tracked.itemID) + len(tracked.alias) +
+	return trackedCallStateOverhead + len(tracked.itemID) + len(tracked.alias) + len(tracked.namespace) +
 		len(tracked.callID) + len(tracked.clientID) + len(tracked.clientType)
 }
 
@@ -372,8 +373,8 @@ func normalizeSSELineEndings(frame []byte) []byte {
 	return bytes.ReplaceAll(normalized, []byte("\r"), []byte("\n"))
 }
 
-func (f *StreamFeed) classify(name string) (callKind, ToolIdentity) {
-	if f.contract != nil && f.contract.SearchBridged && name == f.contract.SearchAlias {
+func (f *StreamFeed) classify(name, namespace string) (callKind, ToolIdentity) {
+	if isSearchFunctionIdentity(f.contract, name, namespace) {
 		return callKindSearch, ToolIdentity{}
 	}
 	if f.bridge != nil {
@@ -395,12 +396,13 @@ func (f *StreamFeed) track(item map[string]any) (*trackedCall, error) {
 	if itemID == "" {
 		return nil, upstreamError(ReasonUpstreamContract, fmt.Errorf("output item without id"))
 	}
-	kind, identity := f.classify(name)
+	namespace := stringField(item, "namespace")
+	kind, identity := f.classify(name, namespace)
 	wireType := stringField(item, "type")
 	if kind != callKindOrdinary && wireType != "function_call" {
 		return nil, upstreamError(ReasonUpstreamContract, fmt.Errorf("bridged output item %s has unexpected type %q", itemID, wireType))
 	}
-	tracked := &trackedCall{kind: kind, identity: identity, itemID: itemID, alias: name, wireType: wireType}
+	tracked := &trackedCall{kind: kind, identity: identity, itemID: itemID, alias: name, namespace: namespace, wireType: wireType}
 	clientType, clientID, err := clientIdentityFor(kind, wireType, itemID)
 	if err != nil {
 		return nil, upstreamError(ReasonUpstreamContract, err)
@@ -497,7 +499,15 @@ func (f *StreamFeed) verifyConsistency(tracked *trackedCall, item map[string]any
 		if !ok || name == "" || name != tracked.alias {
 			return upstreamError(ReasonUpstreamContract, fmt.Errorf("output item %s changed name", tracked.itemID))
 		}
-		kind, identity := f.classify(name)
+		namespace := tracked.namespace
+		if rawNamespace, exists := item["namespace"]; exists {
+			parsed, ok := rawNamespace.(string)
+			if !ok || parsed != tracked.namespace {
+				return upstreamError(ReasonUpstreamContract, fmt.Errorf("output item %s changed namespace", tracked.itemID))
+			}
+			namespace = parsed
+		}
+		kind, identity := f.classify(name, namespace)
 		if kind != tracked.kind || identity != tracked.identity {
 			return upstreamError(ReasonUpstreamContract, fmt.Errorf("output item %s changed tool identity", tracked.itemID))
 		}

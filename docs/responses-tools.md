@@ -5,18 +5,23 @@ protocol: client-executed `tool_search` discovery and `custom` tools. The
 handling lives entirely in the core and requires no plugin or dynamic
 library.
 
+Code baseline: `743a5e0a`, verified on 2026-10-14. Durable references:
+[design and implementation](tool-loading/design-and-implementation_CN.md),
+[verification and compatibility](tool-loading/verification-and-compatibility_CN.md),
+and [request-level token usage](tool-loading/token-usage-report_CN.md).
+
 ## Background
 
-Codex-style clients only defer tool definitions when the selected model
-advertises `supports_search_tool`. When it does not, the client falls back to
-injecting the whole tool surface — the top-level `tools` array and
-`input.additional_tools` — into the **first** request of every turn.
+Deferred loading depends on the client's effective mode and model/provider
+metadata, including `supports_search_tool` on Codex search profiles. A client
+that falls back to eager declarations can inject the full tool surface into
+the opening request. Native tool search and Code Mode are separate client
+modes and require separate evidence.
 
-Measured on 2026-09-26 with the Codex 0.156.1 desktop client on non-OpenAI
-routes, that fallback put roughly 120K input tokens into the opening request
-of a task, almost all of it tool definitions the model never called. The cost
-is paid on every turn: latency, a cache miss on the prefix, and per-request
-spend — for tools the model may never touch.
+Scoped official-client measurements and complete request-level usage are in
+the [token usage report](tool-loading/token-usage-report_CN.md). A smaller
+opening packet does not by itself prove lower whole-task input, stable
+latency, or billing savings.
 
 ## Problem
 
@@ -58,7 +63,8 @@ Goals:
   auth kind, real upstream model, actual protocol, endpoint scoping), never
   from client aliases.
 - Declare `supports_search_tool` only when every selectable route behind a
-  public model alias can complete the client search loop.
+  public model alias permits the native or bridged search policy. This
+  conservative policy projection is not an empirical certificate.
 
 Non-goals: a Muse-specific provider, a tool execution server, a second
 generic JSON-RPC ABI, automatic model fallback, or a cross-session tool
@@ -73,7 +79,7 @@ optional: an absent block already applies the convention defaults.
 ```yaml
 requests:
   responses-tools:
-    enabled: true          # emergency gate; omit or set false to disable all
+    enabled: true          # omitted means enabled; explicit false disables all
     limits:
       max-active-tool-bytes: 262144
       max-active-attempts: 512
@@ -112,8 +118,9 @@ name the client typed. The provider-to-format mapping is fixed:
 
 `codex` is the internal name for the OpenAI Responses dialect, not a vendor
 label: `xai` and `meta` speak the Responses wire format and reuse the same
-translator. A misspelled or mismatched field never errors — the rule simply
-does not match, and the convention applies instead.
+translator. A valid match value that differs from the selected route does
+not apply; the convention remains in effect. Invalid strategy enums and
+conflicting configuration are rejected separately.
 
 ## Defaults
 
@@ -122,8 +129,14 @@ derived from the upstream format **and** the provider:
 
 - `client-search: native` only when the upstream format is `openai-response`
   or `codex` **and** the provider forwards the `tool_search` built-in
-  unchanged. Today that is `codex` and `meta`. Nothing is rewritten and the
-  native passthrough path — including live duplex steering — is preserved.
+  unchanged. Today that is `codex` and `meta`. The search built-in and its
+  history stay native. Codex Lite requests using `input[].additional_tools`
+  retain a response adapter: the exact `tool_search/tool_search_tool`
+  namespaced function alias is restored to a client `tool_search_call`, with
+  object arguments and consistent item IDs across stream events. Declared
+  business tools with that identity are never treated as search aliases.
+  Response-only repair preserves request bytes and declaration budgets without
+  pinning unadapted function names that later route optimizers may rename.
 - `client-search: bridge` for every other upstream, including providers that
   speak a native Responses format but rewrite the built-in: the `xai`
   executor strips it, so native passthrough would silently drop discovery.
@@ -139,10 +152,51 @@ derived from the upstream format **and** the provider:
   `required` and rejects recursive schemas, so the convention folds its tools
   with `custom-tools: function`, `custom-grammar: describe`,
   `schema.complete-search-required: true`, and `schema.local-refs: flatten`.
+  Native client search on a `custom-tools: function` route also activates
+  discovered tools from `tool_search_output` in top-level `tools`, reusing the
+  same identity and cumulative declaration budget checks as the search bridge. Native
+  search history remains intact; provider function calls are restored to the
+  original tool identity. On these portable native routes, Lite
+  `input[].additional_tools` containers are lifted into top-level `tools`
+  before schema/custom adaptation, for eager and search requests alike.
+  Identical declarations are deduplicated, matching namespace containers
+  are merged, and conflicting definitions fail locally with 422. Namespace
+  containers receive a neutral description if Lite supplied an empty or
+  missing one, satisfying the portable native required-field contract.
+  Nonempty client descriptions and remaining conversation/search-history
+  IDs are preserved, and lifted declarations
+  remain subject to the active declaration budget. Inherited native routes
+  retain the original Lite input dialect and request bytes.
+
+  Portable native routes also retain a response-only adapter for eager,
+  non-deferred namespaced functions. Some upstreams return `namespace.name`
+  in the function `name` without a separate `namespace`; the existing request
+  contract restores the declared leaf name and namespace without changing
+  call IDs, arguments or outgoing request bytes. Deferred or discovered-only
+  identities do not activate this eager adapter. Transparent native policies
+  and plain top-level functions retain their previous passthrough behavior.
+  Lifting changes declaration scope: a declaration originally between
+  conversation items becomes visible at whole-request scope. The internal
+  `Prepared.Transformation` sidecar reports original Lite declaration indices,
+  interleaving and same-identity updates. A lift reports
+  `position_preserved: false` and `additional_tools_position_lift`; native
+  passthrough reports `position_preserved: true`, including response-only alias
+  repair. Diagnostics contain no prompts, names, schemas or fingerprints.
+  This report concerns declaration positions only, not full semantic fidelity.
+  It is not an HTTP response field and does not alter route policy.
+
+  Exact position semantics are not certified on portable lifting routes.
+  There is no configurable strict-position contract. Interleaving and
+  same-identity updates are reported as transformation facts; this sidecar
+  does not certify semantic equivalence. Ambiguous definition conflicts
+  already fail with 422 `ambiguous_identity`.
   `schema.local-refs: inline` stays opt-in for every provider, `meta`
   included: the convention never expands a client-authored `$ref`; flattening
   only replaces the references that close a cycle with an unconstrained
   schema and keeps acyclic `$defs` untouched.
+  An effective `inline` or `flatten` policy also prepares ordinary function
+  declarations without discovery or custom metadata. Recursive schemas on an
+  `inline` route fail locally; they do not bypass validation as plain functions.
 
 Lossy strategies stay opt-in, because each of them either drops a capability
 or rewrites user schema. The single exception is the portable-surface folding
@@ -169,10 +223,24 @@ Strategy enums:
   (passthrough on a true native Responses route), `bridge` (function translation),
   `disabled` (explicit client search requests fail with 422, never silently
   dropped).
-- `custom-tools`: `inherit`, `native`, `function` (full wrap and restore),
+- `custom-tools`: `inherit`, `native`, `function` (wrap and restore supported
+  custom calls),
   `strip` (lossy: drops future declarations but keeps convertible history;
   forced calls to stripped tools fail with 422), `reject` (any custom
   contract fails with 422).
+- `custom-output-replay`: `single` (default for adapted history: repeated
+  outputs fail with 422 `unsupported_protocol`) or `multiple` (replay every
+  result without merging). `multiple` requires an explicit route whose
+  `upstream-format` is `codex` or `openai-response`; it never follows a
+  convention automatically. Verify the exact upstream before enabling it:
+  speaking Responses does not prove one-to-many result support. The option
+  preserves each payload, original `call_id`, reversible item identity and
+  global input order, while keeping duplicate-call and orphan-output guards.
+  The final-send guard binds bridged history to prepared output counts,
+  native tool-event order and canonical hashes of complete output items.
+  Post-rule changes to result content, metadata or identity fail locally
+  before dispatch; exact number tokens are retained when hashing. The
+  context stores hashes and identifiers, not raw results.
 - `custom-grammar`: `reject` (default), `describe` (function mode only:
   folds grammar syntax into the description; sampling constraints are not
   enforced upstream).
@@ -266,6 +334,22 @@ argument delta and done events, `output_item.done`, and the terminal
 tracking key, so the existing `call_id` and `output_index` consistency checks
 keep comparing what the upstream actually sent.
 
+Protocol types and field names are identified by decoded JSON semantics,
+including valid Unicode escapes. Ordinary schemas and arguments containing
+the same strings do not become tool history. Lossy Unicode in Claude deferred
+identity input is rejected instead of being replaced and reinterpreted.
+
+For Chat-to-Responses streaming, the OpenAI-compatible executor requires both
+the upstream `[DONE]` marker and a translated `response.completed` or
+`response.incomplete` event with the matching response status. `[DONE]` alone
+does not complete an unfinished tool call. If conversion cannot produce a
+legal terminal event, the executor reports a 502 stream error without
+synthesizing arguments or completion. An explicit source finish reason may
+still carry invalid model-generated arguments; the execution endpoint must
+validate those arguments before dispatch. A complete call item and a complete
+response are separate boundaries: a disconnect after an exposed call must not
+replay that call on another credential.
+
 Native WebSocket duplex connections repair every successor `response.create`,
 `response.append`, and `response.steer` frame, not only the first request: those
 frames never pass through the Manager. A frame that cannot be repaired is
@@ -307,7 +391,69 @@ grammar bodies, prompts, results, tokens, and credentials are never logged.
   transformation is allowed. Bridged ordinary WebSocket traffic uses replay;
   live steering combinations that need bridging are rejected explicitly, and
   live duplex is not bridged frame-by-frame.
+  The per-turn gate probes the same request preparation as HTTP, including
+  ordinary schema conversion, Lite declaration lifting, response-only repair,
+  request ID repair and local rejection. It uses private temporary state,
+  releases it before returning, and performs no upstream or tool dispatch.
+  Resolved client aliases and pinned credentials retain their actual format
+  and endpoint policy; partial route hints cannot override a pinned credential.
+  An unmatched rule still follows the convention. Unchanged ordinary functions
+  and native search requests keep passthrough, except portable native eager
+  namespaces that require response-only identity repair. Replay does not certify duplex:
+  `response.steer` in a replay turn fails explicitly with 422 before dispatch.
 - Server-side history: only locally expandable history converts; requests
   that depend on remote opaque `previous_response_id` references fail with
   422 on routes that need transformation. Native paths keep their existing
   capabilities.
+
+## Multiple custom outputs
+
+A custom execution can emit a notification and a final result with the same
+`call_id`. On `custom-tools: function` or `custom-tools: strip` routes with the
+default `custom-output-replay: single`, an otherwise valid explicit history
+containing more than one custom output for one call is rejected locally with
+422 `unsupported_protocol`. The error is
+request-scoped and availability-neutral, and no upstream attempt is created.
+It describes an adaptation limit, rather than malformed client input.
+
+The current downstream adapters cannot preserve every such output as a tool
+result. Passing them through those adapters would discard, collapse, or turn
+some outputs into ordinary user text. Duplicate calls, missing call IDs, and
+orphan outputs remain `invalid_custom_input`; this change does not relax their
+identity checks. A native passthrough test proves only that `Prepare` leaves
+the local request bytes unchanged, not that a particular provider accepts the
+history. Explicit `custom-output-replay: multiple` routes preserve each output
+on supported native Responses targets and enforce the final-send contract
+described above. Historical GPT probes and an official Codex coding pair
+provide scoped evidence; Muse rejects one-to-many outputs, and cross-format
+support remains limited. See the
+[verification and compatibility report](tool-loading/verification-and-compatibility_CN.md)
+for actual versions, denominators and unsupported boundaries.
+
+## Cumulative discovery activation
+
+Bridge routes and portable native routes using `custom-tools: function` retain
+all discovered identities from the explicit request history. After discovering
+B, a previously discovered A remains callable with its canonical alias; portable
+native function-call replay uses that alias as well. A later discovery of the
+same identity supplies its latest declaration, while earlier calls and results
+remain historical facts. Conflicting definitions within one round fail with
+422 `ambiguous_identity`.
+
+Forced function `tool_choice` and function entries in `allowed_tools` use the
+same activated alias on both paths. Portable native routes keep `tool_search`
+choices native; eager and undiscovered choices are not remapped.
+
+The cumulative active declaration set must fit `max-active-tool-bytes`. If it
+does not, the entire request fails locally with 413 `declaration_budget`, without
+silently dropping older rounds, sending a partial activation, or rotating
+credentials. All attempt leases are released on rejection. This changes the
+older best-effort admission behavior: clients that relied on implicit eviction
+must explicitly bound their retained history or use a sufficient limit. Pure
+native passthrough continues to use the upstream's activation semantics.
+
+Discovery history is not execution authorization. Removing an identity from a
+later search result does not prove revocation of an earlier tool. The client or
+MCP execution service must check current permissions and validate arguments at
+dispatch, including after schema updates; the gateway preserves call identity
+and does not execute tools or infer permission grants from historical manifests.

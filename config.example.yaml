@@ -1074,6 +1074,7 @@ oauth:
   #         upstream-format: "codex"
   #       client-search: "bridge" # inherit | native | bridge | disabled
   #       custom-tools: "function" # inherit | native | function | strip | reject
+  #       custom-output-replay: "single" # single | multiple (explicit native Responses route only)
   #       custom-grammar: "reject" # reject | describe (function mode only)
   #       schema:
   #         complete-search-required: false

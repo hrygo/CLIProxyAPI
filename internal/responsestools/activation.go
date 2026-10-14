@@ -313,9 +313,10 @@ func appendExistingDeferredEntries(existing any, additions []any) []any {
 	return append(out, additions...)
 }
 
-// injectDiscoveredTools promotes the latest discovery round in full and older
-// rounds newest-first while the activation budget holds. Older rounds are
-// admitted atomically. History items are never deleted.
+// injectDiscoveredTools promotes cumulative discoveries newest-first. Every
+// retained discovery manifest must have a callable declaration. An overflow
+// rejects the request atomically instead of silently evicting older rounds.
+// History items are never deleted.
 func injectDiscoveredTools(root map[string]any, contract *ToolContract, limits Limits) (bool, error) {
 	if contract == nil || len(contract.Discovered) == 0 {
 		return false, nil
@@ -414,11 +415,7 @@ func injectDiscoveredTools(root map[string]any, contract *ToolContract, limits L
 			decoder.UseNumber()
 			var tool map[string]any
 			if err := decoder.Decode(&tool); err != nil {
-				if round == contract.LatestRound {
-					return false, unprocessableError(ReasonAmbiguousIdentity, fmt.Errorf("latest discovery contains an invalid tool declaration"))
-				}
-				groupTools = nil
-				break
+				return false, unprocessableError(ReasonAmbiguousIdentity, fmt.Errorf("discovery contains an invalid tool declaration"))
 			}
 			delete(tool, "defer_loading")
 			if identity.Kind == ToolKindCustom {
@@ -452,11 +449,7 @@ func injectDiscoveredTools(root map[string]any, contract *ToolContract, limits L
 				return false, err
 			}
 			if size > limits.MaxActiveToolBytes {
-				if round == contract.LatestRound {
-					return false, budgetError(ReasonDeclarationBudget, fmt.Errorf("latest discovery does not fit: %d > %d", size, limits.MaxActiveToolBytes))
-				}
-				start = end
-				continue
+				return false, budgetError(ReasonDeclarationBudget, fmt.Errorf("cumulative discoveries do not fit: %d > %d", size, limits.MaxActiveToolBytes))
 			}
 			tools = candidateTools
 			workingRoot["tools"] = tools

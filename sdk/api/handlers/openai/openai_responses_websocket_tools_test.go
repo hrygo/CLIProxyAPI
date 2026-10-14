@@ -1,9 +1,11 @@
 package openai
 
 import (
+	"context"
 	"testing"
 
 	internalconfig "github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -58,8 +60,8 @@ func TestResponsesWebsocketRequiresToolsReplay(t *testing.T) {
 	if off.responsesWebsocketRequiresToolsReplay(searchTurn) {
 		t.Fatalf("disabled feature must never force replay")
 	}
-	if h.responsesWebsocketRequiresToolsReplayForRoute(searchTurn, "gemini", "gpt-5.6-sol") {
-		t.Fatalf("a different provider route must not force tools-replay")
+	if !h.responsesWebsocketRequiresToolsReplayForRoute(searchTurn, "gemini", "gpt-5.6-sol") {
+		t.Fatalf("an unmatched non-native route still follows the HTTP bridge convention")
 	}
 	if h.responsesWebsocketRequiresToolsReplayForRoute(searchTurn, "codex", "other-model") {
 		t.Fatalf("a different model route must not force tools-replay")
@@ -70,6 +72,28 @@ func TestResponsesWebsocketRequiresToolsReplay(t *testing.T) {
 	bare := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, nil))
 	if bare.responsesWebsocketRequiresToolsReplay(searchTurn) {
 		t.Fatalf("without manager must not force replay")
+	}
+}
+
+func TestResponsesWebsocketReplayIncludesActualSchemaAndLitePreparation(t *testing.T) {
+	h := toolsReplayTestHandlerConventions()
+	for _, tc := range []struct {
+		name, provider, body string
+		replay               bool
+	}{
+		{"ordinary recursive", "meta", `{"type":"response.create","tools":[{"type":"function","name":"lookup","parameters":{"type":"object","$defs":{"Node":{"type":"object","properties":{"next":{"$ref":"#/$defs/Node"}}}},"properties":{"node":{"$ref":"#/$defs/Node"}}}}],"input":[]}`, true},
+		{"lite eager", "meta", `{"type":"response.create","input":[{"type":"additional_tools","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}]}]}`, true},
+		{"lite response-only", "codex", `{"type":"response.create","input":[{"type":"additional_tools","tools":[{"type":"tool_search"}]}]}`, true},
+		{"plain function", "meta", `{"type":"response.create","tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],"input":[]}`, false},
+		{"eager namespace identity", "meta", `{"type":"response.create","tools":[{"type":"namespace","name":"fs","tools":[{"type":"function","name":"read"}]}],"input":[]}`, true},
+		{"native search", "codex", `{"type":"response.create","tools":[{"type":"tool_search"}],"input":[]}`, false},
+		{"request-only repair", "codex", `{"type":"response.create","input":[{"type":"function_call","id":"ctc_x","call_id":"c1","name":"lookup","arguments":"{}"}]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := h.responsesWebsocketRequiresToolsReplayForRoute([]byte(tc.body), tc.provider, "review-model"); got != tc.replay {
+				t.Fatalf("replay=%v want=%v", got, tc.replay)
+			}
+		})
 	}
 }
 
@@ -97,10 +121,9 @@ func TestResponsesWebsocketExecutorInputIsNotPassedToToolsReplay(t *testing.T) {
 	}
 }
 
-// A turn that carries tool metadata the core protocol would pass through
-// unchanged must not be forced into tools-replay: replay drops the duplex
-// input channel, so live steering would start failing on turns that never
-// needed any rewriting.
+// Unadapted metadata preserves duplex. A portable native namespace needs the
+// same response-only identity adapter as HTTP, even with unchanged declarations;
+// it must use replay rather than skip recovery through raw duplex passthrough.
 func TestResponsesWebsocketPassThroughTurnKeepsNativePassthrough(t *testing.T) {
 	h := toolsReplayTestHandlerConventions()
 	cases := []struct {
@@ -120,8 +143,15 @@ func TestResponsesWebsocketPassThroughTurnKeepsNativePassthrough(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			for _, provider := range []string{"xai", "codex", "meta", "gemini"} {
 				payload := []byte(testCase.payload)
-				if h.responsesWebsocketRequiresToolsReplayForRoute(payload, provider, "review-model") {
-					t.Errorf("provider %q: a pass-through turn must not force tools-replay", provider)
+				wantReplay := provider == "meta" && testCase.name == "namespace only"
+				if got := h.responsesWebsocketRequiresToolsReplayForRoute(payload, provider, "review-model"); got != wantReplay {
+					t.Errorf("provider %q: replay=%v want=%v", provider, got, wantReplay)
+				}
+				if wantReplay {
+					native, replay := h.responsesWebsocketResolveToolMode(payload, "", provider, "review-model", "", true)
+					if native || !replay {
+						t.Error("portable namespace bypassed response identity repair in duplex mode")
+					}
 				}
 			}
 		})
@@ -136,6 +166,7 @@ func TestResponsesWebsocketToolProtocolTurnStillForcesReplay(t *testing.T) {
 	cases := []struct {
 		name    string
 		payload string
+		custom  bool
 	}{
 		{
 			name:    "tool_search declaration",
@@ -148,14 +179,27 @@ func TestResponsesWebsocketToolProtocolTurnStillForcesReplay(t *testing.T) {
 		{
 			name:    "custom declaration",
 			payload: `{"type":"response.create","tools":[{"type":"custom","name":"apply_patch"}],"input":[]}`,
+			custom:  true,
 		},
 		{
 			name:    "custom history",
 			payload: `{"type":"response.create","input":[{"type":"custom_tool_call","call_id":"c","name":"apply_patch","input":"x"},{"type":"custom_tool_call_output","call_id":"c","output":"ok"}]}`,
+			custom:  true,
 		},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
+			if testCase.custom {
+				if !h.responsesWebsocketRequiresToolsReplayForRoute([]byte(testCase.payload), "meta", "muse") {
+					t.Error("portable custom conversion must force replay")
+				}
+				for _, provider := range []string{"xai", "gemini"} {
+					if h.responsesWebsocketRequiresToolsReplayForRoute([]byte(testCase.payload), provider, "review-model") {
+						t.Errorf("custom inherit does not adapt the request on %s", provider)
+					}
+				}
+				return
+			}
 			// xai strips the built-in and needs the bridge, so it must replay.
 			if !h.responsesWebsocketRequiresToolsReplayForRoute([]byte(testCase.payload), "xai", "review-model") {
 				t.Error("a rewritten turn on the xai route must force tools-replay")
@@ -197,5 +241,45 @@ func TestIsResponsesWebsocketToolsReplayControlFrame(t *testing.T) {
 	}
 	if isResponsesWebsocketToolsReplayControlFrame([]byte(`{"type":"response.create","input":[]}`)) {
 		t.Fatal("ordinary response.create must remain allowed")
+	}
+}
+
+func TestResponsesWebsocketToolModeUsesPinnedCredentialBeforePartialHints(t *testing.T) {
+	cfg := &internalconfig.Config{}
+	for _, tc := range []struct{ endpoint, mode string }{{"https://native.invalid", "native"}, {"https://bridge.invalid", "bridge"}} {
+		cfg.ResponsesTools.Routes = append(cfg.ResponsesTools.Routes, internalconfig.ResponsesToolsRoute{
+			Match: internalconfig.ResponsesToolsMatch{
+				Provider: "codex", AuthKind: "oauth", UpstreamModel: "gpt-5.6-sol", UpstreamFormat: "codex", BaseURL: tc.endpoint,
+			}, ClientSearch: tc.mode, CustomTools: "inherit",
+		})
+	}
+	cfg.NormalizeResponsesToolsConfig()
+	if err := cfg.ValidateResponsesToolsConfig(); err != nil {
+		t.Fatal(err)
+	}
+	mgr := coreauth.NewManager(nil, nil, nil)
+	mgr.SetConfig(cfg)
+	executor := &websocketProviderCaptureExecutor{provider: "codex"}
+	mgr.RegisterExecutor(executor)
+	const authID = "ws-tools-pinned-native"
+	reg := registry.GetGlobalRegistry()
+	reg.RegisterClient(authID, "codex", []*registry.ModelInfo{{ID: "gpt-5.6-sol"}})
+	t.Cleanup(func() { reg.UnregisterClient(authID) })
+	if _, err := mgr.Register(context.Background(), &coreauth.Auth{ID: authID, Provider: "codex", Attributes: map[string]string{
+		"auth_kind": "oauth", "base_url": "https://native.invalid",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewOpenAIResponsesAPIHandler(handlers.NewBaseAPIHandlers(&sdkconfig.SDKConfig{}, mgr))
+	payload := []byte(`{"type":"response.create","tools":[{"type":"tool_search"}],"input":[]}`)
+	if !h.responsesWebsocketRequiresToolsReplayForRoute(payload, "codex", "gpt-5.6-sol") {
+		t.Fatal("partial hints must retain the possible bridge route")
+	}
+	native, replay := h.responsesWebsocketResolveToolMode(payload, "gpt-5.6-sol", "codex", "gpt-5.6-sol", authID, true)
+	if !native || replay {
+		t.Fatalf("pinned native credential lost duplex: native=%v replay=%v", native, replay)
+	}
+	if executor.streamCalls != 0 {
+		t.Fatal("routing probe dispatched upstream execution")
 	}
 }

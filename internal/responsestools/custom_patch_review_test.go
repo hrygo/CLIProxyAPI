@@ -2,10 +2,95 @@ package responsestools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
 )
+
+func TestPrepareEscapedCustomMetadataKeepsGuards(t *testing.T) {
+	const declaration = `{"type":"\u0063ustom","name":"exec"}`
+	const call = `{"type":"\u0063ustom_tool_call","call_id":"c1","name":"exec","input":"ok"}`
+	const result = `{"type":"\u0063ustom_tool_call_output","call_id":"c1","output":"done"}`
+	for _, tc := range []struct {
+		name   string
+		mode   CustomToolsMode
+		input  string
+		reason Reason
+	}{
+		{"reject declaration", CustomToolsReject, "", ReasonUnsupportedProtocol},
+		{"multiple outputs", CustomToolsFunction, call + "," + result + "," + result, ReasonUnsupportedProtocol},
+		{"orphan output", CustomToolsFunction, result, ReasonInvalidCustomInput},
+		{"unpaired input", CustomToolsFunction, strings.Replace(call, `"input":"ok"`, `"input":"\ud800"`, 1) + "," + result, ReasonInvalidCustomInput},
+		{"invalid UTF-8 input", CustomToolsFunction, strings.Replace(call, "ok", string([]byte{0xff}), 1) + "," + result, ReasonInvalidCustomInput},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := []byte(`{"tools":[` + declaration + `],"input":[` + tc.input + `]}`)
+			policy := RoutePolicy{ClientSearch: ClientSearchNative, CustomTools: tc.mode, CustomGrammar: CustomGrammarDescribe}
+			limits := DefaultLimits()
+			limiter := NewLimiter(limits)
+			prepared, err := Prepare(body, policy, limits, limiter)
+			if prepared.Attempt != nil {
+				prepared.Attempt.Close()
+			}
+			var compat *ToolCompatibilityError
+			if !errors.As(err, &compat) || compat.Reason != tc.reason || len(prepared.Body) != 0 {
+				t.Fatalf("escaped metadata bypassed %s: err=%v", tc.reason, err)
+			}
+			if n, b := limiter.Usage(); n != 0 || b != 0 {
+				t.Fatalf("rejected request retained a lease: %d/%d", n, b)
+			}
+		})
+	}
+}
+
+func TestCustomBufferedEscapedTypeRestoresIdentity(t *testing.T) {
+	policy := RoutePolicy{ClientSearch: ClientSearchNative, CustomTools: CustomToolsFunction, CustomGrammar: CustomGrammarDescribe}
+	limits := DefaultLimits()
+	prepared, err := Prepare([]byte(`{"tools":[{"type":"custom","name":"exec"}],"input":[]}`), policy, limits, NewLimiter(limits))
+	if err != nil || prepared.Attempt == nil {
+		t.Fatalf("prepare control: %v", err)
+	}
+	defer prepared.Attempt.Close()
+	alias, _ := prepared.Attempt.bridge.Alias(ToolIdentity{Name: "exec", Kind: ToolKindCustom})
+	body := fmt.Sprintf(`{"output":[{"type":"function\u005fcall","id":"fc_escaped","name":%q,"call_id":"c1","arguments":"{\"input\":\"ok\"}"}]}`, alias)
+	restored, err := prepared.Attempt.RewriteResponse([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, _ := decodeValue(restored)
+	item := value.(map[string]any)["output"].([]any)[0].(map[string]any)
+	if item["type"] != "custom_tool_call" || item["name"] != "exec" || item["input"] != "ok" || item["call_id"] != "c1" {
+		t.Fatalf("escaped response leaked a bridge identity: %s", restored)
+	}
+}
+
+func TestOrdinaryCustomMetadataIsNotProtocol(t *testing.T) {
+	for index, body := range []string{
+		`{"tools":[{"type":"function","name":"lookup","parameters":{"type":"object","properties":{"metadata":{"const":{"type":"custom"}}}}}],"input":[]}`,
+		`{"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],"input":[{"type":"function_call","name":"lookup","call_id":"c1","arguments":{"metadata":{"type":"custom_tool_call"}}}]}`,
+	} {
+		for _, escaped := range []bool{false, true} {
+			t.Run(fmt.Sprintf("metadata_%d/escaped_%t", index, escaped), func(t *testing.T) {
+				original := []byte(body)
+				if escaped {
+					original = []byte(strings.ReplaceAll(body, "custom", `\u0063ustom`))
+				}
+				policy := RoutePolicy{ClientSearch: ClientSearchNative, CustomTools: CustomToolsReject}
+				prepared, err := Prepare(original, policy, DefaultLimits(), NewLimiter(DefaultLimits()))
+				if prepared.Attempt != nil {
+					prepared.Attempt.Close()
+				}
+				if err != nil || prepared.Attempt != nil || string(prepared.Body) != string(original) {
+					t.Fatalf("ordinary metadata mistaken for custom protocol: escaped=%v err=%v", escaped, err)
+				}
+				if PayloadUsesToolProtocol(original) {
+					t.Fatal("ordinary metadata selected managed protocol replay")
+				}
+			})
+		}
+	}
+}
 
 func TestCustomBridgeRejectsUnicodeLossAtJSONBoundary(t *testing.T) {
 	policy := RoutePolicy{ClientSearch: ClientSearchNative, CustomTools: CustomToolsFunction, CustomGrammar: CustomGrammarDescribe}

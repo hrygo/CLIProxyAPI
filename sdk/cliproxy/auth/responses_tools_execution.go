@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
+
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
@@ -63,9 +65,14 @@ func (m *Manager) responsesToolsCallToFormat(
 	if m == nil || call == nil {
 		return cliproxyexecutor.Response{}, nil
 	}
+	var errClaude error
+	execCtx, execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(execCtx, auth, provider, toFormat, execReq, execOpts)
+	if errClaude != nil {
+		return cliproxyexecutor.Response{}, errClaude
+	}
 	// Only Responses-family input targeting a Responses-family downstream
-	// enters adaptation. Anything else (or unknown) passes through unchanged
-	// even when a route matches the model name.
+	// enters the response-restoring attempt below. Claude client discovery
+	// was prepared separately above; other inputs keep their normal executor.
 	if !isResponsesFamily(execOpts.SourceFormat, cliproxyexecutor.ResponseFormatOrSource(execOpts)) {
 		resp, err := call(execCtx, execReq, execOpts)
 		return resp, err
@@ -75,6 +82,7 @@ func (m *Manager) responsesToolsCallToFormat(
 	payload := responsesToolsPayload(execReq, execOpts)
 	wireBody, attempt, wire, errPrepare := m.prepareResponsesToolsAttempt(route, payload)
 	if errPrepare != nil {
+		responsestools.ReportPreparationFailure(execCtx, errPrepare)
 		return cliproxyexecutor.Response{}, errPrepare
 	}
 	if attempt == nil {
@@ -112,6 +120,7 @@ func (m *Manager) responsesToolsCallToFormat(
 	}
 	restored, errRestore := attempt.RewriteResponse(resp.Payload)
 	if errRestore != nil {
+		responsestools.ReportResponseFailure(execCtx, "response_restore", errRestore)
 		return cliproxyexecutor.Response{}, errRestore
 	}
 	resp.Payload = restored
@@ -153,15 +162,21 @@ func (m *Manager) responsesToolsCountCall(
 	if m == nil || call == nil {
 		return cliproxyexecutor.Response{}, nil
 	}
+	toFormat := requestToFormat(provider, executor, execReq, execOpts)
+	var errClaude error
+	execCtx, execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(execCtx, auth, provider, toFormat, execReq, execOpts)
+	if errClaude != nil {
+		return cliproxyexecutor.Response{}, errClaude
+	}
 	if !isResponsesFamily(execOpts.SourceFormat, cliproxyexecutor.ResponseFormatOrSource(execOpts)) {
 		return call(execCtx, execReq, execOpts)
 	}
-	toFormat := requestToFormat(provider, executor, execReq, execOpts)
 	route := responsesToolsRoute(auth, provider, execReq.Model, toFormat)
 	route.AuthKind = normalizeAuthKindForPolicy(route.AuthKind)
 	payload := responsesToolsPayload(execReq, execOpts)
 	wireBody, attempt, wire, errPrepare := m.prepareResponsesToolsAttempt(route, payload)
 	if errPrepare != nil {
+		responsestools.ReportPreparationFailure(execCtx, errPrepare)
 		return cliproxyexecutor.Response{}, errPrepare
 	}
 	if attempt == nil {
@@ -203,16 +218,22 @@ func (m *Manager) responsesToolsStreamCall(
 	if m == nil || call == nil {
 		return nil, false, nil
 	}
+	toFormat := requestToFormat(provider, executor, execReq, execOpts)
+	var errClaude error
+	parentCtx, execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(parentCtx, auth, provider, toFormat, execReq, execOpts)
+	if errClaude != nil {
+		return nil, false, errClaude
+	}
 	if !isResponsesFamily(execOpts.SourceFormat, cliproxyexecutor.ResponseFormatOrSource(execOpts)) {
 		result, err := call(parentCtx, execReq, execOpts)
 		return result, false, err
 	}
-	toFormat := requestToFormat(provider, executor, execReq, execOpts)
 	route := responsesToolsRoute(auth, provider, execReq.Model, toFormat)
 	route.AuthKind = normalizeAuthKindForPolicy(route.AuthKind)
 	payload := responsesToolsPayload(execReq, execOpts)
 	wireBody, attempt, wire, errPrepare := m.prepareResponsesToolsAttempt(route, payload)
 	if errPrepare != nil {
+		responsestools.ReportPreparationFailure(parentCtx, errPrepare)
 		return nil, false, errPrepare
 	}
 	if attempt == nil {
@@ -330,6 +351,7 @@ func adaptResponsesToolsStream(parentCtx, attemptCtx context.Context, cancelAtte
 			}
 			frames, errFeed := attempt.Feed(feedPayload)
 			if errFeed != nil {
+				responsestools.ReportResponseFailure(parentCtx, "stream_feed", errFeed)
 				if cancelAttempt != nil {
 					cancelAttempt()
 				}
@@ -345,6 +367,7 @@ func adaptResponsesToolsStream(parentCtx, attemptCtx context.Context, cancelAtte
 	finish:
 		tail, errFinish := attempt.Finish()
 		if errFinish != nil {
+			responsestools.ReportResponseFailure(parentCtx, "stream_finish", errFinish)
 			send(cliproxyexecutor.StreamChunk{Err: errFinish})
 			return
 		}

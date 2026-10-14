@@ -62,6 +62,9 @@ func ValidateRoutePolicy(route RoutePolicy) error {
 	default:
 		return unprocessableError(ReasonInvalidConfiguration, fmt.Errorf("unknown custom-tools mode %q", string(route.CustomTools)))
 	}
+	if err := validateCustomOutputReplayPolicy(route); err != nil {
+		return err
+	}
 	switch route.CustomGrammar {
 	case "", CustomGrammarReject, CustomGrammarDescribe:
 	default:
@@ -91,6 +94,20 @@ func ValidateRoutePolicy(route RoutePolicy) error {
 		}
 	}
 	return nil
+}
+
+func validateCustomOutputReplayPolicy(route RoutePolicy) error {
+	switch route.CustomOutputReplay {
+	case "", CustomOutputReplaySingle:
+		return nil
+	case CustomOutputReplayMultiple:
+		if !IsNativeResponsesFormat(route.Match.UpstreamFormat) {
+			return unprocessableError(ReasonInvalidConfiguration, fmt.Errorf("multiple custom output replay requires an explicit native Responses route"))
+		}
+		return nil
+	default:
+		return unprocessableError(ReasonInvalidConfiguration, fmt.Errorf("unknown custom-output-replay mode %q", route.CustomOutputReplay))
+	}
 }
 
 // NormalizeBaseURL canonicalizes endpoint spellings for comparison: lowercase

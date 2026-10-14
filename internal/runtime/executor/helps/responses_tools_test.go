@@ -26,6 +26,41 @@ func TestValidateOutboundToolContractInactiveIsNoop(t *testing.T) {
 	}
 }
 
+func TestValidateOutboundToolContractHostedMCPChoiceIdentity(t *testing.T) {
+	ctx := cliproxyexecutor.WithWireContract(context.Background(), &cliproxyexecutor.WireContract{
+		RequiredFunctionNames: []string{"lookup"}, ExactFunctionNames: true,
+	})
+	for _, test := range []struct {
+		name     string
+		choice   string
+		reject   bool
+		envelope bool
+	}{
+		{name: "declared-server", choice: `{"type":"mcp","server_label":"declared"}`},
+		{name: "other-server", choice: `{"type":"mcp","server_label":"other"}`, reject: true},
+		{name: "allowed-declared-server", choice: `{"type":"allowed_tools","tools":[{"type":"function","name":"lookup"},{"type":"mcp","server_label":"declared"}]}`},
+		{name: "allowed-other-server", choice: `{"type":"allowed_tools","tools":[{"type":"function","name":"lookup"},{"type":"mcp","server_label":"other"}]}`, reject: true},
+		{name: "wrapped-declared-server", choice: `{"type":"mcp","server_label":"declared"}`, envelope: true},
+		{name: "wrapped-other-server", choice: `{"type":"mcp","server_label":"other"}`, reject: true, envelope: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			payload := `{"tools":[{"type":"function","name":"lookup"},{"type":"mcp","server_label":"declared"}],"tool_choice":` + test.choice + `}`
+			if test.envelope {
+				payload = `{"request":` + payload + `}`
+			}
+			err := ValidateOutboundToolContract(ctx, []byte(payload), 0)
+			if (err != nil) != test.reject {
+				t.Fatalf("hosted MCP choice guard: reject=%v err=%v", test.reject, err)
+			}
+			if err != nil {
+				if status, ok := err.(interface{ StatusCode() int }); !ok || status.StatusCode() != http.StatusUnprocessableEntity {
+					t.Fatalf("expected local 422: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestValidateOutboundToolContractKeepsBridgeAliases(t *testing.T) {
 	ctx := guardTestContext()
 	payload := []byte("{\"tools\": [{\"type\": \"function\", \"name\": \"tool_search\"}, {\"type\": \"function\", \"name\": \"ccb_abc\"}], \"input\": []}")
