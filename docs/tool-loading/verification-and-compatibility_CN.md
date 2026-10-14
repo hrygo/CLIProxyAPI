@@ -4,7 +4,7 @@
 
 ## 1. 结论及证据级别
 
-生产代码基准 `743a5e0a` 的协议修复保留；`66b59e7b` 修复两项 CI fixture 缺陷。冻结候选 `433b93c7d562258e578601c238abd4cadb4856d2` 的完整 CI 已通过，官方客户端最终复测的版本与结果独立记录于第 2.3 节。证据按具体路由、任务和版本解释，不认证普遍可靠率、长期任务质量或账单节省。
+生产代码基准 `743a5e0a` 的协议修复保留；`66b59e7b` 修复两项 CI fixture 缺陷。冻结候选 `bfc5c62c45e8fd6b1ac08f7d9b62192ae76af17a` 的完整 CI 已通过，官方客户端最终复测的版本与结果独立记录于第 2.3 节。证据按具体路由、任务和版本解释，不认证普遍可靠率、长期任务质量或账单节省。
 
 | 证据类别 | 本报告如何使用 |
 | --- | --- |
@@ -19,7 +19,7 @@
 
 ## 2. 最终代码工程验证
 
-冻结候选 `433b93c7` 的 [完整 CI](https://github.com/hrygo/CLIProxyAPI/actions/runs/38489395961) 全部成功，使用 Go `1.26.4`，不联系真实 Provider。该候选的 Go 内容与本地完整门禁通过的 `eb5475e8` 相同。
+冻结候选 `bfc5c62c` 的 [完整 CI](https://github.com/hrygo/CLIProxyAPI/actions/runs/38490706422) 全部成功，使用 Go `1.26.4`，不联系真实 Provider。该候选的 Go 内容与本地完整门禁通过的 `eb5475e8` 相同。
 
 | 检查 | 结果与口径 |
 | --- | --- |
@@ -29,7 +29,7 @@
 | tracked gofmt | 通过；使用固定 Go toolchain。 |
 | 离线 Codex model catalog | 通过。 |
 | 既有维护工具回归 | 28 项通过。 |
-| 复现工具回归 | 本地 Python 39 项通过，含真实 stdio MCP、独立代码判定、执行边界、计量、模式和结果绑定；CI 运行其中 21 项 stdlib 计量回归，无 Provider 或登录依赖。 |
+| 复现工具回归 | 本地 Python 46 项通过，含真实 stdio MCP、独立代码判定、执行边界、计量、模式和结果绑定；CI 运行其中 21 项 stdlib 计量回归，无 Provider 或登录依赖。 |
 | CI 定向稳定性检查 | 三个 WebSocket 上传测试、TTFT 及 usage 归属测试各连续 50 次通过，原功能断言保留。 |
 | optional live/corpus/TLS | 既有条件跳过不代表对应外部能力通过；新增生产回归未以跳过代替执行。 |
 
@@ -54,7 +54,7 @@
 | 原生多结果 | 合法多结果逐项重放；结果内容、metadata、身份、数量与顺序篡改本地拒绝。 | 限于显式支持的原生 route；跨协议一对多不普遍支持。 |
 | 多结果调用参数 | HTTP/SSE 各 13 类篡改本地拒绝、零 mock 上游请求；合法及无参调用通过。 | 哈希保护范围不是所有 conversation 内容。 |
 | Claude 活跃集合 | 五种 executor 的 HTTP/SSE 共 80 个子案例：58 个非法最终请求零上游发送；20 个正常及 2 个 xAI 合法修复对照允许发送。 | 2 个 xAI 对照保留既有孤立 choice→auto 修复，不能算作原强制选择被拒绝。 |
-| Gemini 身份 | 正常/compat 请求、历史、choice、buffered/SSE 使用一致消歧映射；长名、字符替换、大小写与前导下划线对照通过。 | 尚无最终代码的真实 Gemini 身份复测。 |
+| Gemini 身份 | 正常/compat 请求、历史、choice、buffered/SSE 使用一致消歧映射；长名、字符替换、大小写与前导下划线对照通过。 | 最终指定 Gemini/Codex 编码闭环有实际执行和回填；Antigravity Code Mode 线包身份观察器未认证。 |
 | Hosted choice / WS | 32 个 HTTP/SSE/WS 子案例：16 个非法选择零发送、16 个有效对照通过；另 6 个 hosted MCP server identity 子案例通过。 | 声明校验不认证 hosted 执行权限、费用或副作用。 |
 | Claude 协议识别 | 普通文字、名称、schema/参数对照保持普通路径；重复字段与 Unicode 转义按协议位置检查。 | 非原生适配与 native/emergency bypass 分别定义。 |
 | 大目录活跃预算 | 输入工具数组 262,617 B，裁剪后首轮 97 B、发现后 243 B；等于预算通过，小一字节 413。Execute/CountTokens/Stream 均覆盖。 | 合成字节证据不是真实任务 token 收益。 |
@@ -76,29 +76,54 @@
 | buffered 的转义 `function_call` 未恢复，泄漏 custom bridge alias | `743a5e0a` 按解码后的类型恢复 | 原工具名、custom 类型、输入和 call ID 恢复；失败复现与正常对照通过。 |
 | 普通 schema/参数中的 `type:custom*` 被递归识别为协议 | `743a5e0a` 只检查真实声明和顶层历史位置 | 字面、转义普通数据均保留原字节，不触发 managed replay。 |
 
-五类新增缺陷均有先失败后通过的回归。全仓工程验证覆盖最后一项修复；未产生新的 Provider 用量数据。
+五类新增缺陷均有先失败后通过的回归。最终候选全仓门禁与新增 Provider 用量独立记录于第 2.3 节；历史运行结果不替代最终实测。
 
 
-### 2.3 2026-10-14 最终复测的冻结记录
+### 2.3 最终候选与跨 Provider 实测
 
-本轮范围锁定为 CI 时序/归属修复和可复用性能复现入口。保存审计确认：历史 86 个文件均存在于 Git 快照及原工作区，其中 6 个本地文件与历史快照不同，原文件未覆盖。43 个一次性 Python 脚本已复制到系统 tmp 并记录 SHA-256，不纳入生产 PR。仓库保留官方客户端成对运行所需模块及必要回归，原批次编排、认证台账、Docker 和客户端源码构建探针留在历史。
+最终候选为 `bfc5c62c45e8fd6b1ac08f7d9b62192ae76af17a`，SDK binary SHA-256 `0bd462c759ede23d45f1330b520afcef6550097b55af7325f55f47592978fd58`；原生 Go build 信息为 `go1.26.4`、`vcs.modified=false`。后续提交仅整理文档，不改变已测 Go/Python 实现。网关协议运行实现保留 `743a5e0a`，CI fixture 修复为 `66b59e7b`；准入签名判读和目录就绪修复属于性能复现入口。
 
-冻结计划为 8 对、16 个官方客户端案例，两个编码模板，交叉安排 eager→lazy / lazy→eager。Codex `0.160.0` 使用 `code_mode_only`；Claude Code `2.1.289` 使用标准隔离模式及原生 StructuredOutput。GPT：`gpt-6-luna` / `codex` / Responses；Muse：`opencode-go-muse-spark-1.3` → `muse-spark-1.3-contributor` / `meta` / Responses；GLM：`opencode-go-glm53-flash` → `glm-5.3-flash` / configured Chat executor；Gemini：`gemini-3.5-flash-lite` / `antigravity` / wrapped GenerateContent。OpenCode 客户端不在本批内；alias 中的 `opencode-go` 是既有网关路由名称。
+固定范围为 Codex `0.160.0` 的 `code_mode_only`、Claude Code `2.1.289` 的标准隔离模式和原生 StructuredOutput；四个既有路由 × 两客户端 × eager/lazy，预算函数与身份函数两个模板。70 个准入 MCP 工具，真实 read/replace/tests 三工具。顺序交叉安排，Gemini 优先；OpenCode 客户端不在本批，alias 中的 `opencode-go` 不是客户端身份。
 
-| 冻结项 | 判据 |
+| 冻结项 | 实际记录 |
 | --- | --- |
-| 最终版本 | 所有案例使用同一干净 checkout 的 SDK binary；完整 VCS revision 和 binary SHA-256 一致，后续只补充结果文档。 |
-| 配置与身份 | 既有隔离配置 SHA-256 `5a20c4e8a9ee9502736b60dbe4cd27c32ec3f57a0eadbd11db436113b97f0831`；operator config SHA-256 `a746ab767d3e1ab33ed5e513f61dd119854b5ebc17db9f1a7e2053f0976a31f7`。OAuth 以已选文件的当前内容哈希冻结，未写入或刷新凭据。 |
-| 预算 | 单案 120 秒、16 次物理 HTTP 尝试、16 次 MCP dispatch；整批最多 160 次物理尝试，全部已开始案例及失败纳入分母。 |
-| 任务闭环 | 有效模式 + 真实 read/replace/test + 独立 behavioral gold + source hash / nonce 回填 + CLI 正常退出 + 客户端及上游合法终态。 |
-| 计量 | 逐请求 input/output/cache/reasoning、首轮/峰值/全任务输入、物理尝试及耗时；缺失、冲突计量与成本/账单保持未知。 |
-| 权限范围 | 仅临时 MCP 编码任务；禁止 mutation 零 dispatch、零 fixture effect、最终 active=0。隔离 runner 禁用 hosted image generation，不外推为完整权限/取消认证。 |
-| 解释范围 | 每条客户端路由只有一个模板配对；不按小样本宣称可靠率、单侧非劣性或普遍收益，不池化历史不同 revision 的样本。 |
+| 配置 | 完整 operator source SHA-256 `a746ab767d3e1ab33ed5e513f61dd119854b5ebc17db9f1a7e2053f0976a31f7`，仅在临时 SDK 中隔离路由并禁用 hosted image generation；默认文件未写入。 |
+| 客户端 | 官方已安装发行版；Codex SHA-256 `112fae7a5a1223e673c8a1791d32338f37df8b527ff1159bb8adac6c4dbf1b4b`，Claude SHA-256 `03d66745e3bb69ec727d66023696f3820bc0a00a8a5ba725eb6706d0c67cbe69`；未构建、升级或替换客户端。 |
+| 身份 | OAuth 仅同一显式选定文件，以当前内容哈希冻结；API-key route 由原配置绑定；实际 attempt 的 executor/model/auth 摘要均校验。未刷新、写入或自动换账号。 |
+| 单案预算 | 120 秒，包含目录就绪等待；最多 16 次物理 HTTP attempts、16 次 MCP dispatch，受整批剩余预算进一步限制。 |
+| 最终批 | 16 planned，15 started，15 finished，7 严格通过；76 次物理请求，含 4 次辅助和 14 次 HTTP 429；`run_attempt_budget` 停止。Claude/GLM eager 未开始；lazy 仅剩一次物理请求预算，未完成任务。 |
+| 本轮全量 | 52 planned、51 started/finished、160 次物理请求；此前 36 案、84 次与最终 15 案、76 次分批保留，不池化不同版本和材料。 |
+| 执行边界 | 15/15 案有 MCP 边界观测，共 34 dispatch；forbidden/effects/final active 均为 0。限于 MCP fixture，不外推 hosted 或所有取消入口。 |
+| 任务质量 | 10/15 案代码修改及独立行为检查通过；代码通过不能替代模式、加载顺序、真实执行、回填和终态判据。 |
+| 材料保全 | config/client/fixture Python/binary 首尾摘要一致；credential 变化另按实际启动拒绝记录。 |
 
+| 客户端 / 路由 / 任务 | 严格通过 E/L | 模式判读 E/L | 代码行为 E/L | 物理请求 E/L |
+| --- | --- | --- | --- | --- |
+| codex / Gemini / identity | 0/0 | 未认证/未认证 | 10/10 · 10/10 | 4/9 |
+| claude / Gemini / identity | 0/0 | 通过/未完成 | 5/10 · 5/10 | 8/8 |
+| codex / GPT / budget | 1/1 | 通过/通过 | 11/11 · 11/11 | 6/5 |
+| claude / GPT / budget | 1/1 | 通过/通过 | 11/11 · 11/11 | 4/5 |
+| codex / Muse / identity | 1/0 | 通过/未完成 | 10/10 · 10/10 | 5/10 |
+| claude / Muse / identity | 1/1 | 通过/通过 | 10/10 · 10/10 | 4/5 |
+| codex / GLM / budget | 0/0 | 通过/未完成 | 4/11 · 4/11 | 1/1 |
+| claude / GLM / budget | 未开始/0 | 未开始/未完成 | 未开始 · 4/11 | 未开始/1 |
 
-修订记录（已冻结）：首轮 `eb5475e8` 完成 16/16 案例、24 次物理请求。Codex eager 判读将禁止工具计入预期目录，造成一个误报，已以 70 个实际准入工具复现并修复；首轮 journal 保留。首轮隔离配置仅适合 Codex，Muse 缺原生 API-key 源，GLM 未完成 readiness，Gemini 模型目录未就绪；这些不计为 Provider 协议失败。正式复测改读完整 operator source `a746ab76…`，不写默认配置，取消可选 notify 附加任务；每对的源码、配置、模型与输入任务保持一致。首轮 24 次计入总预算，正式复测最多 136 次，累计仍不超过 160 次。最终 SDK binary 的完整 revision、hash 与执行脚本 hash 独立记录。
+7/15 是这批的严格结果计数，不能解释为总体可靠率或网关故障率。Gemini/Codex 两臂有真实执行、10/10 代码行为检查、nonce/hash 回填和合法终态；当前 Code Mode 观察器仅覆盖 Responses/Chat，无法认证 Antigravity，原 `mode=false` 不证明网关或模型故障。Muse/Codex lazy 也通过代码及回填，但 read/replace 的调用发生在观察到相应 schema 前，不满足冻结的加载顺序判据，首轮省略声明不能替代该判据。Gemini/Claude 两案各七次实际上游 429，没有 MCP dispatch，最终达到过程预算；确切配额原因未知。GLM/Codex 两案各一个合法结束的模型请求、零 dispatch、代码未改，不构成工具闭环。
 
-复现命令见 [ops/tool-loading](../../ops/tool-loading/README.md)。本节与 token 报告记录最终实际结果；冻结计划本身不计为通过。
+#### 本轮保留的准备与失败记录
+
+| 范围 / revision | started/finished · 严格通过 | 物理请求 | 责任与复用边界 |
+| --- | --- | --- | --- |
+| 首轮 / `eb5475e8` | 16/16 · 3 | 24 | Codex-only source 未覆盖其余路由；一个 eager 判读误计禁止工具，70 个准入签名回归已修复。原 journal 不改写。 |
+| 完整配置 / `433b93c7` | 16/16 · 9 | 56 | GPT/Codex lazy 10/11 行为检查；GLM/Codex 零 dispatch；Gemini 四案 binding_content_mismatch，零上游请求。 |
+| Gemini 定向 / `433b93c7` | 4/4 · 0 | 4 | 只有辅助发现请求；首次空目录被过早判失败并取消发现。复现入口已恢复同进程 pid/nonce/active 校验及有预算的真实目录等待。 |
+| 最终 / `bfc5c62c` | 15/15 · 7 | 76 | 一案未开始及一案预算不足均保留；上表为最终结果，不覆盖前批质量失败。 |
+
+目录等待只重读本机真实 catalog，不发起新的上游发现或填造 metadata；工作结束仍无模型立即拒绝。该修复及七项既有就绪回归保存在同一复现模块。运行期间未改写已测源码或 capture；各准备批不升级为最终版本认证。
+
+保存审计确认历史 86 个工具文件在 Git 快照和原工作区均完整存在，6 个本地改动保留；43 个一次性 Python 脚本另有系统 tmp 副本和 SHA-256 清单。仓库只保留性能复现所需的 32 个文件及回归，原批次编排、认证台账、Docker 和客户端源码探针留在历史。新二进制、清单、日志、journal、原始请求/响应和一次性提取脚本均在系统 tmp。
+
+复现入口见 [ops/tool-loading](../../ops/tool-loading/README.md)。完整数值见[token 报告第 11 节](token-usage-report_CN.md#11-最终候选的完整用量记录)。本轮完成的是有预算的有限实测，未完成全部 16 格认证。
 
 ## 3. 客户端与模型范围
 
@@ -157,7 +182,7 @@
 | T24 Codex 通知 coding / `832c8fbf` | 原 verdict 失败；独立审计确认闭环、代码及 11/11 gold | 7 请求、5 MCP dispatch | 原观测器漏识别 namespace/多输出，不改写旧判定；没有 eager 对照。 |
 | T26 官方 Codex pair / `0efa8a28` | 两臂代码及各 11/11 gold；独立审计结果均 true | 10 请求、6 MCP dispatch | 原 journal 标签与审计存在差异，外层脚本退出 1；见第 5 节。 |
 | T27 官方 Claude pair / `e202aaa8` | 两臂代码及各 11/11 gold；独立审计结果均 true | 9 请求、6 MCP dispatch | 原 journal 标签与审计存在差异；见第 5 节。 |
-| 最终生产代码 / `743a5e0a` | 工程验证通过 | 没有新增真实 Provider 请求 | 不继承上述候选的运行认证。 |
+| 最终候选 / `bfc5c62c` | 15/15 finished，7 严格通过；1 planned 未开始 | 76 物理请求、34 MCP dispatch | 有预算的固定编码任务；模式、代码、外部可用性和失败分母见第 2.3 节。 |
 
 T14 两份 plan 同 revision、binary 和配置材料，覆盖计数为 44/60 safe、210 请求、55 dispatch；两个 run 边界保持独立。T9、T14 和 T20 的分母不能累计成某个通用可靠率。
 
@@ -243,7 +268,7 @@ Code Mode 无界 CPU 循环的本机探针需要外部 20 秒预算终止；显�
 | GLM 缺终止事件 | 明确 source finish 的 Chat→Responses reasoning-only 映射已修复；缺真实 finish/DONE 不补造完成。旧标题请求还存在读取收尾/采集不完整可能，后续关闭屏障没有复现旧时序。 | 网关已修复可证明的转换缺口；历史异常唯一根因未知。 |
 | GLM tool result `name` | 指定 glm-* Chat 目标拒绝非标准 tool-result name，适配移除此字段并保留 tool_call_id/顺序。 | 定向兼容；不全局删除其他目标的扩展字段。 |
 | Gemini 检索偏选 | 早期 decoy 选择已发生在客户端生成的请求/模型调用之前；选中 schema 的传递有 translator 回归。 | 有证据部分是客户端/模型检索决策，未证明网关排名故障；网关不另建检索器。 |
-| Gemini 名称碰撞 | 长名/字符替换后同名、canonical fallback 串名已复现并修复。 | 网关生产回归通过，最终 live 复测未知。 |
+| Gemini 名称碰撞 | 长名/字符替换后同名、canonical fallback 串名已复现并修复。 | 网关生产回归通过；最终指定 Gemini/Codex 编码闭环成立，名称碰撞真实场景和 Antigravity Code Mode 身份观察器未全面认证。 |
 | Gemini / Claude 429 | 实际 upstream HTTP 429 有捕获；Codex 同声明模型有部分成功。 | Provider 响应可用性边界；配额条件、持续性及 thinking 因果未知。 |
 | 冻结材料漂移 | 默认配置变更被用户确认是其他任务预期操作；另有 credential binding 内容变动导致本批拒绝。 | 运维/运行材料边界；不回退用户配置，不自动刷新、换账号或更换失败分母。 |
 | Muse 空 custom 参数 | 实际函数 required input，模型返回 `{}`；网关 `upstream_contract`，零 MCP attempts/dispatch。原框架分类保留。 | 模型违反出站契约；新增固定响应诊断已回归，真实拒绝回执和 WS 诊断未新增 live 验证。 |
@@ -252,7 +277,7 @@ Code Mode 无界 CPU 循环的本机探针需要外部 20 秒预算终止；显�
 | Grammar / flatten | grammar 仅描述、循环引用变宽。 | 显式兼容损失，原始参数校验由执行端负责。 |
 | Hosted 工具 | final choice 声明存在性及 server identity 已校验。 | 真实授权、副作用、operator 注入和费用没有全量证据；MCP 零 dispatch 不覆盖 hosted。 |
 | Provider 用量 | Gemini wrapper snapshots 有回退与修正；其他 route 的 cache-write 部分缺字段。 | 权威计量/实际账单未知，见 token 报告。 |
-| 最终代码端到端覆盖 | 最后解析、预算和身份修复后未新增 Provider 测量。 | 历史闭环不升级为最终版本全路线认证。 |
+| 最终代码端到端覆盖 | 冻结候选 15 案结束、7 严格通过，1 planned 未开始；模式观察器、模型、上游 429 和预算限制分别记录。 | 有限实测，不认证未完成或未覆盖的模式、长任务和传输。 |
 | 任务质量与长期净收益 | 固定非编码模板和单函数 coding pilot 有数据；代表性多文件、长会话、故障切换样本不足。 | 结论为有限实测；缺口不自动产生新测试设施或大规模抽样交付。 |
 
 ## 8. 证据范围与最小验证入口

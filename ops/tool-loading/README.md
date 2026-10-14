@@ -110,6 +110,17 @@ client and upstream terminal events, and no forbidden MCP dispatch or unreleased
 fixture work. A nonzero CLI exit does not become a success because its source
 file passes the checker.
 
+For Antigravity, a missing model is re-read while the same listener's authenticated
+catalog-state receipt reports pending native discovery. This consumes the case
+deadline and does not initiate another upstream discovery. A settled missing model,
+invalid readiness receipt or incompatible model capability is rejected.
+
+The strict Code Mode history observer covers native and bridged Responses and
+Chat. It does not yet normalize Antigravity Code Mode history. A Codex/Antigravity
+case can complete its code task while its strict mode check remains unverified;
+the generic `model_or_mode` journal label does not establish a model or gateway
+fault. Do not certify a mode or paired saving from that label alone.
+
 `per_request` exports allowlisted numeric usage, HTTP status, completion basis
 and normalized counters. Raw bodies stay in the private capture. Input/cache and
 output/reasoning counters retain their provider contract. Incomplete or conflicting
