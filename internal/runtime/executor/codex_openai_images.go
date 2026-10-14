@@ -488,6 +488,7 @@ func (e *CodexExecutor) prepareDirectOpenAIImageBody(auth *cliproxyauth.Auth, re
 	if errPrepare != nil {
 		return nil, "", "", errPrepare
 	}
+	body = helps.ApplyPayloadConfigWithRequest(e.cfg, model, "openai", codexOpenAIImageSourceFormat, "", body, body, helps.PayloadRequestedModel(opts, req.Model), helps.PayloadRequestPath(opts), opts.Headers)
 	return body, contentType, model, nil
 }
 

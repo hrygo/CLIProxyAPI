@@ -129,10 +129,7 @@ func TestConvertOpenAIResponsesRequestToClaude_OmittedMaxOutputTokensUsesRegistr
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			out, errConvert := ConvertOpenAIResponsesRequestToClaude(tc.model, []byte(tc.raw), false)
-			if errConvert != nil {
-				t.Fatalf("convert: %v", errConvert)
-			}
+			out := ConvertOpenAIResponsesRequestToClaude(tc.model, []byte(tc.raw), false)
 			if got := gjson.GetBytes(out, "max_tokens").Int(); got != tc.wantLimit {
 				t.Fatalf("max_tokens = %d, want %d; output=%s", got, tc.wantLimit, out)
 			}
