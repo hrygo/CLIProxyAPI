@@ -265,4 +265,3 @@ def candidate_process(binary, config, root, profile, *, max_attempts=16):
             from evidence import read_auxiliary_work_diagnostics
             if read_auxiliary_work_diagnostics(root / "gateway-state" / "capture") is None:
                 raise ValueError("candidate auxiliary work settlement is unverified")
-

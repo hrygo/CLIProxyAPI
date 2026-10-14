@@ -56,4 +56,3 @@ def paired_summary(cases):
             "safe_successes": sum(x.get("status") == "finished" and x.get("safe_task_success") is True for x in cases),
             "pairs": pairs, "billing": None,
             "confidence": "limited measured evidence; no reliability or cost certification"}
-

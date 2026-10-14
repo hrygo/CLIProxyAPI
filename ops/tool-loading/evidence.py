@@ -351,4 +351,3 @@ def read_http_attempts(directory: Path) -> list[dict[str, Any]]:
         else:
             raise ValueError("unknown HTTP journal event")
     return list(records.values())
-

@@ -126,4 +126,3 @@ also exercises real stdio MCP and bounded workers. See the
 [verification report](../../docs/tool-loading/verification-and-compatibility_CN.md)
 and [token report](../../docs/tool-loading/token-usage-report_CN.md) for frozen
 versions, measured results and limitations.
-
