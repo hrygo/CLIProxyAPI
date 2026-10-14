@@ -165,6 +165,7 @@ python3 ops/tests/test_maintenance.py
 - [配置示例](config.example.yaml)
 - [管理 API](docs/management-api-v8.md)
 - [Responses 工具](docs/responses-tools_CN.md)
+- [各端工具按需加载配置手册](docs/tool-loading/client-configuration_CN.md)
 - [SDK 使用](docs/sdk-usage_CN.md)
 - [SDK 认证](docs/sdk-access_CN.md)
 - [SDK 进阶](docs/sdk-advanced_CN.md)

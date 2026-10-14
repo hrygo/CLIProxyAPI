@@ -8,6 +8,8 @@
 [验证与兼容报告](tool-loading/verification-and-compatibility_CN.md)及
 [逐请求 token 报告](tool-loading/token-usage-report_CN.md)。
 
+客户端启用步骤、生效条件、验证及回退见[各端配置手册](tool-loading/client-configuration_CN.md)。
+
 ## 背景
 
 延迟加载取决于客户端的有效模式及模型/provider metadata，包括 Codex 搜索
