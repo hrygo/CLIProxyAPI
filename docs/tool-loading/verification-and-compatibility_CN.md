@@ -4,7 +4,7 @@
 
 ## 1. 结论及证据级别
 
-生产代码基准 `743a5e0a` 的协议修复保留；`66b59e7b` 修复两项 CI fixture 缺陷。冻结候选 `bfc5c62c45e8fd6b1ac08f7d9b62192ae76af17a` 的完整 CI 已通过，官方客户端最终复测的版本与结果独立记录于第 2.3 节。证据按具体路由、任务和版本解释，不认证普遍可靠率、长期任务质量或账单节省。
+生产代码基准 `743a5e0a` 的协议修复保留；本轮修复三项 CI fixture 缺陷：上传收尾时序、usage 归属和重连握手顺序。冻结候选 `bfc5c62c45e8fd6b1ac08f7d9b62192ae76af17a` 的完整 CI 已通过，后续工程修订只追加 fixture 修复和文档，未改网关运行实现或性能工具。官方客户端最终复测的版本与结果独立记录于第 2.3 节。证据按具体路由、任务和版本解释，不认证普遍可靠率、长期任务质量或账单节省。
 
 | 证据类别 | 本报告如何使用 |
 | --- | --- |
@@ -21,6 +21,8 @@
 
 冻结候选 `bfc5c62c` 的 [完整 CI](https://github.com/hrygo/CLIProxyAPI/actions/runs/38490706422) 全部成功，使用 Go `1.26.4`，不联系真实 Provider。该候选的 Go 内容与本地完整门禁通过的 `eb5475e8` 相同。
 
+最终追加的重连 fixture 修复已在 Go `1.26.4` 下重新通过全仓 test/vet/server build：102 个 package 返回 `ok`，29 个无测试文件。此次验证不发起 Provider 请求；冻结用量仍绑定 `bfc5c62c`，没有用测试修订冒充新的端到端候选。
+
 | 检查 | 结果与口径 |
 | --- | --- |
 | `go test ./... -count=1` | 本地全套 102 个 package 返回 `ok`，包括恢复的 SDK 隔离 launcher 回归；29 个 package 为 `[no test files]`。CI 全仓测试通过。 |
@@ -30,19 +32,20 @@
 | 离线 Codex model catalog | 通过。 |
 | 既有维护工具回归 | 28 项通过。 |
 | 复现工具回归 | 本地 Python 46 项通过，含真实 stdio MCP、独立代码判定、执行边界、计量、模式和结果绑定；CI 运行其中 21 项 stdlib 计量回归，无 Provider 或登录依赖。 |
-| CI 定向稳定性检查 | 三个 WebSocket 上传测试、TTFT 及 usage 归属测试各连续 50 次通过，原功能断言保留。 |
+| CI 定向稳定性检查 | 三个 WebSocket 上传测试、TTFT、usage 归属及重连状态测试共六个顶层测试各连续 50 次通过，原功能断言保留。重连测试含 Codex non-stream、Codex stream、xAI stream 三个子例；受控乱序探针修复前全部失败，修复后各重复 10 次通过。 |
 | optional live/corpus/TLS | 既有条件跳过不代表对应外部能力通过；新增生产回归未以跳过代替执行。 |
 
-本轮 Go 变化为两个 executor 测试文件和可复用 SDK launcher；网关协议运行实现未变。CI 增加离线计量检查，没有真实 Provider 请求。旧阶段报告的包数属于其各自 revision，不能替代当前门禁结果。
+本轮 Go 变化为三个 executor 测试文件和可复用 SDK launcher；网关协议运行实现未变。CI 增加离线计量检查，没有真实 Provider 请求。旧阶段报告的包数属于其各自 revision，不能替代当前门禁结果。
 
-文档提交 `1559ce513937fe38339e42ee5c1bb5228437b532` 的 CI 两次尝试均在 Test 步骤失败，Build 未执行；不能将该提交的 CI 标为通过：
+文档提交 `1559ce513937fe38339e42ee5c1bb5228437b532` 的 CI 两次尝试，以及后续文档提交 `6c999856c7c11ef76a74899c0af6c9c7c9b28b91` 的 CI，均在 Test 步骤失败，Build 未执行。失败记录保留，不标为通过：
 
 | CI 尝试 | 实际失败 | 复核边界 |
 | --- | --- | --- |
 | [第一次](https://github.com/hrygo/CLIProxyAPI/actions/runs/38481971551/job/115586446466) | `TestCodexWebsockets_KeepalivePingDuringUpload_Sessionless`：上传时连接已关闭 | 受控调度复现：fixture 收到 Pong 后，在请求上传完成前回复并关闭连接。修复使服务器确认已读完请求后再回复；仍断言上传阻塞期间能收到 Pong。三个同类测试统一修复。 |
 | [第二次](https://github.com/hrygo/CLIProxyAPI/actions/runs/38481971551/job/115588836183) | `TestAIStudioExecutorExecuteStartsTTFTBeforeRelayWait`：257.66µs，期望至少 40ms | 注入另一执行的同 provider/model usage record，旧 helper 可选错记录，受控测试失败。每次测试用唯一 AuthID，helper 同时匹配 provider/model/AuthID；新增错归属回归，保留 TTFT ≥40ms 断言。 |
+| [后续文档提交](https://github.com/hrygo/CLIProxyAPI/actions/runs/38492630781/job/115621173646) | `TestWebsocketRetryBindFailureClearsActiveSessionState/xAI_stream`：第二次请求 unexpected EOF | fixture 在发送 Upgrade 握手后才分配连接序号；客户端快速重连可使恢复连接抢先取得序号 2，被当作拒绝连接关闭。强制该乱序时 Codex non-stream/stream、xAI stream 三子例均复现同类 EOF。修复在握手前预留序号，保留 Bind 拒绝、活跃状态清理、恢复调用及连接数断言。 |
 
-两项失败在修复前属于既有测试缺陷，不是文档变更引入的网关运行故障。修复提交 `66b59e7b` 的 [CI](https://github.com/hrygo/CLIProxyAPI/actions/runs/38485472454) 和冻结候选 CI 均通过；原两次失败、先失败后通过的本地证据保留。有限重复验证不等于 CI 永不波动。
+三项失败均定位到既有 fixture 的时序或归属缺陷，未发现对应的网关运行故障证据。前两项修复提交 `66b59e7b` 的 [CI](https://github.com/hrygo/CLIProxyAPI/actions/runs/38485472454) 和冻结候选 CI 均通过；第三项修复的受控验证、定向重复和全仓本地门禁通过。最新提交的远端检查记录见 [PR #25 checks](https://github.com/hrygo/CLIProxyAPI/pull/25/checks)。原失败和修复前后证据均保留；有限重复验证不等于 CI 永不波动。
 
 ### 2.1 生产协议与发送保护
 
@@ -81,7 +84,7 @@
 
 ### 2.3 最终候选与跨 Provider 实测
 
-最终候选为 `bfc5c62c45e8fd6b1ac08f7d9b62192ae76af17a`，SDK binary SHA-256 `0bd462c759ede23d45f1330b520afcef6550097b55af7325f55f47592978fd58`；原生 Go build 信息为 `go1.26.4`、`vcs.modified=false`。后续提交仅整理文档，不改变已测 Go/Python 实现。网关协议运行实现保留 `743a5e0a`，CI fixture 修复为 `66b59e7b`；准入签名判读和目录就绪修复属于性能复现入口。
+最终候选为 `bfc5c62c45e8fd6b1ac08f7d9b62192ae76af17a`，SDK binary SHA-256 `0bd462c759ede23d45f1330b520afcef6550097b55af7325f55f47592978fd58`；原生 Go build 信息为 `go1.26.4`、`vcs.modified=false`。后续仅修订文档和 executor 测试 fixture，不改变已测网关运行实现或 Python 复现工具。网关协议运行实现保留 `743a5e0a`；三项 CI fixture 修复见第 2 节。准入签名判读和目录就绪修复属于性能复现入口。
 
 固定范围为 Codex `0.160.0` 的 `code_mode_only`、Claude Code `2.1.289` 的标准隔离模式和原生 StructuredOutput；四个既有路由 × 两客户端 × eager/lazy，预算函数与身份函数两个模板。70 个准入 MCP 工具，真实 read/replace/tests 三工具。顺序交叉安排，Gemini 优先；OpenCode 客户端不在本批，alias 中的 `opencode-go` 不是客户端身份。
 
