@@ -11,13 +11,14 @@ This repository is the self-maintained
 [`hrygo/CLIProxyAPI`](https://github.com/hrygo/CLIProxyAPI) fork. It tracks
 selected upstream releases from
 [`router-for-me/CLIProxyAPI`](https://github.com/router-for-me/CLIProxyAPI)
-and publishes independent `vX.Y.Z` releases.
+and publishes independent `vX.Y.Z-upstreamA.B.C` releases.
 
 ## Project Status
 
 | Item | Value |
 | --- | --- |
 | Development branch | `main` |
+| Published release | [v1.3.0-upstream8.0.16](https://github.com/hrygo/CLIProxyAPI/releases/tag/v1.3.0-upstream8.0.16) |
 | Go toolchain | `1.26.4` |
 | Module path | `github.com/router-for-me/CLIProxyAPI/v8` |
 | Upstream policy | Released upstream versions only; individual commits are assessed |
@@ -32,12 +33,50 @@ release's notes. See [Maintenance and releases](docs/maintenance.md).
 - OpenAI, Gemini, Claude and Grok compatible API surfaces.
 - Streaming, non-streaming and WebSocket responses where supported.
 - Function calling, tool search and multimodal inputs.
+- Deferred tool declaration and activation across supported provider routes;
+  clients retain tool discovery, authorization and execution.
 - OAuth authentication and API-key authentication.
 - Multiple accounts with round-robin scheduling and route policies.
 - Pluggable OpenAI-compatible upstream providers.
 - File-based, PostgreSQL, Git and object-store persistence backends.
 - Management API, configuration hot reload and observability.
 - Reusable Go SDK for embedding the proxy in another service.
+
+## Deferred Tool Loading: Measured Results
+
+`v1.3.0-upstream8.0.16` includes cross-provider tool-loading fixes for official
+Codex and Claude Code. The frozen candidate `bfc5c62c` was tested with Codex
+`0.160.0` and Claude Code `2.1.289`; the following three comparable fixed-task
+pairs passed in both eager (full declarations) and lazy (on-demand) modes.
+Figures were verified on 2026-10-14.
+
+| Client / route / task | First input reduction | Peak input reduction | Cumulative input tokens, eager → lazy | Cumulative input reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Codex / GPT / budget | 67.22% | 65.28% | 317,874 → 89,527 | 71.84% |
+| Claude Code / GPT / budget | 94.40% | 91.26% | 160,384 → 14,490 | 90.97% |
+| Claude Code / Muse / identity | 94.25% | 91.72% | 195,991 → 17,601 | 91.02% |
+
+**Metric definitions:** first input counts input tokens in the first actual
+model request; peak input is the largest single-request input; cumulative
+input sums all model requests, including discovery, retransmitted history,
+failures and retries.
+Reported cached input is included; output is separate. Each reduction uses
+its own eager baseline, so cumulative reduction can exceed first or peak
+reduction. Missing usage stays unknown. Input reduction is not billing savings.
+
+**Coverage and limits:** the final batch finished 15 of 16 planned cases,
+with 7 strict passes and 10 independent code-check passes; one case was not
+started when the budget ran out. These are one fixed-task pair per listed
+route, not a general success rate or a confidence interval. Gemini usage
+remains unverified; Codex/Muse loading order and GLM execution did not meet all
+acceptance checks. Some historical tasks increased cumulative input, and lower
+input does not guarantee lower latency or cost.
+
+See the [implementation report](docs/tool-loading/design-and-implementation_CN.md),
+[verification and compatibility report](docs/tool-loading/verification-and-compatibility_CN.md),
+[complete per-request token report](docs/tool-loading/token-usage-report_CN.md)
+and [reproduction tools](ops/tool-loading/README.md). The reports are in Chinese
+and retain failures, retries, unknown usage and client/provider boundaries.
 
 ## Quick Start
 
