@@ -4,7 +4,6 @@ attrs==26.1.0
 jsonschema-specifications==2025.9.1
 referencing==0.37.0
 rpds-py==2026.9.1
--r requirements.txt
 mcp==1.26.0
 annotated-types==0.8.0
 anyio==4.15.1
