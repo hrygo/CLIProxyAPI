@@ -106,7 +106,8 @@ def wire_observations(capture, requests, client, mode, task):
     if client == "codex":
         contract = next(x["contract"] for x in requests if x["contract"] != "antigravity-auxiliary-v1")
         tools = declarations(contract, bodies[0])
-        observed = observe_code_mode(tools, mode, coding_task=task, wire_contract=contract)
+        observed = observe_code_mode(tools, mode, coding_task=task, wire_contract=contract,
+                                     client_denied=["fixture_mutation"], service_denied=["fixture_mutation"])
         view = normalize_code_mode_wire(bodies, contract)
         observed["wire_history_integrity"] = view["integrity"]
         discovery = observe_code_discovery(view["bodies"], coding_task=task) if mode == "lazy" else None

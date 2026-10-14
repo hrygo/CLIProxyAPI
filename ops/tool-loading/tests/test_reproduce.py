@@ -8,9 +8,26 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from reproduce import client_result, validate_manifest
+from reproduce import wire_observations
+from catalog_fixture import build_catalog
 
 
 class ReproductionTests(unittest.TestCase):
+    def test_eager_mode_counts_only_tools_admitted_by_both_permission_boundaries(self):
+        names = [x["name"] for x in build_catalog("budget") if x["name"] != "fixture_mutation"]
+        description = "Run JavaScript code. ALL_TOOLS. " + " ".join(
+            "declare const tools: { mcp__fixture_" + name + "(args: {}): Promise<unknown>; };" for name in names)
+        tool = {"type": "custom", "name": "exec", "description": description,
+                "format": {"type": "grammar", "syntax": "lark", "definition": "start: SOURCE\nSOURCE: /.+/"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "request-000001.body").write_text(json.dumps({"tools": [
+                {"type": "namespace", "name": "functions", "tools": [tool]}]}))
+            effective, _, observed = wire_observations(root, [{"request_id": "request-000001",
+                "contract": "openai-responses-v1"}], "codex", "eager", "budget")
+            self.assertEqual(observed["mode"]["nested_fixture_signatures"], 70)
+            self.assertTrue(effective)
+
     def result(self, client, events):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

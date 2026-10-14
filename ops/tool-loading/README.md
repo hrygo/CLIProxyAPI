@@ -35,7 +35,7 @@ run_dir=$(mktemp -d)
 python3 -m venv "$run_dir/venv"
 "$run_dir/venv/bin/python" -m pip install -r ops/tool-loading/requirements.txt
 export PYTHONPYCACHEPREFIX="$run_dir/pycache"
-GOTOOLCHAIN=go1.26.4 go build -o "$run_dir/gateway" ./ops/tool-loading/live-gateway
+GOTOOLCHAIN=go1.26.4 go build -buildvcs=true -o "$run_dir/gateway" ./ops/tool-loading/live-gateway
 git rev-parse HEAD
 "$run_dir/venv/bin/python" ops/tool-loading/reproduce.py \
   --manifest /absolute/path/to/frozen-manifest.json \
@@ -46,6 +46,17 @@ Supply an external manifest containing no secrets. The config path is read only;
 use an explicitly prepared test source if testing a different route policy.
 Credential bindings are hashes of an explicitly selected file name and contents
 in that config's auth directory. Do not guess or select an arbitrary account.
+
+Go 1.26.4 on this host does not stamp a managed worktree whose ".git" is a file.
+For that case, build the exact frozen revision in a temporary local clone:
+
+```sh
+revision=$(git rev-parse HEAD)
+git clone --shared --no-checkout . "$run_dir/source"
+git -C "$run_dir/source" checkout --detach "$revision"
+(cd "$run_dir/source" && GOTOOLCHAIN=go1.26.4 go build -buildvcs=true \
+  -o "$run_dir/gateway" ./ops/tool-loading/live-gateway)
+```
 
 ```json
 {

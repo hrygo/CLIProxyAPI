@@ -93,6 +93,9 @@
 | 权限范围 | 仅临时 MCP 编码任务；禁止 mutation 零 dispatch、零 fixture effect、最终 active=0。隔离 runner 禁用 hosted image generation，不外推为完整权限/取消认证。 |
 | 解释范围 | 每条客户端路由只有一个模板配对；不按小样本宣称可靠率、单侧非劣性或普遍收益，不池化历史不同 revision 的样本。 |
 
+
+修订记录（已冻结）：首轮 `eb5475e8` 完成 16/16 案例、24 次物理请求。Codex eager 判读将禁止工具计入预期目录，造成一个误报，已以 70 个实际准入工具复现并修复；首轮 journal 保留。首轮隔离配置仅适合 Codex，Muse 缺原生 API-key 源，GLM 未完成 readiness，Gemini 模型目录未就绪；这些不计为 Provider 协议失败。正式复测改读完整 operator source `a746ab76…`，不写默认配置，取消可选 notify 附加任务；每对的源码、配置、模型与输入任务保持一致。首轮 24 次计入总预算，正式复测最多 136 次，累计仍不超过 160 次。最终 SDK binary 的完整 revision、hash 与执行脚本 hash 独立记录。
+
 复现命令见 [ops/tool-loading](../../ops/tool-loading/README.md)。本节与 token 报告记录最终实际结果；冻结计划本身不计为通过。
 
 ## 3. 客户端与模型范围
