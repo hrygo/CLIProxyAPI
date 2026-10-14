@@ -41,7 +41,7 @@ def save(path, value):
     os.replace(tmp, path)
 
 
-def model_metadata(ready, client, mode):
+def _model_metadata_once(ready, client, mode):
     address = urlsplit(ready["base_url"])
     conn = http.client.HTTPConnection(address.hostname, address.port, timeout=5)
     try:
@@ -63,6 +63,56 @@ def model_metadata(ready, client, mode):
     finally:
         conn.close()
 
+
+def _catalog_work_active(ready):
+    address = urlsplit(ready["base_url"])
+    conn = http.client.HTTPConnection(address.hostname, address.port, timeout=0.5)
+    try:
+        conn.request("GET", "/acceptance/catalog-state",
+                     headers={"Authorization": "Bearer local-acceptance-placeholder"})
+        response = conn.getresponse()
+        raw = response.read(8193)
+        body = _json(raw)
+        if (response.status != 200 or len(raw) > 8192 or not isinstance(body, dict)
+                or set(body) != {"pid", "ready_nonce", "active_auxiliary_work"}
+                or type(body["pid"]) is not int or body["pid"] != ready["pid"]
+                or body["ready_nonce"] != ready["ready_nonce"]
+                or type(body["active_auxiliary_work"]) is not int or body["active_auxiliary_work"] < 0):
+            raise ValueError("catalog_readiness_unverified")
+        return body["active_auxiliary_work"]
+    except (OSError, ValueError, http.client.HTTPException):
+        raise ValueError("catalog_readiness_unverified") from None
+    finally:
+        conn.close()
+
+
+def model_metadata(ready, client, mode, *, deadline=None, observations=None):
+    if deadline is None:
+        return _model_metadata_once(ready, client, mode)
+    observations = observations if observations is not None else []
+    started = time.monotonic()
+    while True:
+        if time.monotonic() >= deadline:
+            raise ValueError("catalog_startup_budget_exhausted")
+        try:
+            metadata = _model_metadata_once(ready, client, mode)
+            observations.append({"elapsed_ms": round((time.monotonic()-started)*1000), "available": True})
+            return metadata
+        except ValueError as error:
+            if str(error) != "catalog_model_unavailable" or ready.get("profile", {}).get("executor") != "antigravity":
+                raise
+            active = _catalog_work_active(ready)
+            observations.append({"elapsed_ms": round((time.monotonic()-started)*1000), "available": False,
+                                 "active_auxiliary_work": active})
+            if active == 0:
+                # Discovery can publish between the catalog and state reads.
+                metadata = _model_metadata_once(ready, client, mode)
+                observations.append({"elapsed_ms": round((time.monotonic()-started)*1000), "available": True})
+                return metadata
+            remaining = deadline-time.monotonic()
+            if remaining <= 0:
+                raise ValueError("catalog_startup_budget_exhausted") from None
+            time.sleep(min(0.05, remaining))
 
 def client_result(prepared):
     raw = Path(prepared.run_dir / "stdout.jsonl").read_bytes()
@@ -132,12 +182,14 @@ def run_case(root, binary, config, route, mode, manifest, max_attempts):
               "failure_class": "unknown", "issues": []}
     root.mkdir(mode=0o700)
     started = time.monotonic()
+    deadline = started + manifest["seconds"]
     prepared = raw_result = None
     nonce = uuid.uuid4().hex
     capture = root / "gateway-state/capture"
     try:
         with candidate_process(binary, config, root, profile, max_attempts=max_attempts) as (ready, capture):
-            metadata = model_metadata(ready, client, mode)
+            result["catalog_readiness"] = []
+            metadata = model_metadata(ready, client, mode, deadline=deadline, observations=result["catalog_readiness"])
             args = {"run_dir": root / "client", "client_version": ADAPTER_VERSIONS[client],
                     "executable": manifest[client], "model": profile["client_model"], "base_url": ready["base_url"],
                     "fixture_python": manifest["fixture_python"], "model_metadata": metadata, "nonce": nonce,
@@ -155,7 +207,10 @@ def run_case(root, binary, config, route, mode, manifest, max_attempts):
             if route.get("notify") is True and client == "codex":
                 prompt += (" In each exec invocation performing fixture read, replace or tests, call notify('PROGRESS') "
                            "before the fixture call and text the real result after it in the same invocation.")
-            raw_result = prepared.run_task({"prompt": prompt, "max_seconds": manifest["seconds"], "max_output_bytes": 2**20})
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError("catalog_startup_budget_exhausted")
+            raw_result = prepared.run_task({"prompt": prompt, "max_seconds": remaining, "max_output_bytes": 2**20})
             result["process"] = {key: raw_result[key] for key in
                                  ("exit_code", "termination", "output_truncated", "forced_process_cleanup")}
             result["catalog_sha256"] = prepared.catalog_hash
@@ -227,7 +282,8 @@ def run_case(root, binary, config, route, mode, manifest, max_attempts):
     except (ValueError, OSError, KeyError) as error:
         result["issues"] = [{"reason": str(error) if isinstance(error, ValueError) and str(error).startswith("catalog_")
                               else type(error).__name__}]
-        result["failure_class"] = "client_profile" if result["issues"][0]["reason"].startswith("catalog_") else "evidence_or_client"
+        result["failure_class"] = ("budget" if result["issues"][0]["reason"] == "catalog_startup_budget_exhausted"
+                                   else "client_profile" if result["issues"][0]["reason"].startswith("catalog_") else "evidence_or_client")
         # Preserve every attempt even when client startup or result parsing fails.
         if capture.exists():
             try:
@@ -238,7 +294,7 @@ def run_case(root, binary, config, route, mode, manifest, max_attempts):
             except (ValueError, OSError):
                 pass
     finally:
-        if result["physical_attempts"] is None and capture.exists():
+        if not result["per_request"] and capture.exists():
             try:
                 attempts = read_http_attempts(capture)
                 admission = read_admission_diagnostics(capture, max_attempts=max_attempts, request_count=len(attempts))

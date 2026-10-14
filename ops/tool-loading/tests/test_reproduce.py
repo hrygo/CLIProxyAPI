@@ -5,11 +5,13 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from reproduce import client_result, validate_manifest
 from reproduce import wire_observations
 from catalog_fixture import build_catalog
+import reproduce
 
 
 class ReproductionTests(unittest.TestCase):
@@ -74,6 +76,84 @@ class ReproductionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_manifest(value)
 
+
+class CatalogReadinessTests(unittest.TestCase):
+    def test_pending_state_requires_same_process_and_strict_counter(self):
+        ready = {"base_url": "http://127.0.0.1:12345/v1", "pid": 123, "ready_nonce": "same-process"}
+        good = {"pid": 123, "ready_nonce": "same-process", "active_auxiliary_work": 1}
+        invalid = [json.dumps({**good, "pid": True}), json.dumps({**good, "ready_nonce": "other-process"}),
+                   json.dumps({**good, "active_auxiliary_work": True}), json.dumps({**good, "active_auxiliary_work": -1}),
+                   json.dumps({**good, "extra": "untrusted"}), json.dumps(good).replace('"pid": 123', '"pid": 999, "pid": 123'),
+                   "x" * 8193]
+        connection = MagicMock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.read.return_value = json.dumps(good).encode()
+        with patch("reproduce.http.client.HTTPConnection", return_value=connection):
+            self.assertEqual(reproduce._catalog_work_active(ready), 1)
+            for body in invalid:
+                response.read.return_value = body.encode()
+                with self.assertRaisesRegex(ValueError, "^catalog_readiness_unverified$"):
+                    reproduce._catalog_work_active(ready)
+        connection.request.assert_called_with("GET", "/acceptance/catalog-state",
+                                             headers={"Authorization": "Bearer local-acceptance-placeholder"})
+
+    def test_expired_task_deadline_never_reads_catalog(self):
+        with patch("reproduce._model_metadata_once") as fetch, patch("reproduce.time.monotonic", return_value=10):
+            with self.assertRaisesRegex(ValueError, "^catalog_startup_budget_exhausted$"):
+                reproduce.model_metadata({}, "codex", "lazy", deadline=10)
+        fetch.assert_not_called()
+
+    def test_pending_native_discovery_requeries_actual_catalog(self):
+        metadata = {"slug": "fixture", "context_window": 1000}
+        evidence = []
+        ready = {"profile": {"executor": "antigravity"}}
+        with patch("reproduce._model_metadata_once", side_effect=[ValueError("catalog_model_unavailable"), metadata]) as fetch, \
+                patch("reproduce._catalog_work_active", return_value=1), \
+                patch("reproduce.time.monotonic", return_value=10), patch("reproduce.time.sleep") as wait:
+            self.assertEqual(reproduce.model_metadata(ready, "codex", "lazy", deadline=11, observations=evidence), metadata)
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(evidence[0]["active_auxiliary_work"], 1)
+        self.assertTrue(evidence[1]["available"])
+        wait.assert_called_once()
+
+    def test_settled_discovery_rechecks_publication_before_rejecting(self):
+        ready = {"profile": {"executor": "antigravity"}}
+        with patch("reproduce._model_metadata_once", side_effect=[ValueError("catalog_model_unavailable"), {"slug": "fixture"}]), \
+                patch("reproduce._catalog_work_active", return_value=0), \
+                patch("reproduce.time.monotonic", return_value=10), patch("reproduce.time.sleep") as wait:
+            self.assertEqual(reproduce.model_metadata(ready, "claude", "lazy", deadline=11), {"slug": "fixture"})
+        wait.assert_not_called()
+
+    def test_settled_missing_model_does_not_loop(self):
+        ready = {"profile": {"executor": "antigravity"}}
+        with patch("reproduce._model_metadata_once", side_effect=ValueError("catalog_model_unavailable")) as fetch, \
+                patch("reproduce._catalog_work_active", return_value=0), \
+                patch("reproduce.time.monotonic", return_value=10), patch("reproduce.time.sleep") as wait:
+            with self.assertRaisesRegex(ValueError, "^catalog_model_unavailable$"):
+                reproduce.model_metadata(ready, "claude", "lazy", deadline=11)
+        self.assertEqual(fetch.call_count, 2)
+        wait.assert_not_called()
+
+    def test_mode_errors_and_other_providers_never_wait(self):
+        for executor, reason in (("antigravity", "catalog_profile_not_admitted"), ("codex", "catalog_model_unavailable")):
+            with self.subTest(executor=executor), \
+                    patch("reproduce._model_metadata_once", side_effect=ValueError(reason)), \
+                    patch("reproduce._catalog_work_active") as state, \
+                    patch("reproduce.time.monotonic", return_value=10), patch("reproduce.time.sleep") as wait:
+                with self.assertRaisesRegex(ValueError, "^" + reason + "$"):
+                    reproduce.model_metadata({"profile": {"executor": executor}}, "codex", "lazy", deadline=11)
+                state.assert_not_called()
+                wait.assert_not_called()
+
+    def test_task_budget_exhaustion_stops_pending_discovery(self):
+        with patch("reproduce._model_metadata_once", side_effect=ValueError("catalog_model_unavailable")) as fetch, \
+                patch("reproduce._catalog_work_active", return_value=1), \
+                patch("reproduce.time.monotonic", side_effect=[10, 10, 10.6, 10.6]), patch("reproduce.time.sleep") as wait:
+            with self.assertRaisesRegex(ValueError, "^catalog_startup_budget_exhausted$"):
+                reproduce.model_metadata({"profile": {"executor": "antigravity"}}, "codex", "lazy", deadline=10.5)
+        self.assertEqual(fetch.call_count, 1)
+        wait.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()
