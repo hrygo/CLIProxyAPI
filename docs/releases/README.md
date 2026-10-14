@@ -12,12 +12,14 @@ draft only after artifact verification.
 2. Replace every placeholder with release-specific, user-facing facts.
 3. Read [the intake ledger](../../ops/upstream-intake/absorbed.md) and state the
    exact aligned upstream release, previous baseline, ported work and skipped
-   work. Use `none (fork-only release)` and `none` when no upstream intake is
-   included.
+   work. When no new upstream work is ported, keep the previous aligned
+   upstream version and tag suffix, and state that under `Ported`. Use `none`
+   for `Previous baseline` only on the first release.
 4. Validate locally:
 
    ```bash
-   python3 ops/release-notes/validate.py validate v1.2.3 docs/releases/v1.2.3.md
+   python3 ops/release-notes/validate.py validate \
+     v1.3.0-upstream8.0.16 docs/releases/v1.3.0-upstream8.0.16.md
    ```
 
 5. Commit the note with the release changes before creating the release tag.
