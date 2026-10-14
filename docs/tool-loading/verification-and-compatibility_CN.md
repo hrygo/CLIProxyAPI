@@ -76,6 +76,25 @@
 
 五类新增缺陷均有先失败后通过的回归。全仓工程验证覆盖最后一项修复；未产生新的 Provider 用量数据。
 
+
+### 2.3 2026-10-14 最终复测的冻结记录
+
+本轮范围锁定为 CI 时序/归属修复和可复用性能复现入口。保存审计确认：历史 86 个文件均存在于 Git 快照及原工作区，其中 6 个本地文件与历史快照不同，原文件未覆盖。43 个一次性 Python 脚本已复制到系统 tmp 并记录 SHA-256，不纳入生产 PR。仓库保留官方客户端成对运行所需模块及必要回归，原批次编排、认证台账、Docker 和客户端源码构建探针留在历史。
+
+冻结计划为 8 对、16 个官方客户端案例，两个编码模板，交叉安排 eager→lazy / lazy→eager。Codex `0.160.0` 使用 `code_mode_only`；Claude Code `2.1.289` 使用标准隔离模式及原生 StructuredOutput。GPT：`gpt-6-luna` / `codex` / Responses；Muse：`opencode-go-muse-spark-1.3` → `muse-spark-1.3-contributor` / `meta` / Responses；GLM：`opencode-go-glm53-flash` → `glm-5.3-flash` / configured Chat executor；Gemini：`gemini-3.5-flash-lite` / `antigravity` / wrapped GenerateContent。OpenCode 客户端不在本批内；alias 中的 `opencode-go` 是既有网关路由名称。
+
+| 冻结项 | 判据 |
+| --- | --- |
+| 最终版本 | 所有案例使用同一干净 checkout 的 SDK binary；完整 VCS revision 和 binary SHA-256 一致，后续只补充结果文档。 |
+| 配置与身份 | 既有隔离配置 SHA-256 `5a20c4e8a9ee9502736b60dbe4cd27c32ec3f57a0eadbd11db436113b97f0831`；operator config SHA-256 `a746ab767d3e1ab33ed5e513f61dd119854b5ebc17db9f1a7e2053f0976a31f7`。OAuth 以已选文件的当前内容哈希冻结，未写入或刷新凭据。 |
+| 预算 | 单案 120 秒、16 次物理 HTTP 尝试、16 次 MCP dispatch；整批最多 160 次物理尝试，全部已开始案例及失败纳入分母。 |
+| 任务闭环 | 有效模式 + 真实 read/replace/test + 独立 behavioral gold + source hash / nonce 回填 + CLI 正常退出 + 客户端及上游合法终态。 |
+| 计量 | 逐请求 input/output/cache/reasoning、首轮/峰值/全任务输入、物理尝试及耗时；缺失、冲突计量与成本/账单保持未知。 |
+| 权限范围 | 仅临时 MCP 编码任务；禁止 mutation 零 dispatch、零 fixture effect、最终 active=0。隔离 runner 禁用 hosted image generation，不外推为完整权限/取消认证。 |
+| 解释范围 | 每条客户端路由只有一个模板配对；不按小样本宣称可靠率、单侧非劣性或普遍收益，不池化历史不同 revision 的样本。 |
+
+复现命令见 [ops/tool-loading](../../ops/tool-loading/README.md)。本节与 token 报告记录最终实际结果；冻结计划本身不计为通过。
+
 ## 3. 客户端与模型范围
 
 版本来自 2026-10-12 至 2026-10-14 的本机实测；版本之外的行为为未知。表中的“支持”按配置、协议、闭环和实测范围分别解释。
