@@ -489,7 +489,8 @@ func (e *DevinExecutor) streamDevinFrames(
 	var accumulatedSignature []byte
 	var signatureType string
 
-	claudeInputTokens := helps.NewClaudeInputTokenState(opts.SourceFormat, sdktranslator.FormatInteractions, responseFormat, opts.OriginalRequest)
+	// Devin reports authoritative cache-aware token usage in its response frames,
+	// so do not seed message_start with a full-input estimate.
 	var translateParam any
 
 	firstStreamEvent := true
@@ -548,7 +549,7 @@ func (e *DevinExecutor) streamDevinFrames(
 			req.Payload,
 			trimmed,
 			&translateParam,
-			claudeInputTokens,
+			nil,
 		)
 		for _, line := range lines {
 			select {
@@ -1065,7 +1066,7 @@ func (e *DevinExecutor) streamDevinFrames(
 			req.Payload,
 			[]byte("[DONE]"),
 			&translateParam,
-			claudeInputTokens,
+			nil,
 		)
 		for _, line := range lines {
 			select {
