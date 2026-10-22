@@ -1749,6 +1749,14 @@ func shouldEnsureCacheControl(payload []byte, cloaked, confirmedClaudeCode bool)
 	return !confirmedClaudeCode && (cloaked || countCacheControls(payload) == 0)
 }
 
+func isValidClaudeCacheControl(cc gjson.Result) bool {
+	if !cc.Exists() || cc.Type == gjson.Null || !cc.IsObject() {
+		return false
+	}
+	typ := cc.Get("type")
+	return typ.Type == gjson.String && typ.String() == "ephemeral"
+}
+
 func countCacheControls(payload []byte) int {
 	count := 0
 
