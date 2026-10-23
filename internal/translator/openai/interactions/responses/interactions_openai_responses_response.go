@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -15,6 +17,7 @@ import (
 )
 
 type interactionsToResponsesStreamState struct {
+	ItemIDPrefix       string
 	ID                 string
 	EnvironmentID      string
 	FunctionCalls      map[int]*interactionsFunctionCallState
@@ -62,9 +65,12 @@ func ConvertInteractionsResponseToOpenAIResponses(ctx context.Context, modelName
 		param = &local
 	}
 	if *param == nil {
-		*param = &interactionsToResponsesStreamState{}
+		*param = &interactionsToResponsesStreamState{ItemIDPrefix: uuid.NewString()}
 	}
 	st := (*param).(*interactionsToResponsesStreamState)
+	if st.ItemIDPrefix == "" {
+		st.ItemIDPrefix = uuid.NewString()
+	}
 	if st.FunctionCalls == nil {
 		st.FunctionCalls = make(map[int]*interactionsFunctionCallState)
 	}
@@ -259,7 +265,7 @@ func interactionsStepStartToResponses(modelName string, root gjson.Result, st *i
 	index := int(root.Get("index").Int())
 	step := root.Get("step")
 	stepType := step.Get("type").String()
-	itemID := firstNonEmpty(step.Get("id").String(), step.Get("call_id").String(), fmt.Sprintf("item_%d", index))
+	itemID := firstNonEmpty(step.Get("id").String(), step.Get("call_id").String(), interactionsFallbackItemID(st, index))
 	st.ItemIDs[index] = itemID
 	st.ItemTypes[index] = stepType
 	switch stepType {
@@ -1318,4 +1324,11 @@ func (st *responsesToInteractionsStreamState) hasSentFunctionArgs(keys []string)
 		}
 	}
 	return false
+}
+
+func interactionsFallbackItemID(st *interactionsToResponsesStreamState, index int) string {
+	if st != nil && st.ItemIDPrefix != "" {
+		return fmt.Sprintf("item_%s_%d", st.ItemIDPrefix, index)
+	}
+	return fmt.Sprintf("item_%d", index)
 }
