@@ -9,21 +9,24 @@ commits were ported onto our `main` **and** `verify-absorb.sh` exited 0.
 | v8.0.13 | 2026-10-03 | 28 substantive ports + 1 test-only port (initial and follow-up mappings below) | 6 entries, including 3 merge wrappers (final decisions below) | PASS; follow-up effective on merge to main | 2026-10-03 |
 | v8.0.16 | 2026-10-09 | 24 ports (mapping below) | 16 non-merge + 7 merge wrappers (decisions below) | PASS; merged to main in #22 | 2026-10-09 |
 | v8.0.23 | 2026-10-14 | 26 upstream ports, including 1 equivalent-fix regression port (mapping below) | 15 non-merge + 6 merge wrappers (decisions below) | PASS; effective on merge | 2026-10-14 |
+| v8.0.35 | 2026-10-23 | 25 selected repairs (mapping below) | 126 non-merge + 18 merge wrappers; 63 later commits deferred by age | PASS; effective only on verified PR merge | 2026-10-23 |
 
 ## Comparison baseline
 
-**Selective alignment: `v8.0.23`** (`d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5`),
-effective only with the verified intake and this ledger merged to our `main`.
-The table and assessment below enumerate what is actually present; alignment
-does not mean the complete upstream release is incorporated.
+**Selective alignment for this candidate: `v8.0.35`** (`ae3ee3be303fb07fb8173279923413005bf32177`),
+effective only when the verified intake and this ledger reach our `main`.
+Alignment identifies the reviewed release ceiling, not a wholesale upstream merge.
 
-**Accepted comparison baseline for this intake: `v8.0.16`**
-(`a2976eb8a303f11b4ea5177bce9f9ff752634dfc`). Its reviewed ports were merged in
-PR #22 at `d11564c0aeee2c75af4122441db541bb989ed0de`, an ancestor of the clean
-starting main `5349958cfc0d4ca1e805dbecee219fce646afe2e`. The previous ledger's
-intake-branch wording was stale; fetched tags were not used as absorption proof.
-Once this v8.0.23 intake is merged, use v8.0.23 for the next comparison and
-continue to track all retained/deferred work explicitly.
+**Accepted comparison baseline for this intake: `v8.0.23`**
+(`d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5`). Its reviewed ports reached main
+through PR #28 (`63aa6004400a2314f1e41877dd225edae6d2368b`), an ancestor of the
+clean published starting main `1ad1d35c319aa028d4081bbe6551071792992270`.
+After this candidate merges, use v8.0.35 for new comparisons and continue to
+carry every previously deferred item explicitly. Before merge, v8.0.23 remains
+the accepted baseline.
+
+Earlier selective baseline: `v8.0.16`
+(`a2976eb8a303f11b4ea5177bce9f9ff752634dfc`), merged through PR #22.
 
 Earlier selective baseline: `v8.0.13`
 (`d7914afdedca7af95ee974a42453dc49fc1388ce`), advanced from v8.0.7 on 2026-10-03.
@@ -540,6 +543,95 @@ saving measurement. Earlier tool-loading reports retain their stated candidate
 and scope; this intake does not promote them to measurements of this new tree.
 No release/tag, tap publication, installation, production configuration change
 or service restart is included.
+
+### v8.0.35 — conservative selective absorption, 2026-10-23
+
+Baseline v8.0.23; mature candidate v8.0.35 (`ae3ee3be303fb07fb8173279923413005bf32177`), published
+`2026-10-19T19:02:46Z`. The 72-hour window was enforced without an exception.
+Published fork baseline `1ad1d35c319aa028d4081bbe6551071792992270` was verified
+before porting. A separate unpublished README commit and the original dirty
+working branch were preserved outside the task worktree.
+
+The mature range contains 169 commits (151 non-merge + 18 merge wrappers).
+Port 25 independent repairs; leave 126 non-merge commits and all 18 wrappers
+excluded. The additional 63 reviewed commits through v8.0.39 remain deferred
+by age. The [intake report](../../docs/upstream-v8.0.35-intake.md) explains the
+scope and integration choices; the [232-SHA decision manifest](reviews/v8.0.35-20261023.json)
+records every port, skip, dependency, earlier recommendation and pending item.
+
+#### Ported mapping
+
+| Upstream | Local task commit | Behavior |
+| --- | --- | --- |
+| `be8c35f2` | `ac70c4ec` (+ `0e85062c`) | fix(claude): ignore invalid and null cache control entries in executor |
+| `b0debb35` | `554a4fae` | fix(codex): shorten over-length tool call IDs in chat completions |
+| `cad1b503` | `aa5fab3b` | fix(devin): do not seed input token estimates for claude streams |
+| `dfe0a0ef` | `c66c9e0e` | fix(antigravity): omit tool_calls from default streaming delta template |
+| `18b6cc8a` | `1368c458` | refactor(registry): use model getters for Devin and Meta |
+| `15d2148b` | `ccff1507` | fix(gemini): ensure trailing user turn for function response with media |
+| `a2718314` | `484267a0` | fix(antigravity): drop trailing thought-only model turns |
+| `02fc76b1` | `27747f0e` | fix(claude): restore passthrough MCP tools wrapped with their full mcp__ name |
+| `bbcd5734` | `5e543264` | fix(registry): treat credential_quota as quota cooldown in model availability |
+| `40ce0e01` | `310eff09` | feat(kimi): support schema normalization for namespaced tools and input tool lists |
+| `57d005fe` | `917b796a` | fix(codex): strip out-of-range int64 numeric bounds from tool schemas |
+| `56eee6a4` | `51e1a4fc` | fix(cliproxy): treat HTTP/2 closed connection errors as transient lifecycle drops |
+| `58257007` | `6545ad42` | feat(claude): ensure unique tool use IDs across turns in Gemini response translator |
+| `912a038b` | `5b1d9971` | fix(antigravity): correct token usage calculations for cached tokens in Gemini responses |
+| `ceb4397f` | `ed0324b6` | feat(executor): drop trailing thought-only model turns in Gemini Vertex requests |
+| `bbfd7886` | `8d7c3ca5` | fix(xai): drop web_search options the Responses API rejects |
+| `2d7f5377` | `c91e09cd` | feat(vertex): honor full /publishers/ prefix in API-key base-url |
+| `3a072298` | `2fd895d9` | feat(meta): filter subscription usage telemetry from SSE streams and responses |
+| `db1bab01` | `74f3c5de` | feat(runtime): narrow Claude per-minute rate-limit cooldown when short Retry-After is present |
+| `a7608a8a` | `3196d66f` | feat(pluginhost): preserve auth identity and model registration for relative auth paths |
+| `4337f1f0` | `53f2fb0c` | fix(logging): escape request path in access log to prevent log injection |
+| `904ec710` | `a577cabc` | feat(auth): enable expired antigravity AI credits negative hint recovery and retry logic |
+| `07feedf7` | `5c8e26cd` | fix(api): allow empty home model catalog |
+| `4d34502f` | `41b29cba` | fix(api): reject home models error envelopes |
+| `f9437700` | `bd9fd0b6` | feat(config): add PreapareConfigFileForUpload and seed remote storage with hashed secrets |
+
+`be8c35f2` also carries only the cache-control validity helper from `eb6a768d`
+in follow-up `ac70c4ec`. Explicit cache options remain deferred. The one-result
+translator API, exact tool identities, responses-tools ownership and existing
+Vertex post-rule boundary normalization are preserved; the report records all
+production adaptations. Local hashes identify task commits, not the final
+squash commit.
+
+#### Verification
+
+- Clean baseline and candidate: `GOTOOLCHAIN=go1.26.4 bash ops/upstream-intake/verify-absorb.sh`
+  PASS in all seven stages, including full suite, seven race-sensitive packages
+  and server build. Verified code is `cea8acb5170e431df9705a0542d3454de70e7694`.
+- Offline tracked Codex catalog validation: PASS.
+- All 25 ports have observed behavioral regression failures before their fix
+  and passing affected packages afterward; helper-only new APIs are not treated
+  as baseline compilation failures proving a bug.
+- Paired complete-source replay: identical 21 top-level tests; original baseline
+  has 16 expected assertion failures and 5 passing controls, candidate has 21
+  passes. Compilation succeeds on both trees.
+- A temporary overlay inverting cache-control validity is killed by the expected
+  assertion; production sources remain unchanged.
+- Independent whole-branch review: APPROVE, no blocking findings. Optional:
+  add a direct WebSocket telemetry filtering regression; no implementation defect
+  found. Additional race checks across five affected packages: PASS.
+- Integration requires an exact-head PR build and remote-main tree match, recorded
+  in the PR. This entry is effective only after verified merge.
+
+#### Deferred boundaries
+
+No new feature root, model removal, native tool-search replacement, dependency
+upgrade or partial auth/watcher/config concurrency chain is included. The
+confirmed stale-success cooldown and uncertain auth-scan risks remain pending
+with their complete upstream repair chains. The two confirmed upstream schema
+bugs are excluded and reported as router-for-me/CLIProxyAPI#6897 and #6898.
+The fork's integral-float canonicalizer and recursive schema flattening remain
+necessary. Home empty-catalog handling changes no Home wire shape and needs no
+companion source change.
+
+Real client/provider and performance replay: **not performed**. Local/fake
+backend fixtures do not establish new client closure, entitlement, latency or
+cost savings. No release/tag, tap, installation, production configuration change
+or service restart was performed. Raw evidence is retained locally under
+`.git/task-evidence/upstream-intake-v8.0.35-20261023/`.
 
 ## How to fill this in
 

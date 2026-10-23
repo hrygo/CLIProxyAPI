@@ -371,6 +371,9 @@ func (e *GeminiVertexExecutor) executeWithServiceAccount(ctx context.Context, au
 		body = fixGeminiImageAspectRatio(baseModel, body)
 		requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 		requestPath := helps.PayloadRequestPath(opts)
+		if action, _ := req.Metadata["action"].(string); action != "countTokens" {
+			body = helps.DropGeminiTrailingThoughtOnlyContent(body, "contents")
+		}
 		body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 		body = helps.SetStringIfDifferent(body, "model", baseModel)
 		body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
@@ -505,6 +508,9 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 	body = fixGeminiImageAspectRatio(baseModel, body)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
+	if action, _ := req.Metadata["action"].(string); action != "countTokens" {
+		body = helps.DropGeminiTrailingThoughtOnlyContent(body, "contents")
+	}
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
@@ -521,11 +527,11 @@ func (e *GeminiVertexExecutor) executeWithAPIKey(ctx context.Context, auth *clip
 		body = helps.EnsureGeminiTrailingUserContent(body, "contents")
 	}
 
-	// For API key auth, use simpler URL format without project/location
-	if baseURL == "" {
-		baseURL = "https://aiplatform.googleapis.com"
-	}
-	url := fmt.Sprintf("%s/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, baseModel, action)
+	// For API key auth, use simpler URL format without project/location.
+	// The helper honors base URLs that already encode "/publishers/..." so
+	// configurations like ".../v1/projects/P/locations/L/publishers/google/models"
+	// keep working without a duplicated "/v1" segment.
+	url := vertexAPIKeyModelsURL(baseURL, baseModel, action)
 	if opts.Alt != "" && action != "countTokens" {
 		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 	}
@@ -629,6 +635,7 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 	body = fixGeminiImageAspectRatio(baseModel, body)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
+	body = helps.DropGeminiTrailingThoughtOnlyContent(body, "contents")
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
@@ -790,6 +797,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	body = fixGeminiImageAspectRatio(baseModel, body)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
+	body = helps.DropGeminiTrailingThoughtOnlyContent(body, "contents")
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = helps.SetStringIfDifferent(body, "model", baseModel)
 	body = helps.StripVertexOpenAIResponsesToolCallIDs(body, from.String())
@@ -798,10 +806,7 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	action := getVertexAction(baseModel, true)
 	body = helps.EnsureGeminiBoundaryUserContent(body, "contents")
 	// For API key auth, use simpler URL format without project/location
-	if baseURL == "" {
-		baseURL = "https://aiplatform.googleapis.com"
-	}
-	url := fmt.Sprintf("%s/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, baseModel, action)
+	url := vertexAPIKeyModelsURL(baseURL, baseModel, action)
 	// Imagen models don't support streaming, skip SSE params
 	if !isImagenModel(baseModel) {
 		if opts.Alt == "" {
@@ -1044,10 +1049,7 @@ func (e *GeminiVertexExecutor) countTokensWithAPIKey(ctx context.Context, auth *
 	translatedReq = helps.EnsureGeminiLeadingUserContent(translatedReq, "contents")
 
 	// For API key auth, use simpler URL format without project/location
-	if baseURL == "" {
-		baseURL = "https://aiplatform.googleapis.com"
-	}
-	url := fmt.Sprintf("%s/%s/publishers/google/models/%s:%s", baseURL, vertexAPIVersion, baseModel, "countTokens")
+	url := vertexAPIKeyModelsURL(baseURL, baseModel, "countTokens")
 
 	httpReq, errNewReq := http.NewRequestWithContext(respCtx, http.MethodPost, url, bytes.NewReader(translatedReq))
 	if errNewReq != nil {
@@ -1167,6 +1169,54 @@ func vertexAPICreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 		}
 	}
 	return
+}
+
+// vertexAPIKeyModelsURL builds the API-key models endpoint URL.
+//
+// The configured base URL is treated as a full resource prefix when it
+// already contains a "/publishers/" segment (e.g. a real Vertex endpoint
+// such as "https://aiplatform.googleapis.com/v1/projects/{p}/locations/{l}/publishers/google/models"),
+// in which case only "/{model}:{action}" is appended. Otherwise the default
+// "/v1/publishers/google/models" segment is inserted so short third-party
+// hosts keep working; if the base already ends in a version segment such
+// as "/v1" or "/v1beta1", only "/publishers/google/models" is appended to
+// avoid producing a duplicated version path.
+func vertexAPIKeyModelsURL(baseURL, model, action string) string {
+	base := strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if base == "" {
+		base = "https://aiplatform.googleapis.com"
+	}
+	if strings.Contains(base, "/publishers/") {
+		return fmt.Sprintf("%s/%s:%s", base, model, action)
+	}
+	if !vertexAPIVersionSuffix(base) {
+		base = fmt.Sprintf("%s/%s", base, vertexAPIVersion)
+	}
+	return fmt.Sprintf("%s/publishers/google/models/%s:%s", base, model, action)
+}
+
+// vertexAPIVersionSuffix reports whether the trimmed base URL already ends
+// with a Google API version segment like "/v1" or "/v1beta1".
+func vertexAPIVersionSuffix(base string) bool {
+	if base == "" {
+		return false
+	}
+	seg := base[strings.LastIndexByte(base, '/')+1:]
+	if len(seg) < 2 || seg[0] != 'v' {
+		return false
+	}
+	hasDigit := false
+	for i := 1; i < len(seg); i++ {
+		c := seg[i]
+		switch {
+		case c >= '0' && c <= '9':
+			hasDigit = true
+		case c == '_' || c == '-' || (c >= 'a' && c <= 'z'):
+		default:
+			return false
+		}
+	}
+	return hasDigit
 }
 
 func vertexBaseURL(location string) string {

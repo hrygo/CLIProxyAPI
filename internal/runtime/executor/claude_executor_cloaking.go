@@ -1749,6 +1749,14 @@ func shouldEnsureCacheControl(payload []byte, cloaked, confirmedClaudeCode bool)
 	return !confirmedClaudeCode && (cloaked || countCacheControls(payload) == 0)
 }
 
+func isValidClaudeCacheControl(cc gjson.Result) bool {
+	if !cc.Exists() || cc.Type == gjson.Null || !cc.IsObject() {
+		return false
+	}
+	typ := cc.Get("type")
+	return typ.Type == gjson.String && typ.String() == "ephemeral"
+}
+
 func countCacheControls(payload []byte) int {
 	count := 0
 
@@ -1756,7 +1764,7 @@ func countCacheControls(payload []byte) int {
 	system := gjson.GetBytes(payload, "system")
 	if system.IsArray() {
 		system.ForEach(func(_, item gjson.Result) bool {
-			if item.Get("cache_control").Exists() {
+			if isValidClaudeCacheControl(item.Get("cache_control")) {
 				count++
 			}
 			return true
@@ -1767,7 +1775,7 @@ func countCacheControls(payload []byte) int {
 	tools := gjson.GetBytes(payload, "tools")
 	if tools.IsArray() {
 		tools.ForEach(func(_, item gjson.Result) bool {
-			if item.Get("cache_control").Exists() {
+			if isValidClaudeCacheControl(item.Get("cache_control")) {
 				count++
 			}
 			return true
@@ -1781,7 +1789,7 @@ func countCacheControls(payload []byte) int {
 			content := msg.Get("content")
 			if content.IsArray() {
 				content.ForEach(func(_, item gjson.Result) bool {
-					if item.Get("cache_control").Exists() {
+					if isValidClaudeCacheControl(item.Get("cache_control")) {
 						count++
 					}
 					return true
@@ -1816,11 +1824,7 @@ func normalizeCacheControlTTL(payload []byte) []byte {
 
 	processBlock := func(path string, obj gjson.Result) {
 		cc := obj.Get("cache_control")
-		if !cc.Exists() {
-			return
-		}
-		if !cc.IsObject() {
-			seen5m = true
+		if !isValidClaudeCacheControl(cc) {
 			return
 		}
 		ttl := cc.Get("ttl")
@@ -1915,7 +1919,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 	if system.IsArray() {
 		lastIdx := -1
 		system.ForEach(func(idx, item gjson.Result) bool {
-			if item.Get("cache_control").Exists() {
+			if isValidClaudeCacheControl(item.Get("cache_control")) {
 				lastIdx = int(idx.Int())
 			}
 			return true
@@ -1929,7 +1933,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 				if i == lastIdx {
 					return true
 				}
-				if !item.Get("cache_control").Exists() {
+				if !isValidClaudeCacheControl(item.Get("cache_control")) {
 					return true
 				}
 				path := fmt.Sprintf("system.%d.cache_control", i)
@@ -1951,7 +1955,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 	if tools.IsArray() {
 		lastIdx := -1
 		tools.ForEach(func(idx, item gjson.Result) bool {
-			if item.Get("cache_control").Exists() {
+			if isValidClaudeCacheControl(item.Get("cache_control")) {
 				lastIdx = int(idx.Int())
 			}
 			return true
@@ -1965,7 +1969,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 				if i == lastIdx {
 					return true
 				}
-				if !item.Get("cache_control").Exists() {
+				if !isValidClaudeCacheControl(item.Get("cache_control")) {
 					return true
 				}
 				path := fmt.Sprintf("tools.%d.cache_control", i)
@@ -1997,7 +2001,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 				if excess <= 0 {
 					return false
 				}
-				if !item.Get("cache_control").Exists() {
+				if !isValidClaudeCacheControl(item.Get("cache_control")) {
 					return true
 				}
 				path := fmt.Sprintf("messages.%d.content.%d.cache_control", int(msgIdx.Int()), int(itemIdx.Int()))
@@ -2022,7 +2026,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 			if excess <= 0 {
 				return false
 			}
-			if !item.Get("cache_control").Exists() {
+			if !isValidClaudeCacheControl(item.Get("cache_control")) {
 				return true
 			}
 			path := fmt.Sprintf("system.%d.cache_control", int(idx.Int()))
@@ -2045,7 +2049,7 @@ func enforceCacheControlLimit(payload []byte, maxBlocks int) []byte {
 			if excess <= 0 {
 				return false
 			}
-			if !item.Get("cache_control").Exists() {
+			if !isValidClaudeCacheControl(item.Get("cache_control")) {
 				return true
 			}
 			path := fmt.Sprintf("tools.%d.cache_control", int(idx.Int()))
@@ -2180,7 +2184,7 @@ func messageContentHasCacheControl(content gjson.Result) bool {
 	if content.IsArray() {
 		found := false
 		content.ForEach(func(_, item gjson.Result) bool {
-			if item.Get("cache_control").Exists() {
+			if isValidClaudeCacheControl(item.Get("cache_control")) {
 				found = true
 				return false
 			}
@@ -2204,7 +2208,7 @@ func injectToolsCacheControl(payload []byte) []byte {
 	hasCacheControlInTools := false
 	lastEligibleToolIndex := -1
 	tools.ForEach(func(index, tool gjson.Result) bool {
-		if tool.Get("cache_control").Exists() {
+		if isValidClaudeCacheControl(tool.Get("cache_control")) {
 			hasCacheControlInTools = true
 			return false
 		}
@@ -2245,7 +2249,7 @@ func injectSystemCacheControl(payload []byte) []byte {
 		// Check if ANY system element already has cache_control
 		hasCacheControlInSystem := false
 		system.ForEach(func(_, item gjson.Result) bool {
-			if item.Get("cache_control").Exists() {
+			if isValidClaudeCacheControl(item.Get("cache_control")) {
 				hasCacheControlInSystem = true
 				return false
 			}

@@ -95,16 +95,79 @@ func (e *MetaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 			}
 			return true
 		}
+		var pendingEventLine []byte
+		var filteringSubscriptionUsage bool
+		var skipFilteredBlankLine bool
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if !bytes.HasPrefix(line, dataTag) {
+			trimmedLine := bytes.TrimSpace(line)
+			if bytes.HasPrefix(trimmedLine, metaEventTag) {
+				eventName := bytes.TrimSpace(trimmedLine[len(metaEventTag):])
+				if bytes.Equal(eventName, []byte(metaSubscriptionUsageEventType)) {
+					if pendingEventLine != nil {
+						if !emitTranslatedLine(pendingEventLine) {
+							return
+						}
+						pendingEventLine = nil
+					}
+					filteringSubscriptionUsage = true
+					skipFilteredBlankLine = true
+					continue
+				}
+				filteringSubscriptionUsage = false
+				skipFilteredBlankLine = false
+				if pendingEventLine != nil {
+					if !emitTranslatedLine(pendingEventLine) {
+						return
+					}
+				}
+				pendingEventLine = bytes.Clone(line)
+				continue
+			}
+			if !bytes.HasPrefix(trimmedLine, dataTag) {
+				if len(trimmedLine) == 0 {
+					filteringSubscriptionUsage = false
+					if skipFilteredBlankLine {
+						skipFilteredBlankLine = false
+						continue
+					}
+				}
+				if filteringSubscriptionUsage {
+					continue
+				}
+				skipFilteredBlankLine = false
+				if pendingEventLine != nil {
+					if !emitTranslatedLine(pendingEventLine) {
+						return
+					}
+					pendingEventLine = nil
+				}
 				if !emitTranslatedLine(bytes.Clone(line)) {
 					return
 				}
 				continue
 			}
-			eventData := bytes.TrimSpace(line[len(dataTag):])
+			eventData := bytes.TrimSpace(trimmedLine[len(dataTag):])
+			eventType := gjson.GetBytes(eventData, "type").String()
+			if isMetaSubscriptionUsageEvent(eventType, eventData) {
+				pendingEventLine = nil
+				filteringSubscriptionUsage = false
+				skipFilteredBlankLine = true
+				continue
+			}
+			if filteringSubscriptionUsage {
+				if eventType == "" {
+					pendingEventLine = nil
+					if gjson.ValidBytes(eventData) {
+						filteringSubscriptionUsage = false
+					}
+					skipFilteredBlankLine = true
+					continue
+				}
+				filteringSubscriptionUsage = false
+			}
+			skipFilteredBlankLine = false
 			reporter.ObserveResponseModel(eventData)
 			if errEvent := metaStreamEventError(eventData); errEvent != nil {
 				helps.RecordAPIResponseError(ctx, e.cfg, errEvent)
@@ -115,7 +178,6 @@ func (e *MetaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				}
 				return
 			}
-			eventType := gjson.GetBytes(eventData, "type").String()
 			switch eventType {
 			case "response.output_item.done":
 				xaiCollectOutputItemDone(eventData, outputItemsByIndex, &outputItemsFallback)
@@ -125,9 +187,21 @@ func (e *MetaExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 				}
 				eventData = patchCodexCompletedOutput(eventData, outputItemsByIndex, outputItemsFallback)
 			}
+			if pendingEventLine != nil {
+				if !emitTranslatedLine(pendingEventLine) {
+					return
+				}
+				pendingEventLine = nil
+			}
 			if !emitTranslatedLine(append([]byte("data: "), eventData...)) {
 				return
 			}
+		}
+		if pendingEventLine != nil {
+			if !emitTranslatedLine(pendingEventLine) {
+				return
+			}
+			pendingEventLine = nil
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)

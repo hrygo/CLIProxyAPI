@@ -41,7 +41,7 @@ const (
 	antigravityClientSecret                = "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"
 	antigravityAuthType                    = "antigravity"
 	antigravityRequestTokenSafetyWindow    = 5 * time.Minute
-	antigravityCreditsHintRefreshInterval  = 10 * time.Minute
+	antigravityCreditsHintRefreshInterval  = cliproxyauth.AntigravityCreditsHintRefreshInterval
 	antigravityCreditsHintRefreshTimeout   = 5 * time.Second
 	antigravityShortQuotaCooldownThreshold = 5 * time.Minute
 	antigravityInstantRetryThreshold       = 3 * time.Second
@@ -517,11 +517,14 @@ func ensureAntigravityGeminiTrailingUserContent(modelName string, payload []byte
 }
 
 // ensureAntigravityGeminiBoundaryUserContent normalizes both leading and trailing
-// turns for Gemini targets. Claude targets are left unchanged.
+// turns for Gemini targets. A trailing reasoning-only model turn is dropped first
+// so the request does not rely only on a synthetic empty user turn (#6530).
+// Claude targets are left unchanged.
 func ensureAntigravityGeminiBoundaryUserContent(modelName string, payload []byte) []byte {
 	if strings.Contains(strings.ToLower(modelName), "claude") {
 		return payload
 	}
+	payload = helps.DropGeminiTrailingThoughtOnlyContent(payload, "request.contents")
 	return helps.EnsureGeminiBoundaryUserContent(payload, "request.contents")
 }
 
