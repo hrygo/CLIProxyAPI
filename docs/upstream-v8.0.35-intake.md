@@ -139,6 +139,10 @@ hashes are retained in the repository's local task-evidence directory
 `upstream-intake-v8.0.35-20261023`. Reusable regressions are ordinary checked-in
 Go tests beside the affected packages.
 
+The independent reviewer also ran focused verification across eight packages
+and confirmed that an inverted int64-bound predicate is rejected by the
+regression suite.
+
 The optional review follow-up is a direct WebSocket-forward regression mixing
 subscription telemetry with ordinary output, tool calls and completion events.
 Existing Meta executor/SSE coverage passes; the independent review found no
