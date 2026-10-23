@@ -564,7 +564,6 @@ func TestHostListAuthFilesFromDiskParsesDisabled(t *testing.T) {
 	}
 }
 
-
 func TestHostAuthSaveRelativeAuthDirPreservesIdentity(t *testing.T) {
 	for _, name := range []string{"absolute", "relative", "relative config with absolute request path"} {
 		relative := name != "absolute"

@@ -282,7 +282,6 @@ func TestResolveManagementBaseURL(t *testing.T) {
 	}
 }
 
-
 const seededConfigTestSecret = "git-seed-plaintext-secret"
 
 // persistSeededConfigForTest seeds content into configFilePath and returns what each

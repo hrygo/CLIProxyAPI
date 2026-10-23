@@ -4809,7 +4809,6 @@ func TestStreamDevinFrames_MidStreamTrailerError_EmitsTranslatedFailedEventBefor
 	}
 }
 
-
 func TestRegressionIssue6505_DevinClaudeStreamingNoFullInputEstimate(t *testing.T) {
 	runTest := func(t *testing.T, promptTokens, cacheWriteTokens int64) {
 		// Frame with Usage Field 7:

@@ -1,4 +1,3 @@
-
 package store
 
 import (
@@ -121,8 +120,8 @@ func newSeedTestObjectStore(t *testing.T, configPath string) (*ObjectTokenStore,
 	t.Helper()
 	uploads := &[][]byte{}
 	client, errClient := minio.New("storage.invalid", &minio.Options{
-		Creds: credentials.NewStaticV4("", "", ""),
-		Region: "us-east-1",
+		Creds:     credentials.NewStaticV4("", "", ""),
+		Region:    "us-east-1",
 		Transport: seedTestObjectTransport{uploads: uploads},
 	})
 	if errClient != nil {
