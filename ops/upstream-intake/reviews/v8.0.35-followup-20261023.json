@@ -1,0 +1,48 @@
+{
+  "assessed_at": "2026-10-23",
+  "comparison_baseline": "v8.0.35",
+  "fork_baseline": "5cc1929a58156977d2d9b59ee215609be0aea311",
+  "code_candidate": "deb043fb3e7af463ea78a0479264d37135cf279d",
+  "supersedes_only": "Three defer_scope decisions in v8.0.35-20261023.json; effective on verified protected main merge",
+  "decisions": [
+    {
+      "upstream": "7795de19ca80940adeafe45ebe7c5dbfc4931cc5",
+      "local": "878927fba4e911822de299dc29354dafd382721f",
+      "decision": "adopt"
+    },
+    {
+      "upstream": "b0db5448e8f8cce9b58e5d02eab23d32d4ec5dca",
+      "local": "dc5664053835a48e36907b06b9af767e7b5a6441",
+      "decision": "adapt"
+    },
+    {
+      "upstream": "e240bd84321c55b96b226d43fa557c9a8be55a00",
+      "local": "deb043fb3e7af463ea78a0479264d37135cf279d",
+      "decision": "adapt"
+    }
+  ],
+  "verification": {
+    "toolchain": "go1.26.4",
+    "baseline_gate": "PASS",
+    "candidate_gate": "PASS",
+    "same_replay": {
+      "baseline_top_level_failed": 6,
+      "candidate_top_level_passed": 6,
+      "compilation_failures": 0
+    },
+    "independent_review": "APPROVE each commit; no required findings",
+    "live_client_replay": "not performed",
+    "caveats": [
+      "One initial unrelated Antigravity credits assertion failed; cause unestablished, bounded investigation/recheck and full gates passed without waiver.",
+      "Optional incomplete-event cancellation combination lacks a direct test."
+    ]
+  },
+  "retained_core": [
+    "response-side integral-float canonicalization",
+    "cycle-only recursive flatten",
+    "central responses-tools pipeline",
+    "Gemini/Vertex/AI Studio streaming protections"
+  ],
+  "release_or_deployment": false,
+  "upstream_issue": 6900
+}

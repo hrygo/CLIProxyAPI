@@ -9,21 +9,21 @@ commits were ported onto our `main` **and** `verify-absorb.sh` exited 0.
 | v8.0.13 | 2026-10-03 | 28 substantive ports + 1 test-only port (initial and follow-up mappings below) | 6 entries, including 3 merge wrappers (final decisions below) | PASS; follow-up effective on merge to main | 2026-10-03 |
 | v8.0.16 | 2026-10-09 | 24 ports (mapping below) | 16 non-merge + 7 merge wrappers (decisions below) | PASS; merged to main in #22 | 2026-10-09 |
 | v8.0.23 | 2026-10-14 | 26 upstream ports, including 1 equivalent-fix regression port (mapping below) | 15 non-merge + 6 merge wrappers (decisions below) | PASS; effective on merge | 2026-10-14 |
-| v8.0.35 | 2026-10-23 | 25 selected repairs (mapping below) | 126 non-merge + 18 merge wrappers; 63 later commits deferred by age | PASS; effective only on verified PR merge | 2026-10-23 |
+| v8.0.35 | 2026-10-23 | 25 initial repairs + 3 helper follow-ups (mappings below) | 123 non-merge + 18 merge wrappers; 63 later reviewed commits deferred by age | Initial intake PASS, merged #32; follow-up PASS, effective on verified PR merge | 2026-10-23 |
 
 ## Comparison baseline
 
-**Selective alignment for this candidate: `v8.0.35`** (`ae3ee3be303fb07fb8173279923413005bf32177`),
-effective only when the verified intake and this ledger reach our `main`.
-Alignment identifies the reviewed release ceiling, not a wholesale upstream merge.
+**Accepted comparison baseline: `v8.0.35`**
+(`ae3ee3be303fb07fb8173279923413005bf32177`). The initial 25 selective ports
+reached main through PR #32 (`6efd7088ef740214f018d993c46f5f335d32fac7`)
+and shipped in `v1.3.3-upstream8.0.35` at `5cc1929a58156977d2d9b59ee215609be0aea311`.
+Alignment identifies a reviewed release ceiling, not a wholesale upstream merge.
+The three-helper follow-up below does not advance this ceiling.
 
-**Accepted comparison baseline for this intake: `v8.0.23`**
-(`d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5`). Its reviewed ports reached main
-through PR #28 (`63aa6004400a2314f1e41877dd225edae6d2368b`), an ancestor of the
-clean published starting main `1ad1d35c319aa028d4081bbe6551071792992270`.
-After this candidate merges, use v8.0.35 for new comparisons and continue to
-carry every previously deferred item explicitly. Before merge, v8.0.23 remains
-the accepted baseline.
+Previous comparison baseline: `v8.0.23`
+(`d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5`), selectively absorbed through
+PR #28 (`63aa6004400a2314f1e41877dd225edae6d2368b`). Every previously deferred
+item remains deferred unless explicitly superseded by a subsequent ledger entry.
 
 Earlier selective baseline: `v8.0.16`
 (`a2976eb8a303f11b4ea5177bce9f9ff752634dfc`), merged through PR #22.
@@ -644,3 +644,63 @@ After `assess-release.sh` and `verify-absorb.sh`:
 Keep the skipped column honest. A release where most commits are skipped is a
 normal outcome and worth recording; a release with an empty ported column
 should say why in a comment below the table.
+
+
+### v8.0.35 — three-helper convergence follow-up, 2026-10-23
+
+Starting main: `5cc1929a58156977d2d9b59ee215609be0aea311`.
+Code candidate: `deb043fb3e7af463ea78a0479264d37135cf279d`.
+This entry supersedes only the three `defer_scope` decisions listed below in
+[the original review](reviews/v8.0.35-20261023.json). All other decisions and
+all four fork purposes remain unchanged. This follow-up becomes absorbed only
+on a verified protected-branch merge. No release or local service change is part
+of this follow-up.
+
+| Upstream | Local | Scope and retained boundaries |
+| --- | --- | --- |
+| `7795de19ca80940adeafe45ebe7c5dbfc4931cc5` | `878927fba4e911822de299dc29354dafd382721f` | Adopt Codex SSE scanner, executor integration and tests; preserve raw bootstrap budgets, replay, responses-tools and cancellation handling. |
+| `b0db5448e8f8cce9b58e5d02eab23d32d4ec5dca` | `dc5664053835a48e36907b06b9af767e7b5a6441` | Adapt per-response fallback item IDs only; preserve supplied IDs and namespaced custom tools; exclude the separate upstream apply_patch pipeline/tests. |
+| `e240bd84321c55b96b226d43fa557c9a8be55a00` | `deb043fb3e7af463ea78a0479264d37135cf279d` | Adapt model, multi-agent template and validator fallback; prefer gpt-5.5 when present. Exclude synthesized fetch entries/visibility changes and catalog/prompt snapshots. |
+
+Stable source releases cleared the 72-hour gate: v8.0.25 was published
+`2026-10-12T10:43:27Z`; v8.0.28 was published `2026-10-14T00:41:06Z`.
+The latest observed v8.0.40 (`2026-10-23T00:10:37Z`) was used for issue rechecks,
+not as an intake source.
+
+Validation used `GOTOOLCHAIN=go1.26.4`:
+
+- Clean baseline and code candidate `ops/upstream-intake/verify-absorb.sh`: PASS
+  for maintenance tooling, tracked gofmt, vet, responses-tools invariants,
+  full suite, race-sensitive packages and server build. No stage was waived.
+- Each port passed affected package tests and a server build before its commit.
+- Identical fixed-request/unit fixtures, using baseline production-source overlays
+  and candidate tests: six top-level behavioral failures on the baseline, six
+  passes on the candidate, without compilation failures. Coverage includes split
+  SSE completion in buffered/unbuffered streaming and non-stream execution,
+  cross-response ID collision, model loading, multi-agent metadata and validation.
+- Reversing the scanner's incomplete-JSON condition is caught by its tests.
+  Explicit IDs/custom identity and preferred-template ordering also pass.
+- Independent read-only review: APPROVE for each of the three commits, no required
+  findings. Optional direct coverage for cancellation while an incomplete event
+  is held remains a test gap; existing cancellation paths were retained.
+- One initial executor-package run failed an unrelated Antigravity credits
+  `Known=false` assertion (`antigravity_executor_credits_test.go:942`). The cause
+  was not established. Baseline isolated count20 and broader subset, candidate
+  package recheck and complete candidate gate passed. No credits code was changed;
+  the initial failure is preserved, not treated as a fixed defect.
+
+Replay limit: deterministic local fixtures/transports, not a new live provider
+or desktop client certification. Production config/credentials were not used.
+Detailed local logs are under `.git/task-evidence/convergence-ports-20261023/`;
+portable decisions and mapping are in
+[the follow-up manifest](reviews/v8.0.35-followup-20261023.json).
+
+Upstream feedback (objective scope, no duplicate bug reports):
+
+- New opt-in bounded recursive-schema mode proposal: [#6900](https://github.com/router-for-me/CLIProxyAPI/issues/6900).
+- Response-side number compatibility: [#6255 implementation notes](https://github.com/router-for-me/CLIProxyAPI/issues/6255#issuecomment-6355257555).
+- Route/attempt-scoped portable tools: [#6221 scoped proposal](https://github.com/router-for-me/CLIProxyAPI/issues/6221#issuecomment-6355257755).
+- Stream regression coverage: [#6258 recheck](https://github.com/router-for-me/CLIProxyAPI/issues/6258#issuecomment-6355257968), explicitly recording that split usage and MAX_TOKENS pass in v8.0.40.
+- Existing schema defects [#6897](https://github.com/router-for-me/CLIProxyAPI/issues/6897#issuecomment-6355258205) and [#6898](https://github.com/router-for-me/CLIProxyAPI/issues/6898#issuecomment-6355258484) rechecked on v8.0.40, still reproducible offline.
+- Exact-name samples Read/read and _lookup/lookup pass on v8.0.40; no new bug
+  was filed for those samples and no broad equivalence claim is made.
