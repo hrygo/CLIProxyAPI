@@ -23,6 +23,17 @@ of these problems with an equivalent fix, retire our implementation in favor
 of upstream's rather than maintaining both; the fork is not kept for its own
 sake and is retired once nothing it fixes remains unfixed upstream.
 
+One divergence is knowingly permanent. Upstream closed
+`router-for-me/CLIProxyAPI#6930` as not planned because its design policy allows
+timeouts only during credential acquisition, so the opt-in
+`requests.streaming.bootstrap-timeout` bound in
+`sdk/api/handlers/handlers_stream.go` is not waiting to be absorbed: it is kept
+deliberately and retired only if upstream's policy changes. It is not upstream's
+`codex.stream-bootstrap-timeout`, which covers Codex bootstrap buffering only and
+releases buffered frames instead of abandoning the attempt; abandoning a silent
+attempt on the general SSE path is the part upstream declined. The timeout
+policy below carries the matching exception.
+
 - **Remotes:** `origin` is our fork (`hrygo/CLIProxyAPI`), `upstream` is
   `router-for-me/CLIProxyAPI`.
 - **Upstream intake is release-only.** Track `upstream` releases, not its `dev` or
