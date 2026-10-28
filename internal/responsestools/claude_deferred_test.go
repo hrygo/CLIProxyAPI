@@ -57,6 +57,115 @@ func TestClaudeDeferredFirstTurnDropsUnloadedDeclarations(t *testing.T) {
 	}
 }
 
+// A client keeps the reserved placeholder after it stops declaring a search
+// function, for example once every tool is loaded eagerly. There is nothing to
+// bridge then, so the turn must still complete with the deferred declarations
+// dropped instead of failing with 422.
+func TestClaudeDeferredPlaceholderWithoutSearchDegrades(t *testing.T) {
+	for name, body := range map[string]string{
+		"placeholder only": `{"model":"m","max_tokens":64,"messages":[{"role":"user","content":"say OK"}],"tools":[{"name":"Glob","input_schema":{"type":"object","properties":{}}},{"name":"DeferredToolPlaceholder","description":"Reserved placeholder that keeps deferred tool loading active; never call this tool.","input_schema":{"type":"object","properties":{}},"defer_loading":true}]}`,
+		"inactive search":  `{"model":"m","messages":[{"role":"user","content":"say OK"}],"tools":[{"name":"ToolSearch","input_schema":{"type":"object"},"defer_loading":true},{"name":"Glob","input_schema":{"type":"object","properties":{}}},{"name":"lookup","input_schema":{"type":"object","properties":{}},"defer_loading":true}]}`,
+		"loaded history":   `{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":[{"type":"text","text":"ok"}]}],"tools":[{"name":"Read","input_schema":{"type":"object","properties":{}}},{"name":"DeferredToolPlaceholder","input_schema":{"type":"object","properties":{}},"defer_loading":true}]}`,
+		// The reserved name is dropped on identity, not on its flag.
+		"placeholder not deferred": `{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[{"name":"Glob","input_schema":{"type":"object","properties":{}}},{"name":"DeferredToolPlaceholder","input_schema":{"type":"object","properties":{}}},{"name":"other","input_schema":{"type":"object","properties":{}},"defer_loading":true}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			prepared, err := PrepareClaudeDeferredTools([]byte(body), DefaultLimits())
+			if err != nil {
+				t.Fatalf("placeholder-only request rejected: %v", err)
+			}
+			var root map[string]any
+			if err := json.Unmarshal(prepared, &root); err != nil {
+				t.Fatal(err)
+			}
+			tools := root["tools"].([]any)
+			if len(tools) != 1 || tools[0].(map[string]any)["name"] == "DeferredToolPlaceholder" {
+				t.Fatalf("deferred declarations survived degradation: %s", prepared)
+			}
+			if bytes.Contains(prepared, []byte(`"defer_loading"`)) {
+				t.Fatalf("deferral flag leaked into the bridge payload: %s", prepared)
+			}
+		})
+	}
+}
+
+// An explicit false flag is protocol structure, not deferred work: the turn
+// carries nothing to bridge and must pass through unchanged.
+func TestClaudeDeferredExplicitFalseFlagPassesThrough(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[],"tools":[{"name":"Glob","input_schema":{"type":"object"},"defer_loading":false}]}`)
+	prepared, err := PrepareClaudeDeferredTools(body, DefaultLimits())
+	if err != nil || !bytes.Equal(prepared, body) {
+		t.Fatalf("explicit false flag rewritten or rejected: %v %s", err, prepared)
+	}
+}
+
+// Without a search function the bridge cannot replay a discovery round: the
+// upstream would receive a tool call that no declaration admits.
+func TestClaudeDeferredRejectsDiscoveryReplayWithoutSearchDeclaration(t *testing.T) {
+	withoutSearch := strings.Replace(claudeDeferredFixture,
+		`{"name":"ToolSearch","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}},`, ``, 1)
+	var orphan map[string]any
+	_ = json.Unmarshal([]byte(withoutSearch), &orphan)
+	orphan["messages"] = orphan["messages"].([]any)[1:]
+	orphanBody, _ := json.Marshal(orphan)
+	for name, body := range map[string]string{
+		"search call":      withoutSearch,
+		"orphan reference": string(orphanBody),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := PrepareClaudeDeferredTools([]byte(body), DefaultLimits()); err == nil || !IsRequestScopedError(err) {
+				t.Fatalf("orphan discovery replay admitted: %v", err)
+			}
+		})
+	}
+}
+
+// A forced choice cannot survive when its declaration is dropped.
+func TestClaudeDeferredRejectsForcedToolWithoutSearchDeclaration(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":"hi"}],"tool_choice":{"type":"tool","name":"DeferredToolPlaceholder"},"tools":[{"name":"DeferredToolPlaceholder","input_schema":{"type":"object"},"defer_loading":true}]}`
+	if _, err := PrepareClaudeDeferredTools([]byte(body), DefaultLimits()); err == nil || !IsRequestScopedError(err) {
+		t.Fatalf("forced placeholder admitted after degradation: %v", err)
+	}
+}
+
+// Only block structure is discovery. A tool argument that happens to contain
+// the same member name must not turn a degradable turn into a 422.
+func TestClaudeDeferredIgnoresArgumentsAsDiscovery(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"tool_reference":"x"}}]}],"tools":[{"name":"DeferredToolPlaceholder","defer_loading":true,"input_schema":{"type":"object","properties":{}}}]}`
+	prepared, err := PrepareClaudeDeferredTools([]byte(body), DefaultLimits())
+	if err != nil {
+		t.Fatalf("tool arguments were read as discovery: %v", err)
+	}
+	if bytes.Contains(prepared, []byte("DeferredToolPlaceholder")) || bytes.Contains(prepared, []byte("defer_loading")) {
+		t.Fatalf("deferred declarations survived: %s", prepared)
+	}
+	if !bytes.Contains(prepared, []byte(`"tool_reference":"x"`)) {
+		t.Fatalf("caller arguments were rewritten: %s", prepared)
+	}
+}
+
+func TestClaudeDeclaresSearch(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want bool
+	}{
+		"active":              {`{"tools":[{"name":"ToolSearch","input_schema":{"type":"object"}}]}`, true},
+		"not deferred":        {`{"tools":[{"name":"ToolSearch","defer_loading":false}]}`, true},
+		"deferred":            {`{"tools":[{"name":"ToolSearch","defer_loading":true}]}`, false},
+		"other tools":         {`{"tools":[{"name":"Glob","input_schema":{"type":"object"}}]}`, false},
+		"placeholder only":    {`{"tools":[{"name":"DeferredToolPlaceholder","defer_loading":true}]}`, false},
+		"no tools":            {`{"messages":[]}`, false},
+		"invalid json":        {`{`, false},
+		"case sensitive name": {`{"tools":[{"name":"toolsearch"}]}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := ClaudeDeclaresSearch([]byte(tc.body)); got != tc.want {
+				t.Fatalf("ClaudeDeclaresSearch = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestClaudeDeferredRejectsUnboundOrAmbiguousDiscovery(t *testing.T) {
 	for name, body := range map[string]string{
 		"unknown declaration":     strings.Replace(claudeDeferredFixture, `"tool_name":"lookup"`, `"tool_name":"missing"`, 1),

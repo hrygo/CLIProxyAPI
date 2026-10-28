@@ -30,6 +30,7 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 	if !ok || !toolsOK {
 		return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("deferred search requires tool declarations"))
 	}
+	hasDeferred := false
 	for _, item := range tools {
 		tool, _ := item.(map[string]any)
 		if flag, present := tool["defer_loading"]; present {
@@ -37,12 +38,26 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 				return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("invalid Anthropic deferral flag"))
 			}
 		}
+		if tool["defer_loading"] == true {
+			hasDeferred = true
+		}
 	}
+	// Protocol detection is structural: an explicit false flag qualifies, and
+	// there is nothing deferred to bridge in that turn.
 	if err := ValidateLimits(limits); err != nil {
 		return nil, err
 	}
 	if err := validateClaudeDiscoveryJSON(body, limits.MaxDepth); err != nil {
 		return nil, err
+	}
+	if !hasDeferred {
+		replay, err := claudeHistoryNeedsSearch(root["messages"])
+		if err != nil {
+			return nil, err
+		}
+		if !replay {
+			return body, nil
+		}
 	}
 	declared := make(map[string]map[string]any, len(tools))
 	for _, item := range tools {
@@ -54,17 +69,139 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 		declared[name] = tool
 	}
 	search := declared["ToolSearch"]
+	active := make(map[string]bool)
+	changedHistory := false
 	if search == nil || search["defer_loading"] == true {
-		return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("deferred bridge requires an active client ToolSearch declaration"))
+		// A client may keep the reserved placeholder after it stops declaring a
+		// search function, for example once every tool is loaded eagerly. There
+		// is nothing to bridge then, so the deferred declarations are dropped
+		// instead of failing the turn. A discovery round still in history
+		// cannot be replayed without its search function: the upstream would
+		// receive a call that no declaration admits.
+		replay, err := claudeHistoryNeedsSearch(root["messages"])
+		if err != nil {
+			return nil, err
+		}
+		if replay {
+			return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("deferred history requires an active client ToolSearch declaration"))
+		}
+		var choice struct{ Type, Name string }
+		_ = json.Unmarshal(root["tool_choice"], &choice)
+		if choice.Type == "tool" {
+			forced := declared[choice.Name]
+			if forced == nil || choice.Name == "DeferredToolPlaceholder" || forced["defer_loading"] == true {
+				return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("forced tool is not active after discovery"))
+			}
+		}
+	} else {
+		var messages []map[string]json.RawMessage
+		if err := json.Unmarshal(root["messages"], &messages); err != nil {
+			return nil, unprocessableError(ReasonHistoryLink, fmt.Errorf("invalid Anthropic discovery history"))
+		}
+		pending := make(map[string]string)
+		seen := make(map[string]bool)
+		for _, message := range messages {
+			var role string
+			_ = json.Unmarshal(message["role"], &role)
+			var blocks []map[string]json.RawMessage
+			if json.Unmarshal(message["content"], &blocks) != nil {
+				continue
+			}
+			changedMessage := false
+			for _, block := range blocks {
+				var kind, id, name string
+				_ = json.Unmarshal(block["type"], &kind)
+				if kind == "tool_use" && role == "assistant" {
+					_ = json.Unmarshal(block["id"], &id)
+					_ = json.Unmarshal(block["name"], &name)
+					if id == "" || seen[id] {
+						return nil, unprocessableError(ReasonHistoryLink, fmt.Errorf("ambiguous Anthropic tool call identity"))
+					}
+					seen[id], pending[id] = true, name
+					continue
+				}
+				if kind == "tool_reference" {
+					return nil, unprocessableError(ReasonHistoryLink, fmt.Errorf("tool reference must belong to a client search result"))
+				}
+				if kind != "tool_result" {
+					continue
+				}
+				_ = json.Unmarshal(block["tool_use_id"], &id)
+				callName := pending[id]
+				delete(pending, id)
+				var parts []map[string]json.RawMessage
+				if json.Unmarshal(block["content"], &parts) != nil {
+					continue
+				}
+				var names []map[string]string
+				for _, part := range parts {
+					var partType string
+					_ = json.Unmarshal(part["type"], &partType)
+					if partType != "tool_reference" {
+						continue
+					}
+					var failed bool
+					invalidErrorFlag := false
+					if raw, present := block["is_error"]; present {
+						invalidErrorFlag = json.Unmarshal(raw, &failed) != nil || string(raw) == "null"
+					}
+					if role != "user" || callName != "ToolSearch" || failed || invalidErrorFlag {
+						return nil, unprocessableError(ReasonHistoryLink, fmt.Errorf("unbound or failed client discovery result"))
+					}
+					_ = json.Unmarshal(part["tool_name"], &name)
+					tool := declared[name]
+					schema, validSchema := tool["input_schema"].(map[string]any)
+					if tool == nil || name == "DeferredToolPlaceholder" || !validSchema || schema == nil {
+						return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("discovery reference lacks an effective tool schema"))
+					}
+					active[name] = true
+					names = append(names, map[string]string{"name": name})
+				}
+				if len(names) == 0 {
+					continue
+				}
+				// Mixed reference/text blocks need an explicit contract rather
+				// than silently dropping an error, image, or other component.
+				if len(names) != len(parts) {
+					return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("mixed discovery result blocks are unsupported"))
+				}
+				manifest, _ := json.Marshal(map[string]any{"loaded_tools": names})
+				block["content"], _ = json.Marshal(string(manifest))
+				changedMessage, changedHistory = true, true
+			}
+			if changedMessage {
+				message["content"], _ = json.Marshal(blocks)
+			}
+		}
+		var choice struct{ Type, Name string }
+		_ = json.Unmarshal(root["tool_choice"], &choice)
+		if choice.Type == "tool" && (declared[choice.Name] == nil || choice.Name == "DeferredToolPlaceholder" ||
+			(declared[choice.Name]["defer_loading"] == true && !active[choice.Name])) {
+			return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("forced tool is not active after discovery"))
+		}
+		if changedHistory {
+			root["messages"], _ = json.Marshal(messages)
+		}
+	}
+	root["tools"], _ = json.Marshal(filterClaudeDeferredTools(tools, active))
+	if len(root["tools"]) > limits.MaxActiveToolBytes {
+		return nil, budgetError(ReasonDeclarationBudget, fmt.Errorf("active Anthropic declarations exceed the tool byte budget"))
+	}
+	return encodeClaudeBridge(root)
+}
+
+// claudeHistoryNeedsSearch reports whether the explicit history depends on a
+// client search function, either through a search call or through a discovery
+// reference in a result. Only block structure counts: an argument or text that
+// happens to contain the same words is not discovery.
+func claudeHistoryNeedsSearch(raw json.RawMessage) (bool, error) {
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || string(trimmed) == "null" {
+		return false, nil
 	}
 	var messages []map[string]json.RawMessage
-	if err := json.Unmarshal(root["messages"], &messages); err != nil {
-		return nil, unprocessableError(ReasonHistoryLink, fmt.Errorf("invalid Anthropic discovery history"))
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return false, unprocessableError(ReasonHistoryLink, fmt.Errorf("invalid Anthropic discovery history"))
 	}
-	active := make(map[string]bool)
-	pending := make(map[string]string)
-	seen := make(map[string]bool)
-	changedHistory := false
 	for _, message := range messages {
 		var role string
 		_ = json.Unmarshal(message["role"], &role)
@@ -72,78 +209,77 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 		if json.Unmarshal(message["content"], &blocks) != nil {
 			continue
 		}
-		changedMessage := false
 		for _, block := range blocks {
-			var kind, id, name string
+			var kind, name string
 			_ = json.Unmarshal(block["type"], &kind)
 			if kind == "tool_use" && role == "assistant" {
-				_ = json.Unmarshal(block["id"], &id)
 				_ = json.Unmarshal(block["name"], &name)
-				if id == "" || seen[id] {
-					return nil, unprocessableError(ReasonHistoryLink, fmt.Errorf("ambiguous Anthropic tool call identity"))
+				if name == "ToolSearch" {
+					return true, nil
 				}
-				seen[id], pending[id] = true, name
 				continue
 			}
 			if kind == "tool_reference" {
-				return nil, unprocessableError(ReasonHistoryLink, fmt.Errorf("tool reference must belong to a client search result"))
+				return true, nil
 			}
-			if kind != "tool_result" {
-				continue
+			if kind == "tool_result" && claudeResultCarriesReference(block["content"]) {
+				return true, nil
 			}
-			_ = json.Unmarshal(block["tool_use_id"], &id)
-			callName := pending[id]
-			delete(pending, id)
-			var parts []map[string]json.RawMessage
-			if json.Unmarshal(block["content"], &parts) != nil {
-				continue
-			}
-			var names []map[string]string
-			for _, part := range parts {
-				var partType string
-				_ = json.Unmarshal(part["type"], &partType)
-				if partType != "tool_reference" {
-					continue
-				}
-				var failed bool
-				invalidErrorFlag := false
-				if raw, present := block["is_error"]; present {
-					invalidErrorFlag = json.Unmarshal(raw, &failed) != nil || string(raw) == "null"
-				}
-				if role != "user" || callName != "ToolSearch" || failed || invalidErrorFlag {
-					return nil, unprocessableError(ReasonHistoryLink, fmt.Errorf("unbound or failed client discovery result"))
-				}
-				_ = json.Unmarshal(part["tool_name"], &name)
-				tool := declared[name]
-				schema, validSchema := tool["input_schema"].(map[string]any)
-				if tool == nil || name == "DeferredToolPlaceholder" || !validSchema || schema == nil {
-					return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("discovery reference lacks an effective tool schema"))
-				}
-				active[name] = true
-				names = append(names, map[string]string{"name": name})
-			}
-			if len(names) == 0 {
-				continue
-			}
-			// Mixed reference/text blocks need an explicit contract rather than
-			// silently dropping an error, image, or other result component.
-			if len(names) != len(parts) {
-				return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("mixed discovery result blocks are unsupported"))
-			}
-			manifest, _ := json.Marshal(map[string]any{"loaded_tools": names})
-			block["content"], _ = json.Marshal(string(manifest))
-			changedMessage, changedHistory = true, true
-		}
-		if changedMessage {
-			message["content"], _ = json.Marshal(blocks)
 		}
 	}
-	var choice struct{ Type, Name string }
-	_ = json.Unmarshal(root["tool_choice"], &choice)
-	if choice.Type == "tool" && (declared[choice.Name] == nil || choice.Name == "DeferredToolPlaceholder" ||
-		(declared[choice.Name]["defer_loading"] == true && !active[choice.Name])) {
-		return nil, unprocessableError(ReasonUnsupportedProtocol, fmt.Errorf("forced tool is not active after discovery"))
+	return false, nil
+}
+
+// claudeResultCarriesReference reports whether one tool result embeds a
+// discovery reference block. A plain string result never carries one, however
+// it is worded.
+func claudeResultCarriesReference(content json.RawMessage) bool {
+	var parts []json.RawMessage
+	if json.Unmarshal(content, &parts) != nil {
+		return false
 	}
+	for _, raw := range parts {
+		var part map[string]json.RawMessage
+		if json.Unmarshal(raw, &part) != nil {
+			continue
+		}
+		var kind string
+		_ = json.Unmarshal(part["type"], &kind)
+		if kind == "tool_reference" {
+			return true
+		}
+	}
+	return false
+}
+
+// ClaudeDeclaresSearch reports whether an Anthropic request declares the
+// client-executed ToolSearch function. A disabled client-search policy rejects
+// exactly those requests; a request that only carries deferred declarations or
+// the reserved placeholder has no search entry point to reject.
+func ClaudeDeclaresSearch(body []byte) bool {
+	var root struct {
+		Tools []struct {
+			Name         string          `json:"name"`
+			DeferLoading json.RawMessage `json:"defer_loading"`
+		} `json:"tools"`
+	}
+	if json.Unmarshal(body, &root) != nil {
+		return false
+	}
+	for _, tool := range root.Tools {
+		if tool.Name == "ToolSearch" && string(bytes.TrimSpace(tool.DeferLoading)) != "true" {
+			return true
+		}
+	}
+	return false
+}
+
+// filterClaudeDeferredTools drops the reserved placeholder together with the
+// deferred declarations that no discovery result activated, then removes the
+// native deferral flag so the upstream sees ordinary functions only. Every
+// element must already be a validated declaration object with a non-empty
+// name, as enforced before both call sites.
+func filterClaudeDeferredTools(tools []any, active map[string]bool) []any {
 	filtered := make([]any, 0, len(tools))
 	for _, item := range tools {
 		tool := item.(map[string]any)
@@ -154,13 +290,10 @@ func PrepareClaudeDeferredTools(body []byte, limits Limits) ([]byte, error) {
 		delete(tool, "defer_loading")
 		filtered = append(filtered, tool)
 	}
-	root["tools"], _ = json.Marshal(filtered)
-	if len(root["tools"]) > limits.MaxActiveToolBytes {
-		return nil, budgetError(ReasonDeclarationBudget, fmt.Errorf("active Anthropic declarations exceed the tool byte budget"))
-	}
-	if changedHistory {
-		root["messages"], _ = json.Marshal(messages)
-	}
+	return filtered
+}
+
+func encodeClaudeBridge(root map[string]json.RawMessage) ([]byte, error) {
 	var output bytes.Buffer
 	encoder := json.NewEncoder(&output)
 	encoder.SetEscapeHTML(false)
