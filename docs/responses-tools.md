@@ -457,3 +457,38 @@ later search result does not prove revocation of an earlier tool. The client or
 MCP execution service must check current permissions and validate arguments at
 dispatch, including after schema updates; the gateway preserves call identity
 and does not execute tools or infer permission grants from historical manifests.
+
+## Anthropic client discovery bridge
+
+`/v1/messages` requests that carry `defer_loading` or `tool_reference` are
+prepared before translation to a non-Anthropic route. The bridge expects a
+client-executed discovery contract, not the Anthropic server-executed beta:
+
+- an ordinary function declaration named `ToolSearch` that is not itself
+  deferred, and
+- deferred tool declarations plus `tool_result.content[].tool_reference` blocks
+  that name the tools a search activated.
+
+Only block structure counts as discovery. Caller text, tool arguments or metadata
+that happen to contain the same member names are never treated as a search
+contract, and escaped spellings of the same members are inspected structurally.
+
+Server-executed declarations such as `tool_search_tool_regex_20251119` are not
+client search declarations and are not executed by the bridge; they are
+forwarded like any other function declaration. Native Messages routes keep the
+Anthropic beta semantics untouched.
+
+The bridge only fails a turn when it cannot preserve the contract. A request
+whose history contains a `ToolSearch` call or a `tool_reference` result needs an
+active `ToolSearch` declaration and fails locally with 422
+`unsupported_protocol` otherwise, because the upstream would receive a call that
+no declaration admits. When the client keeps only the reserved
+`DeferredToolPlaceholder` and its history has no discovery round, the deferred
+declarations and the placeholder are dropped and the request is forwarded
+without them, so an eager turn that still advertises deferred support completes
+instead of failing.
+
+`client-search: disabled` therefore rejects every turn that declares
+`ToolSearch`, whether or not the bridge would change any bytes. A request that
+merely carries deferred declarations or the reserved placeholder is degraded
+rather than rejected, because it declares no search entry point to turn off.

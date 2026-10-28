@@ -31,19 +31,24 @@ func (m *Manager) prepareClaudeDeferredRequest(ctx context.Context, auth *Auth, 
 		return ctx, req, opts, nil
 	}
 	body := responsesToolsPayload(req, opts)
-	if !bytes.Contains(body, []byte(`"defer_loading"`)) && !bytes.Contains(body, []byte(`"tool_reference"`)) && !bytes.Contains(body, []byte(`\u`)) {
+	deferred := bytes.Contains(body, []byte(`"defer_loading"`)) || bytes.Contains(body, []byte(`"tool_reference"`)) ||
+		bytes.Contains(body, []byte(`\u`))
+	// A bare search declaration changes no bytes, but a route that disables
+	// client search must reject it all the same.
+	if !deferred && !bytes.Contains(body, []byte(`"ToolSearch"`)) {
 		return ctx, req, opts, nil
 	}
 	route := responsesToolsRoute(auth, provider, req.Model, toFormat)
 	route.AuthKind = normalizeAuthKindForPolicy(route.AuthKind)
 	matched, err := responsestools.EffectivePolicy(policy, route)
+	if err == nil && matched.ClientSearch == responsestools.ClientSearchDisabled &&
+		responsestools.ClaudeDeclaresSearch(body) {
+		err = &responsestools.ToolCompatibilityError{Reason: responsestools.ReasonUnsupportedProtocol,
+			Err: errors.New("client search is disabled for this route")}
+	}
 	var wire []byte
 	if err == nil {
 		wire, err = responsestools.PrepareClaudeDeferredTools(body, policy.Limits)
-	}
-	if err == nil && !bytes.Equal(body, wire) && matched.ClientSearch == responsestools.ClientSearchDisabled {
-		err = &responsestools.ToolCompatibilityError{Reason: responsestools.ReasonUnsupportedProtocol,
-			Err: errors.New("client search is disabled for this route")}
 	}
 	if err != nil {
 		responsestools.ReportPreparationFailure(ctx, err)
