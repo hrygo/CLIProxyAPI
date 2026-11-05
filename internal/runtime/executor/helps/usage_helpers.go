@@ -948,7 +948,59 @@ type StreamUsageBuffer struct {
 	geminiWebSearchRequests      *int64
 	geminiImageCount             int64
 	geminiImageDetails           *usage.ImageDetails
+	geminiTokenCounts            geminiStreamTokenCounts
 	requestedImageDetails        *usage.ImageDetails
+}
+
+type geminiStreamTokenCount struct {
+	value   int64
+	present bool
+}
+
+type geminiStreamTokenCounts struct {
+	prompt     geminiStreamTokenCount
+	toolPrompt geminiStreamTokenCount
+	candidates geminiStreamTokenCount
+	thoughts   geminiStreamTokenCount
+	total      geminiStreamTokenCount
+	cached     geminiStreamTokenCount
+}
+
+// merge fills omitted token fields from earlier snapshots before normalizing.
+// Gemini snapshots can carry only some fields, and explicit zeros replace prior values.
+func (counts *geminiStreamTokenCounts) merge(node gjson.Result) gjson.Result {
+	if !node.IsObject() {
+		return node
+	}
+	var merged []byte
+	for _, field := range []struct {
+		camel, snake string
+		count        *geminiStreamTokenCount
+	}{
+		{"promptTokenCount", "prompt_token_count", &counts.prompt},
+		{"toolUsePromptTokenCount", "tool_use_prompt_token_count", &counts.toolPrompt},
+		{"candidatesTokenCount", "candidates_token_count", &counts.candidates},
+		{"thoughtsTokenCount", "thoughts_token_count", &counts.thoughts},
+		{"totalTokenCount", "total_token_count", &counts.total},
+		{"cachedContentTokenCount", "cached_content_token_count", &counts.cached},
+	} {
+		value := node.Get(field.camel)
+		if !value.Exists() {
+			value = node.Get(field.snake)
+		}
+		if value.Exists() {
+			field.count.value, field.count.present = value.Int(), true
+		} else if field.count.present {
+			if merged == nil {
+				merged = []byte(node.Raw)
+			}
+			merged, _ = sjson.SetBytes(merged, field.camel, field.count.value)
+		}
+	}
+	if merged == nil {
+		return node
+	}
+	return gjson.ParseBytes(merged)
 }
 
 var (
@@ -1162,11 +1214,16 @@ func (b *StreamUsageBuffer) observeGeminiFamilyStream(line []byte, allowResponse
 			return
 		}
 	}
-	if !node.Exists() {
+	if !node.IsObject() {
 		return
 	}
-	detail := parseGeminiFamilyUsageDetail(node)
-	if !allowResponseWrapper && !hasNonZeroTokenUsage(detail) {
+	detail := parseGeminiFamilyUsageDetail(b.geminiTokenCounts.merge(node))
+	if b.geminiTokenCounts.total.present && b.geminiTokenCounts.total.value == 0 && detail.TotalTokens != 0 {
+		// A reported zero is authoritative; a nonzero component makes it inconsistent.
+		detail.TotalTokens = 0
+		detail.TokenBreakdown = invalidUsageTokenBreakdown(0)
+	}
+	if !allowResponseWrapper && !b.ok && !hasNonZeroTokenUsage(detail) {
 		return
 	}
 	if b.ok {
@@ -1192,7 +1249,20 @@ func (b *StreamUsageBuffer) observeGeminiFamilyStream(line []byte, allowResponse
 			}
 		}
 	}
-	b.Observe(detail, true)
+	counts := b.geminiTokenCounts
+	hasTokenFields := counts.prompt.present || counts.toolPrompt.present || counts.candidates.present ||
+		counts.thoughts.present || counts.total.present || counts.cached.present
+	if hasTokenFields && detail.ResponseServiceTier != "" && !hasNonZeroTokenUsage(detail) && !hasStructuredUsageDetail(detail) {
+		// Observe treats a tier-only event as metadata; an explicit zero snapshot is usage.
+		b.detail = detail
+		b.applyGeminiStreamObservations()
+		b.ok = true
+	} else {
+		b.Observe(detail, true)
+	}
+	if b.geminiTokenCounts.toolPrompt.present && b.detail.ToolUsageDetails != nil && b.detail.ToolUsageDetails.Extra != nil {
+		b.detail.ToolUsageDetails.Extra["tool_use_prompt_tokens"] = b.geminiTokenCounts.toolPrompt.value
+	}
 }
 
 // ObserveOpenAIStream records response-tier state and the latest usage from an
