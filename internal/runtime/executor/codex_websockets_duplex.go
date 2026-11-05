@@ -330,6 +330,11 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			if !allowed {
 				return keepOpen
 			}
+			model = strings.TrimSpace(gjson.GetBytes(payload, "model").String())
+			if model != "" && model != req.Model && model != boundModel {
+				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+				return false
+			}
 			if model == "" {
 				model = req.Model
 				if model == "" {
@@ -362,6 +367,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					payload, _ = sjson.SetRawBytes(payload, "instructions", []byte(inst.Raw))
 				}
 			}
+			if checker := cliproxyexecutor.ResponsesToolsReplayCheckerFromContext(streamCtx); checker != nil && checker(payload, boundModel, auth.Provider, auth.ID) {
+				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+				return false
+			}
 			nextReq, nextOpts := req, opts
 			nextReq.Payload = payload
 			nextOpts.OriginalRequest = payload
@@ -376,6 +385,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				return false
 			}
 			payload = frameCodexWebsocketRequestBody(prepared.clientBody)
+			if checker := cliproxyexecutor.ResponsesToolsReplayCheckerFromContext(streamCtx); checker != nil && checker(payload, boundModel, auth.Provider, auth.ID) {
+				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+				return false
+			}
 			metadataMu.Lock()
 			if len(pending) >= 16 {
 				metadataMu.Unlock()
@@ -486,6 +499,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 					}
 					payload = helps.NewPayloadFinalizer(e.cfg, "codex-websockets", thinking.ParseSuffix(req.Model).ModelName, "codex", "", payload, steerReq, steerOpts)(payload)
 					payload, _ = sjson.SetBytes(payload, "type", "response.steer")
+					if checker := cliproxyexecutor.ResponsesToolsReplayCheckerFromContext(streamCtx); checker != nil && checker(payload, boundModel, auth.Provider, auth.ID) {
+						fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+						return
+					}
 					parent := gjson.GetBytes(payload, "previous_response_id").String()
 					metadataMu.Lock()
 					settings := responseSettings[parent]
@@ -882,7 +899,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 				publishCodexImageToolUsageWithOutputItems(ctx, reporter, current.clientBody, payload, outputItems, outputFallback)
 			}
-			if !send(cliproxyexecutor.StreamChunk{Payload: helps.EnsureResponsesUsageDetails(payload), Incomplete: eventType == "response.incomplete"}) {
+			if !send(cliproxyexecutor.StreamChunk{Payload: sdktranslator.NormalizeCodexToolArgumentsForClient(ctx, helps.EnsureResponsesUsageDetails(payload), true), Incomplete: eventType == "response.incomplete"}) {
 				return
 			}
 			if establishing {

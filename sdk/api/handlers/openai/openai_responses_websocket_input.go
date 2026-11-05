@@ -150,6 +150,14 @@ func (s *responsesLocalInterrupt) takeClaimed() []byte {
 // readResponsesWebsocketInput is the only downstream reader. Interrupts are
 // handled immediately so they are not queued behind an active response.
 // The bounded queue backpressures clients instead of retaining unlimited input.
+type responsesWebsocketInterruptAuthError struct {
+	message *interfaces.ErrorMessage
+}
+
+func (e *responsesWebsocketInterruptAuthError) Error() string {
+	return e.message.Error.Error()
+}
+
 func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCauseFunc, conn *websocket.Conn, interrupt func([]byte) error, local *responsesLocalInterrupt, writer *responsesWebsocketWriter, timeline websocketTimelineAppender, epoch *atomic.Uint64) (<-chan cliproxyexecutor.WebsocketInput, <-chan struct{}) {
 	input := make(chan cliproxyexecutor.WebsocketInput, 16)
 	done := make(chan struct{})
@@ -182,10 +190,12 @@ func readResponsesWebsocketInput(ctx context.Context, cancel context.CancelCause
 					appendResponsesInterruptDiagnostic(timeline, payload, "rejected")
 					// The sanitized outcome replaces raw error logging here: errors
 					// from transport dependencies may contain credentials or URLs.
-					_, errWrite := writeResponsesWebsocketError(writer, nil, &interfaces.ErrorMessage{
-						StatusCode: http.StatusBadRequest,
-						Error:      errInterrupt,
-					})
+					errorMessage := &interfaces.ErrorMessage{StatusCode: http.StatusBadRequest, Error: errInterrupt}
+					var authError *responsesWebsocketInterruptAuthError
+					if errors.As(errInterrupt, &authError) && authError.message != nil {
+						errorMessage = authError.message
+					}
+					_, errWrite := writeResponsesWebsocketError(writer, nil, errorMessage)
 					if errWrite != nil {
 						cancel(errWrite)
 						return
@@ -247,9 +257,15 @@ func (h *OpenAIResponsesAPIHandler) forwardResponsesWebsocketInterrupt(ctx conte
 	}
 	ctx = cliproxyexecutor.WithWebsocketAuthCheck(ctx, func(authID string) bool {
 		// Home runtime credentials live on the execution session, not in the global map.
-		auth, found := h.AuthManager.GetByID(authID)
-		if !found || auth == nil {
+		var auth *coreauth.Auth
+		var found bool
+		if h.AuthManager.HomeEnabled() {
 			auth, found = h.AuthManager.GetExecutionSessionAuthByID(sessionID, authID)
+		} else {
+			auth, found = h.AuthManager.GetByID(authID)
+			if !found || auth == nil {
+				auth, found = h.AuthManager.GetExecutionSessionAuthByID(sessionID, authID)
+			}
 		}
 		return found && auth != nil && !auth.Disabled && auth.Status != coreauth.StatusDisabled
 	})
