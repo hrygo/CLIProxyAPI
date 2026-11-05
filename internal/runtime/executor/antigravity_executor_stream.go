@@ -1,7 +1,6 @@
 package executor
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -213,8 +213,7 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				log.Errorf("antigravity executor: close response line error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(resp.Body)
-		scanner.Buffer(nil, streamScannerBuffer)
+		scanner := helps.NewBufferedSSEScanner(resp.Body, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var streamUsage helps.StreamUsageBuffer
 		streamUsage.SetRequestPayload(requestPayload)
@@ -238,6 +237,15 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+			case <-ctx.Done():
+			}
+		}
+		failBufferedTail := func(err error) {
+			streamErr = err
+			stopDeliverySupport()
+			helps.RecordAPIResponseError(ctx, e.cfg, err)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: err}:
 			case <-ctx.Done():
 			}
 		}
@@ -356,10 +364,38 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			reporter.ObserveResponseModel(payload)
 
 			payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload)
-			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, bytes.Clone(payload), &param, claudeInputTokens)
-			// Replay follows the complete upstream response and validated tool input,
-			// independently of plugin rewrites or downstream cancellation.
-			if responseFormat == sdktranslator.FormatOpenAIResponse {
+			translateCtx := ctx
+			var buffered [][]byte
+			var errBuffered, errEvent, errScan error
+			bufferedFinish := responseFormat == sdktranslator.FormatOpenAIResponse && geminiStreamHasFinishSignal(payload)
+			if bufferedFinish {
+				buffered, errBuffered = scanner.BufferedEventsAfterCurrent()
+				errScan = scanner.Err()
+				var snapshots [][]byte
+				snapshots, errEvent = observeAntigravityBufferedEvents(buffered, nil, &streamUsage)
+				translateCtx = translatorcommon.WithGeminiBufferedUsage(ctx, &param, snapshots)
+			}
+			chunks := helps.TranslateStreamWithClaudeInputTokens(translateCtx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, bytes.Clone(payload), &param, claudeInputTokens)
+			// Settle already-read tail data before replay is committed or a terminal
+			// is delivered. No further network read is made for the tail.
+			if bufferedFinish && helps.ApplyPatchTranslationError(param) == nil {
+				if errEvent != nil {
+					failBufferedTail(errEvent)
+					return
+				}
+				if errBuffered != nil {
+					failBufferedTail(errBuffered)
+					return
+				}
+				if errScan != nil {
+					failBufferedTail(errScan)
+					return
+				}
+				if _, errReplay := observeAntigravityBufferedEvents(buffered, replayAccumulator, nil); errReplay != nil {
+					failBufferedTail(errReplay)
+					return
+				}
+				// Replay follows the upstream response independently of plugin rewrites.
 				commitReplay()
 			}
 			events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, chunks, &responsesDetector, param, reporter, &streamUsage, out)
@@ -489,6 +525,211 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		}
 	}(httpResp)
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil
+}
+
+// observeAntigravityBufferedEvents only accepts already-complete events. Tail
+// output has not passed translation or tool validation, so it must never be
+// replayed as content. Usage is isolated from candidate artifact accounting.
+func observeAntigravityBufferedEvents(events [][]byte, replay *antigravityReasoningReplayAccumulator, streamUsage *helps.StreamUsageBuffer) ([][]byte, error) {
+	unsafeContent := false
+	validCount := len(events)
+	var firstErr error
+	for index, payload := range events {
+		root := gjson.ParseBytes(payload)
+		for _, path := range []string{"error", "response.error"} {
+			if upstreamError := root.Get(path); upstreamError.Exists() && upstreamError.Type != gjson.Null {
+				statusCode := bufferedGeminiErrorStatus(upstreamError.Get("code"))
+				firstErr = newAntigravityBufferedStatusErr(statusCode, payload)
+				break
+			}
+		}
+		if firstErr == nil {
+			for _, prefix := range []string{"", "response."} {
+				if (root.Get(prefix+"code").Exists() && root.Get(prefix+"message").Exists()) || root.Get(prefix+"type").String() == "error" {
+					statusCode := bufferedGeminiErrorStatus(root.Get(prefix + "code"))
+					firstErr = newAntigravityBufferedStatusErr(statusCode, payload)
+					break
+				}
+			}
+		}
+		if firstErr != nil {
+			validCount = index
+			break
+		}
+		if !antigravityBufferedSafeEnvelope(root, true) {
+			unsafeContent = true
+		}
+		if response := root.Get("response"); response.Exists() && (!antigravityBufferedSafeEnvelope(response, false) || root.Get("candidates").Exists()) {
+			unsafeContent = true
+		}
+		for _, path := range []string{"candidates", "response.candidates"} {
+			candidates := root.Get(path)
+			if candidates.Exists() && (!candidates.IsArray() || len(candidates.Array()) > 0) && len(antigravityBufferedSignatureOnly(root)) == 0 {
+				// An unvalidated intervening content frame makes the target of
+				// every detached signature in this tail ambiguous.
+				unsafeContent = true
+			}
+		}
+	}
+	var snapshots [][]byte
+	for _, payload := range events[:validCount] {
+		root := gjson.ParseBytes(payload)
+		for _, path := range []string{"usageMetadata", "usage_metadata", "response.usageMetadata", "response.usage_metadata"} {
+			metadata := root.Get(path)
+			if !metadata.Exists() {
+				continue
+			}
+			if metadata.IsObject() {
+				usageOnly, _ := sjson.SetRawBytes([]byte(`{}`), "usageMetadata", []byte(metadata.Raw))
+				if streamUsage != nil {
+					streamUsage.ObserveAntigravityStream(usageOnly)
+				}
+				snapshots = append(snapshots, usageOnly)
+			}
+			break
+		}
+		if replay != nil && !unsafeContent && firstErr == nil {
+			if signatureOnly := antigravityBufferedSignatureOnly(root); len(signatureOnly) != 0 {
+				replay.observeResponsePayload(signatureOnly)
+			}
+		}
+	}
+	return snapshots, firstErr
+}
+
+func newAntigravityBufferedStatusErr(code int, payload []byte) statusErr {
+	err := newAntigravityStatusErr(code, payload)
+	err.msg = "upstream returned an error after finish"
+	if code == http.StatusTooManyRequests && err.retryAfter == nil {
+		if nested := gjson.GetBytes(payload, "response.error"); nested.IsObject() {
+			wrapped := append([]byte(`{"error":`), []byte(nested.Raw)...)
+			wrapped = append(wrapped, '}')
+			if retryAfter, parseErr := helps.ParseRetryDelay(wrapped); parseErr == nil {
+				err.retryAfter = retryAfter
+			}
+		}
+	}
+	return err
+}
+
+// antigravityBufferedSignatureOnly constructs a minimal payload containing
+// only detached signatures. Reject mixed or unknown candidate content.
+func antigravityBufferedSignatureOnly(root gjson.Result) []byte {
+	if !antigravityBufferedSafeEnvelope(root, true) {
+		return nil
+	}
+	if response := root.Get("response"); response.Exists() {
+		if root.Get("candidates").Exists() || !antigravityBufferedSafeEnvelope(response, false) {
+			return nil
+		}
+		root = response
+	}
+	candidates := root.Get("candidates")
+	if !candidates.IsArray() || len(candidates.Array()) != 1 {
+		return nil
+	}
+	candidate := candidates.Array()[0]
+	if !candidate.IsObject() {
+		return nil
+	}
+	valid := true
+	seen := make(map[string]bool)
+	candidate.ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if seen[name] || (name != "content" && name != "index") {
+			valid = false
+		} else if name == "index" && (value.Type != gjson.Number || value.Int() != 0 || value.Float() != 0) {
+			valid = false
+		}
+		seen[name] = true
+		return valid
+	})
+	content := candidate.Get("content")
+	if !valid || !content.IsObject() {
+		return nil
+	}
+	seen = make(map[string]bool)
+	content.ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if seen[name] || (name != "parts" && name != "role") {
+			valid = false
+		} else if name == "role" && (value.Type != gjson.String || value.String() != "model") {
+			valid = false
+		}
+		seen[name] = true
+		return valid
+	})
+	parts := content.Get("parts")
+	if !valid || !parts.IsArray() || len(parts.Array()) == 0 {
+		return nil
+	}
+	parts.ForEach(func(_, part gjson.Result) bool {
+		if !part.IsObject() {
+			valid = false
+			return false
+		}
+		seenPart := make(map[string]bool)
+		signatures := 0
+		part.ForEach(func(key, value gjson.Result) bool {
+			name := key.String()
+			if seenPart[name] {
+				valid = false
+				return false
+			}
+			seenPart[name] = true
+			switch name {
+			case "text":
+				valid = value.Type == gjson.String && value.String() == ""
+			case "thought":
+				valid = value.Type == gjson.True || value.Type == gjson.False
+			case "thoughtSignature", "thought_signature":
+				signatures++
+				valid = value.Type == gjson.String && antigravityHasNativeThoughtSignature(value.String())
+			default:
+				valid = false
+			}
+			return valid
+		})
+		valid = valid && signatures == 1
+		return valid
+	})
+	if !valid {
+		return nil
+	}
+	clean, _ := sjson.SetRawBytes([]byte(`{"candidates":[{"content":{"parts":[]}}]}`), "candidates.0.content.parts", []byte(parts.Raw))
+	return clean
+}
+
+func antigravityBufferedSafeEnvelope(root gjson.Result, allowResponse bool) bool {
+	if !root.IsObject() {
+		return false
+	}
+	valid := true
+	seen := make(map[string]bool)
+	root.ForEach(func(key, value gjson.Result) bool {
+		name := key.String()
+		if seen[name] {
+			valid = false
+			return false
+		}
+		seen[name] = true
+		switch name {
+		case "response":
+			valid = allowResponse && value.IsObject()
+		case "candidates":
+			valid = value.IsArray()
+		case "usageMetadata", "usage_metadata":
+			valid = value.IsObject()
+		case "traceId", "responseId", "modelVersion", "createTime":
+			valid = value.Type == gjson.String
+		case "error":
+			valid = value.Type == gjson.Null
+		default:
+			valid = false
+		}
+		return valid
+	})
+	return valid
 }
 
 func (e *AntigravityExecutor) executeCompactionStream(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*cliproxyexecutor.StreamResult, error) {
