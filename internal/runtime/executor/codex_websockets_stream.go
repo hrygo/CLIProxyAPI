@@ -893,6 +893,18 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
+	// Duplex follow-up frames bypass manager preparation. Repair both views
+	// before translation so replayed tool identities remain consistent.
+	if helps.IsResponsesFamilyFormat(from) {
+		originalPayload, err = helps.RepairResponsesToolItemIDs(e.cfg, originalPayloadSource)
+		if err != nil {
+			return nil, err
+		}
+		req.Payload, err = helps.RepairResponsesToolItemIDs(e.cfg, req.Payload)
+		if err != nil {
+			return nil, err
+		}
+	}
 	isCompat := e.resolveCodexModelIsCompat(auth, req, baseModel)
 	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
 	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, to, targetModel, originalPayload, req.Payload, true, isCompat)
@@ -942,6 +954,11 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		body = applyCodexSIWCWebsocketBodyRules(body, hasExplicitInstructions, cliproxyexecutor.Options{KeepTopLevelEffort: thinking.HasThinkingSuffix(req.Model)})
 	}
 	body = finalizePayload(body)
+	// Payload rules can introduce a mismatch after the initial repair.
+	body, err = helps.RepairResponsesToolItemIDs(e.cfg, body)
+	if err != nil {
+		return nil, err
+	}
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 	applyCodexRoutingHint(ctx, wsHeaders, auth, baseModel, body, opts.Headers)
 	applyModelHeaderOverrides(wsHeaders, baseModel)
