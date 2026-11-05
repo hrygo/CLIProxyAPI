@@ -17,7 +17,7 @@ Gemini 兼容与 Claude 兼容 API。它支持 OAuth 和 API Key 认证、多账
 | --- | --- |
 | 开发主干 | `main` |
 | 已发布版本 | [v1.3.0-upstream8.0.16](https://github.com/hrygo/CLIProxyAPI/releases/tag/v1.3.0-upstream8.0.16) |
-| Go 工具链 | `1.26.4` |
+| Go 工具链 | `1.26.10` |
 | Module path | `github.com/router-for-me/CLIProxyAPI/v8` |
 | 上游策略 | 只跟踪上游发布，逐条评估和移植提交 |
 | 发布渠道 | [GitHub Releases](https://github.com/hrygo/CLIProxyAPI/releases) |
@@ -70,7 +70,7 @@ Gemini 用量仍未认证；Codex/Muse 加载顺序及 GLM 执行未满足全部
 
 ### 前置条件
 
-- Go `1.26.4` 或兼容的更新版本。
+- Go `1.26.10` 或兼容的更新版本。
 - 可访问目标模型的提供商账户或 API Key。
 
 ### 构建

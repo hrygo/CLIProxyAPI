@@ -1,10 +1,11 @@
 package helps
 
 import (
+	"strings"
+
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"strings"
 )
 
 // RepairResponsesToolItemIDs migrates replayed tool item ids in one raw

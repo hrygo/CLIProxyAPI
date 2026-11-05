@@ -9,6 +9,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 )
 
 func capabilitiesTestManager(t *testing.T, routes []internalconfig.ResponsesToolsRoute) *Manager {
@@ -283,5 +284,63 @@ func TestResponsesToolsReplayProbePreservesExactModelMatching(t *testing.T) {
 	}
 	if !mgr.ResponsesToolsRequiresReplayForRoute(payload, "codex", "gpt-5.6-sol") {
 		t.Fatal("the exact model must retain its explicit bridge rule")
+	}
+}
+
+func TestResponsesToolsReplayProbeUsesHomeSessionCredential(t *testing.T) {
+	bridge := capRoute("bridge", "inherit")
+	bridge.Match.BaseURL = "https://bridge.invalid"
+	native := capRoute("native", "inherit")
+	native.Match.BaseURL = "https://native.invalid"
+	mgr := capabilitiesTestManagerForModels(t, []internalconfig.ResponsesToolsRoute{bridge, native}, "client-alias", "gpt-5.6-sol")
+	homeAuth := &Auth{ID: "home-only", Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth", "base_url": bridge.Match.BaseURL, homeUpstreamModelAttributeKey: "gpt-5.6-sol"}}
+	mgr.mu.Lock()
+	mgr.homeRuntimeAuths = map[string]map[string]*Auth{"session-a": {homeAuth.ID: homeAuth}}
+	mgr.mu.Unlock()
+	payload := []byte(`{"tools":[{"type":"tool_search"}],"input":[]}`)
+	if !mgr.ResponsesToolsRequiresReplayForSession(payload, "client-alias", "codex", "home-only", "session-a") {
+		t.Fatal("home credential requiring bridge was missed")
+	}
+	if mgr.ResponsesToolsRequiresReplayForSession(payload, "client-alias", "codex", "home-only", "other-session") {
+		t.Fatal("credential leaked between sessions")
+	}
+	if mgr.ResponsesToolsRequiresReplayForClientModel(payload, "client-alias", "codex", "home-only") {
+		t.Fatal("home credential leaked into local candidates")
+	}
+	mgr.mu.Lock()
+	homeAuth.Attributes["base_url"] = native.Match.BaseURL
+	mgr.mu.Unlock()
+	if mgr.ResponsesToolsRequiresReplayForSession(payload, "client-alias", "codex", "home-only", "session-a") {
+		t.Fatal("native home route should stay native")
+	}
+}
+
+type authSensitiveReplayExecutor struct{ fakeResponsesExecutor }
+
+func (e *authSensitiveReplayExecutor) RequestToFormatWithAuth(auth *Auth, _ cliproxyexecutor.Request, _ cliproxyexecutor.Options) sdktranslator.Format {
+	if auth != nil && auth.Attributes["format"] == "responses" {
+		return sdktranslator.FormatOpenAIResponse
+	}
+	return sdktranslator.FormatCodex
+}
+
+func TestResponsesToolsReplayProbeUsesCredentialFormat(t *testing.T) {
+	bridge := capRoute("bridge", "inherit")
+	native := capRoute("native", "inherit")
+	native.Match.UpstreamFormat = "openai-response"
+	mgr := capabilitiesTestManagerForModels(t, []internalconfig.ResponsesToolsRoute{bridge, native}, "client-alias", "gpt-5.6-sol")
+	mgr.RegisterExecutor(&authSensitiveReplayExecutor{fakeResponsesExecutor{provider: "codex", toFormat: sdktranslator.FormatCodex}})
+	mgr.mu.Lock()
+	mgr.auths["cap-auth"].Attributes["format"] = "responses"
+	mgr.homeRuntimeAuths = map[string]map[string]*Auth{"s": {"home": {ID: "home", Provider: "codex", Attributes: map[string]string{"auth_kind": "oauth", "format": "responses", homeUpstreamModelAttributeKey: "gpt-5.6-sol"}}}}
+	mgr.homeRuntimeAuthOwners = map[string]map[string]*HomeDispatchSelection{"s": {"home": {Provider: "codex", Executor: &authSensitiveReplayExecutor{fakeResponsesExecutor{provider: "codex", toFormat: sdktranslator.FormatCodex}}}}}
+	mgr.mu.Unlock()
+	payload := []byte(`{"tools":[{"type":"tool_search"}],"input":[]}`)
+	if mgr.ResponsesToolsRequiresReplayForClientModel(payload, "client-alias", "codex", "cap-auth") {
+		t.Fatal("local credential-native format was ignored")
+	}
+	mgr.RegisterExecutor(&fakeResponsesExecutor{provider: "codex", toFormat: sdktranslator.FormatCodex})
+	if mgr.ResponsesToolsRequiresReplayForSession(payload, "client-alias", "codex", "home", "s") {
+		t.Fatal("home credential-native format was ignored")
 	}
 }

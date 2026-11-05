@@ -44,8 +44,7 @@ func NormalizeV8ConfigAliases(root *yaml.Node) error {
 		return err
 	}
 	*root = *expandConfigAliases(root)
-	// Validate containers before moving aliases; setYAMLPath must not repair an
-	// invalid canonical scalar by replacing it with a mapping.
+	// Validate parent containers before alias projection.
 	for _, alias := range v8Aliases {
 		for _, path := range []string{alias.old, alias.current} {
 			parts := strings.Split(path, ".")

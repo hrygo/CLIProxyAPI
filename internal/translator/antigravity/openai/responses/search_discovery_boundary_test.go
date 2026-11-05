@@ -20,7 +20,10 @@ func TestSearchDiscoveryBoundaryPreservesClientSelection(t *testing.T) {
 				t.Fatal("missing search bridge")
 			}
 			defer prepared.Attempt.Close()
-			wire := ConvertOpenAIResponsesRequestToAntigravity("gemini-3.5-flash-lite", prepared.Body, true)
+			wire, err := ConvertOpenAIResponsesRequestToAntigravity("gemini-3.5-flash-lite", prepared.Body, true)
+			if err != nil {
+				t.Fatalf("translate prepared request: %v", err)
+			}
 			declarations := gjson.GetBytes(wire, "request.tools.0.functionDeclarations").Array()
 			if len(declarations) != 2 {
 				t.Fatalf("expected search and one discovered tool: %s", wire)

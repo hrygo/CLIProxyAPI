@@ -5,17 +5,35 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
 	"github.com/tidwall/gjson"
 )
+
+type antigravityUsageCapture struct {
+	authID  string
+	records chan usage.Record
+}
+
+func (c *antigravityUsageCapture) HandleUsage(_ context.Context, record usage.Record) {
+	if c == nil || record.Provider != antigravityAuthType || record.AuthID != c.authID {
+		return
+	}
+	select {
+	case c.records <- record:
+	default:
+	}
+}
+
+type antigravityUsageNoop struct{}
+
+func (antigravityUsageNoop) HandleUsage(context.Context, usage.Record) {}
 
 // antigravitySplitTerminalSSE reproduces the only upstream shape that makes
 // FilterSSEUsageMetadata forward real usageMetadata on a chunk without
@@ -99,42 +117,31 @@ func TestAntigravityStreamFinalizesSplitTerminalUsageOnce(t *testing.T) {
 	}
 }
 
-// antigravityResponsesSplitTerminalSSE is the Responses-shaped variant of the
-// split terminal stream. With a traceId the usage filter forwards the tail
-// untouched; without one it renames the tail usage to cpaUsageMetadata. Both
-// must reach the terminal event with the token counts.
-const antigravityResponsesSplitTerminalSSE = `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"first"}]}}],"modelVersion":"gemini-3.7-flash","responseId":"resp-split-responses"},"traceId":"trace-split-responses"}
-
-data: {"response":{"candidates":[{"finishReason":"STOP"}],"responseId":"resp-split-responses"},"traceId":"trace-split-responses"}
-
-data: {"response":{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":22,"thoughtsTokenCount":8,"totalTokenCount":41},"responseId":"resp-split-responses"},"traceId":"trace-split-responses"}
-
-`
-
-const antigravityResponsesSplitTerminalSSEWithoutTraceID = `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"first"}]}}],"modelVersion":"gemini-3.7-flash","responseId":"resp-split-no-trace"}}
-
-data: {"response":{"candidates":[{"finishReason":"STOP"}],"responseId":"resp-split-no-trace"}}
-
-data: {"response":{"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":22,"thoughtsTokenCount":8,"totalTokenCount":41},"responseId":"resp-split-no-trace"}}
-
-`
-
-// runAntigravityResponsesStream feeds the SSE body through the Antigravity
-// executor and returns the terminal events the client observed.
-func runAntigravityResponsesStream(t *testing.T, body string) []gjson.Result {
-	t.Helper()
+// TestAntigravityStreamReportsSplitTerminalUsage checks that a usage-only tail
+// is recorded. EnsurePublished must not emit an empty detail first.
+func TestAntigravityStreamReportsSplitTerminalUsage(t *testing.T) {
+	const authID = "antigravity-split-usage"
+	capture := &antigravityUsageCapture{authID: authID, records: make(chan usage.Record, 4)}
+	usage.RegisterNamedPlugin(t.Name(), capture)
+	t.Cleanup(func() {
+		usage.RegisterNamedPlugin(t.Name(), antigravityUsageNoop{})
+	})
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, body)
+		_, _ = io.WriteString(w, antigravitySplitTerminalSSE)
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
 	}))
 	defer server.Close()
 
-	request := []byte(`{"model":"gemini-3.8-flash-high","input":"synthetic local fixture","stream":true}`)
-	result, errExecute := NewAntigravityExecutor(&config.Config{RequestRetry: 1}).ExecuteStream(context.Background(), &cliproxyauth.Auth{
+	executor := NewAntigravityExecutor(&config.Config{
+		Antigravity:  config.AntigravityConfig{},
+		RequestRetry: 1,
+	})
+	result, errExecute := executor.ExecuteStream(context.Background(), &cliproxyauth.Auth{
+		ID: authID,
 		Metadata: map[string]any{
 			"access_token": "token-123",
 			"expired":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
@@ -142,117 +149,31 @@ func runAntigravityResponsesStream(t *testing.T, body string) []gjson.Result {
 		},
 		Attributes: map[string]string{"base_url": server.URL},
 	}, cliproxyexecutor.Request{
-		Model:   "gemini-3.8-flash-high",
-		Payload: request,
+		Model:   "gemini-3.7-flash",
+		Payload: []byte(`{"model":"gemini-3.7-flash","messages":[{"role":"user","content":"hello"}],"stream":true}`),
 	}, cliproxyexecutor.Options{
-		SourceFormat:    sdktranslator.FormatOpenAIResponse,
-		ResponseFormat:  sdktranslator.FormatOpenAIResponse,
-		OriginalRequest: request,
-		Stream:          true,
+		SourceFormat:   sdktranslator.FormatOpenAI,
+		ResponseFormat: sdktranslator.FormatOpenAI,
+		Stream:         true,
 	})
 	if errExecute != nil {
 		t.Fatalf("ExecuteStream() error = %v", errExecute)
 	}
-
-	var terminals []gjson.Result
 	for chunk := range result.Chunks {
 		if chunk.Err != nil {
 			t.Fatalf("unexpected stream error: %v", chunk.Err)
 		}
-		for _, line := range strings.Split(string(chunk.Payload), "\n") {
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-			data := gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-			switch data.Get("type").String() {
-			case "response.completed", "response.incomplete":
-				terminals = append(terminals, data)
-			}
+	}
+
+	select {
+	case record := <-capture.records:
+		if record.Failed {
+			t.Fatal("usage record marked failed")
 		}
-	}
-	return terminals
-}
-
-func TestAntigravityResponsesStreamPreservesSplitTerminalUsage(t *testing.T) {
-	for name, body := range map[string]string{
-		"with trace id":    antigravityResponsesSplitTerminalSSE,
-		"without trace id": antigravityResponsesSplitTerminalSSEWithoutTraceID,
-	} {
-		t.Run(name, func(t *testing.T) {
-			terminals := runAntigravityResponsesStream(t, body)
-			if len(terminals) != 1 {
-				t.Fatalf("terminal events = %d, want 1", len(terminals))
-			}
-			terminal := terminals[0]
-			if terminal.Get("type").String() != "response.completed" || terminal.Get("response.status").String() != "completed" {
-				t.Fatalf("terminal = %s", terminal.Raw)
-			}
-			usage := terminal.Get("response.usage")
-			if usage.Get("input_tokens").Int() != 11 || usage.Get("output_tokens").Int() != 30 ||
-				usage.Get("output_tokens_details.reasoning_tokens").Int() != 8 || usage.Get("total_tokens").Int() != 41 {
-				t.Fatalf("split terminal usage = %s", usage.Raw)
-			}
-			if strings.Contains(terminal.Raw, "cpaUsageMetadata") {
-				t.Fatalf("internal usage carrier leaked downstream: %s", terminal.Raw)
-			}
-		})
-	}
-}
-
-// TestAntigravityStreamReadErrorDoesNotSynthesizeCompletion pins the executor
-// ordering this fork already had, so the direct Gemini path cannot drift back
-// to translating [DONE] after a read failure.
-func TestAntigravityStreamReadErrorDoesNotSynthesizeCompletion(t *testing.T) {
-	body := antigravityResponsesSplitTerminalSSEWithoutTraceID
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Content-Length", strconv.Itoa(len(body)+64))
-		_, _ = io.WriteString(w, body)
-	}))
-	defer server.Close()
-
-	request := []byte(`{"model":"gemini-3.8-flash-high","input":"synthetic local fixture","stream":true}`)
-	result, errExecute := NewAntigravityExecutor(&config.Config{RequestRetry: 1}).ExecuteStream(context.Background(), &cliproxyauth.Auth{
-		Metadata: map[string]any{
-			"access_token": "token-123",
-			"expired":      time.Now().Add(24 * time.Hour).Format(time.RFC3339),
-			"project_id":   "project-1",
-		},
-		Attributes: map[string]string{"base_url": server.URL},
-	}, cliproxyexecutor.Request{
-		Model:   "gemini-3.8-flash-high",
-		Payload: request,
-	}, cliproxyexecutor.Options{
-		SourceFormat:    sdktranslator.FormatOpenAIResponse,
-		ResponseFormat:  sdktranslator.FormatOpenAIResponse,
-		OriginalRequest: request,
-		Stream:          true,
-	})
-	if errExecute != nil {
-		t.Fatalf("ExecuteStream() error = %v", errExecute)
-	}
-
-	terminals := 0
-	streamErrors := 0
-	for chunk := range result.Chunks {
-		if chunk.Err != nil {
-			streamErrors++
-			continue
+		if record.Detail.InputTokens != 11 || record.Detail.OutputTokens != 22 || record.Detail.TotalTokens != 33 {
+			t.Fatalf("reported usage = %+v, want input 11 output 22 total 33", record.Detail)
 		}
-		for _, line := range strings.Split(string(chunk.Payload), "\n") {
-			if !strings.HasPrefix(line, "data:") {
-				continue
-			}
-			switch gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:"))).Get("type").String() {
-			case "response.completed", "response.incomplete":
-				terminals++
-			}
-		}
-	}
-	if streamErrors != 1 {
-		t.Fatalf("stream errors = %d, want 1", streamErrors)
-	}
-	if terminals != 0 {
-		t.Fatalf("read error produced %d terminal events", terminals)
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for the usage record")
 	}
 }

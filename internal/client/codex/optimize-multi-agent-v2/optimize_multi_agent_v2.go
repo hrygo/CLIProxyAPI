@@ -70,7 +70,7 @@ func RewriteCodexSpawnAgentDescription(ctx context.Context, headers http.Header,
 // fields (author, recipient, internal_chat_message_metadata_passthrough).
 func RewriteCodexMultiAgentV2Input(ctx context.Context, headers http.Header, payload []byte, cfg *config.Config, isCompat ...bool) []byte {
 	compatMode := len(isCompat) > 0 && isCompat[0]
-	optimizeEnabled := compatMode || (cfg != nil && cfg.CodexMultiAgentV2Enabled() && isCodexMultiAgentClient(codexClientUserAgent(ctx, headers)))
+	optimizeEnabled := compatMode || (cfg.CodexMultiAgentV2Enabled() && isCodexMultiAgentClient(codexClientUserAgent(ctx, headers)))
 	if !compatMode && !optimizeEnabled {
 		return payload
 	}

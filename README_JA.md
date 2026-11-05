@@ -17,7 +17,7 @@ Claude 互換 API を提供するオープンソースの Go プロキシです�
 | 項目 | 現在の値 |
 | --- | --- |
 | 開発 trunk | `main` |
-| Go ツールチェーン | `1.26.4` |
+| Go ツールチェーン | `1.26.10` |
 | Module path | `github.com/router-for-me/CLIProxyAPI/v8` |
 | 上流ポリシー | 公開済みリリースのみを対象とし、個別にコミットを評価 |
 | リリース配布先 | [GitHub Releases](https://github.com/hrygo/CLIProxyAPI/releases) |
@@ -42,7 +42,7 @@ Claude 互換 API を提供するオープンソースの Go プロキシです�
 
 ### 必要条件
 
-- Go `1.26.4` または互換性のある新しいバージョン
+- Go `1.26.10` または互換性のある新しいバージョン
 - 対象モデルを利用できるプロバイダーアカウントまたは API キー
 
 ### ビルド

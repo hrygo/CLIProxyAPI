@@ -10,10 +10,8 @@ import (
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 )
 
-// isClaudeSetupToken reads Auth.Metadata directly. Every other accessor on that
-// map takes claudeDevicePoolMu, so a bare index here races any concurrent
-// StoreMetadataValue on the same shared credential. The race only shows up under
-// load: the detector needs the two goroutines to actually interleave.
+// TestIsClaudeSetupTokenConcurrentMetadataAccess exercises setup-token reads
+// alongside synchronized metadata writes on the same shared credential.
 //
 // The fixture deliberately omits account_uuid. With it preset,
 // PrepareRequestAuth returns before reaching the setup-token check, which is why
@@ -30,8 +28,7 @@ func TestIsClaudeSetupTokenConcurrentMetadataAccess(t *testing.T) {
 
 	start := make(chan struct{})
 
-	// Readers: the unlocked path under test, plus the locked accessor for
-	// comparison.
+	// Readers repeatedly exercise the setup-token check.
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
 		go func() {
@@ -63,7 +60,7 @@ func TestIsClaudeSetupTokenConcurrentMetadataAccess(t *testing.T) {
 
 // TestPrepareRequestAuthReachesSetupTokenCheckUnderConcurrency exercises the
 // same path through the exported entry point, so a future early return cannot
-// silently stop covering the unlocked read.
+// silently stop covering the shared metadata read.
 func TestPrepareRequestAuthReachesSetupTokenCheckUnderConcurrency(t *testing.T) {
 	executor := NewClaudeExecutor(&config.Config{})
 	executor.oauthProfileFetcher = func(context.Context, *cliproxyauth.Auth, string) (*claudeauth.OAuthProfile, error) {

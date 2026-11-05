@@ -34,6 +34,7 @@ func TestInteractionsResponsesGeneratedItemIDsDoNotCollideAcrossResponses(t *tes
 		{"reasoning", nil, `{"type":"thought"}`, `{"type":"thought_summary","text":"thinking"}`, "response.reasoning_summary_text.delta"},
 		{"message", nil, `{"type":"model_output"}`, `{"type":"text","text":"ready"}`, "response.output_text.delta"},
 		{"function", nil, `{"type":"function_call","name":"exec_command","arguments":{}}`, `{"type":"arguments_delta","arguments":"{\"cmd\":\"pwd\"}"}`, "response.function_call_arguments.delta"},
+		{"apply_patch", []byte(patchRequest), `{"type":"function_call","name":"functions__apply_patch"}`, `{"type":"arguments_delta","arguments":"{\"input\":\"pq\"}"}`, "response.custom_tool_call_input.delta"},
 	} {
 		for response := 0; response < 2; response++ {
 			var param any
@@ -62,6 +63,30 @@ func TestInteractionsResponsesGeneratedItemIDsDoNotCollideAcrossResponses(t *tes
 				}
 			}
 		}
+	}
+}
+
+func TestInteractionsResponsesPreservesSuppliedIDsAndCustomIdentity(t *testing.T) {
+	for _, tc := range []struct{ name, request, step, wantID, wantType string }{
+		{"explicit item", "", `{"type":"function_call","name":"echo","id":"item_explicit","call_id":"call_explicit"}`, "item_explicit", "function_call"},
+		{"explicit call fallback", "", `{"type":"function_call","name":"echo","call_id":"call_explicit"}`, "call_explicit", "function_call"},
+		{"custom", `{"tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec"}]}]}`, `{"type":"function_call","name":"functions__exec"}`, "", "custom_tool_call"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var param any
+			raw := []byte(fmt.Sprintf(`{"event_type":"step.start","index":0,"step":%s}`, tc.step))
+			events := ConvertInteractionsResponseToOpenAIResponses(context.Background(), "test-model", []byte(tc.request), nil, raw, &param)
+			item := gjson.GetBytes(findResponsesEventPayload(events, "response.output_item.added"), "item")
+			if tc.wantID != "" && item.Get("id").String() != tc.wantID {
+				t.Fatalf("item = %s, want id %q", item.Raw, tc.wantID)
+			}
+			if item.Get("type").String() != tc.wantType {
+				t.Fatalf("item = %s, want type %q", item.Raw, tc.wantType)
+			}
+			if tc.name == "custom" && (item.Get("name").String() != "exec" || item.Get("namespace").String() != "functions") {
+				t.Fatalf("custom identity lost: %s", item.Raw)
+			}
+		})
 	}
 }
 
@@ -1602,29 +1627,5 @@ func TestConvertInteractionsResponseToOpenAIResponses_PreservesIDAndSeqOnFailure
 	}
 	if seq := gjson.GetBytes(failedPayload, "sequence_number").Int(); seq != 2 {
 		t.Fatalf("failed sequence_number = %d, want 2", seq)
-	}
-}
-
-func TestInteractionsResponsesPreservesSuppliedIDsAndCustomIdentity(t *testing.T) {
-	for _, tc := range []struct{ name, request, step, wantID, wantType string }{
-		{"explicit item", "", `{"type":"function_call","name":"echo","id":"item_explicit","call_id":"call_explicit"}`, "item_explicit", "function_call"},
-		{"explicit call fallback", "", `{"type":"function_call","name":"echo","call_id":"call_explicit"}`, "call_explicit", "function_call"},
-		{"custom", `{"tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec"}]}]}`, `{"type":"function_call","name":"functions__exec"}`, "", "custom_tool_call"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var param any
-			raw := []byte(fmt.Sprintf(`{"event_type":"step.start","index":0,"step":%s}`, tc.step))
-			events := ConvertInteractionsResponseToOpenAIResponses(context.Background(), "test-model", []byte(tc.request), nil, raw, &param)
-			item := gjson.GetBytes(findResponsesEventPayload(events, "response.output_item.added"), "item")
-			if tc.wantID != "" && item.Get("id").String() != tc.wantID {
-				t.Fatalf("item = %s, want id %q", item.Raw, tc.wantID)
-			}
-			if item.Get("type").String() != tc.wantType {
-				t.Fatalf("item = %s, want type %q", item.Raw, tc.wantType)
-			}
-			if tc.name == "custom" && (item.Get("name").String() != "exec" || item.Get("namespace").String() != "functions") {
-				t.Fatalf("custom identity lost: %s", item.Raw)
-			}
-		})
 	}
 }

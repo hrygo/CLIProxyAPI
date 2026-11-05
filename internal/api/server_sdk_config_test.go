@@ -7,6 +7,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestEffectiveSDKConfigCopiesClientCodexEnableApplyPatch(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		cfg := &config.Config{}
+		cfg.Client.Codex.EnableApplyPatch = enabled
+		sdkCfg := effectiveSDKConfig(cfg)
+		if sdkCfg == nil || sdkCfg.Client.Codex.EnableApplyPatch != enabled {
+			t.Fatalf("SDK client EnableApplyPatch does not match %t", enabled)
+		}
+		cfg.Client.Codex.EnableApplyPatch = !enabled
+		if sdkCfg.Client.Codex.EnableApplyPatch != enabled {
+			t.Fatal("effective SDK config shares client configuration state")
+		}
+	}
+}
+
 func TestEffectiveSDKConfigCopiesClientCodexOptimizeMultiAgentV2(t *testing.T) {
 	for _, enabled := range []bool{false, true} {
 		cfg := &config.Config{}
@@ -23,14 +38,22 @@ func TestEffectiveSDKConfigCopiesClientCodexOptimizeMultiAgentV2(t *testing.T) {
 }
 
 func TestEffectiveSDKConfigSupportsHistoricalMultiAgentFields(t *testing.T) {
-	for _, cfg := range []*config.Config{
-		{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}},
-		{SDKConfig: config.SDKConfig{CodexOptimizeMultiAgentV2: true}},
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{name: "codex", cfg: &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}},
+		{name: "sdk", cfg: &config.Config{SDKConfig: config.SDKConfig{CodexOptimizeMultiAgentV2: true}}},
 	} {
-		sdkCfg := effectiveSDKConfig(cfg)
-		if sdkCfg == nil || !sdkCfg.Client.Codex.OptimizeMultiAgentV2 || !sdkCfg.CodexMultiAgentV2Enabled() {
-			t.Fatal("historical programmatic configuration lost client optimization")
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			sdkCfg := effectiveSDKConfig(tc.cfg)
+			if sdkCfg == nil || !sdkCfg.Client.Codex.OptimizeMultiAgentV2 || !sdkCfg.CodexMultiAgentV2Enabled() {
+				t.Fatal("historical programmatic configuration lost client optimization")
+			}
+			if tc.cfg.Client.Codex.OptimizeMultiAgentV2 {
+				t.Fatal("SDK projection mutated the original canonical configuration")
+			}
+		})
 	}
 }
 

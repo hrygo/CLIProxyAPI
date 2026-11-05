@@ -2,6 +2,8 @@ package config
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -24,6 +26,12 @@ import (
 //   - error: An error if the configuration could not be loaded
 func LoadConfig(configFile string) (*Config, error) {
 	return LoadConfigOptional(configFile, false)
+}
+
+// ComputeSourceHash returns the Config.SourceHash value for config file bytes.
+func ComputeSourceHash(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // PrepareConfigFileForUpload applies the file rewrites of a startup load: a plaintext
@@ -155,6 +163,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 				// Missing and optional: return empty config (cloud deploy standby).
 				cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 				cfg.NormalizePluginsConfig()
+				cfg.NormalizeClaudeConfig()
 				return cfg, nil
 			}
 		}
@@ -165,6 +174,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	if optional && len(bytes.TrimSpace(data)) == 0 {
 		cfg := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 		cfg.NormalizePluginsConfig()
+		cfg.NormalizeClaudeConfig()
 		return cfg, nil
 	}
 
@@ -172,6 +182,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		if optional {
 			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 			cfgOptional.NormalizePluginsConfig()
+			cfgOptional.NormalizeClaudeConfig()
 			return cfgOptional, nil
 		}
 		return nil, errValidate
@@ -203,6 +214,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 			// In cloud deploy mode, if YAML parsing fails, return empty config instead of error.
 			cfgOptional := &Config{CredentialInFlight: DefaultCredentialInFlightConfig()}
 			cfgOptional.NormalizePluginsConfig()
+			cfgOptional.NormalizeClaudeConfig()
 			return cfgOptional, nil
 		}
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
@@ -272,6 +284,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	}
 
 	cfg.NormalizePluginsConfig()
+	cfg.NormalizeClaudeConfig()
 	if errResolvePluginsDir := cfg.ResolvePluginsDir(); errResolvePluginsDir != nil && cfg.Plugins.Enabled {
 		return nil, errResolvePluginsDir
 	}
@@ -337,13 +350,15 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 	}
 
-	// Normalize the core Responses tools policy and reject invalid enums,
-	// illegal combinations, and conflicting route overlaps.
+	// Record the exact bytes this config was parsed from, so a consumer can tell
+	// it apart from a newer version of the file.
+	cfg.SourceHash = ComputeSourceHash(data)
+
+	// Return the populated configuration struct.
 	cfg.NormalizeResponsesToolsConfig()
 	if errResponsesTools := cfg.ValidateResponsesToolsConfig(); errResponsesTools != nil {
 		return nil, errResponsesTools
 	}
 
-	// Return the populated configuration struct.
 	return &cfg, nil
 }

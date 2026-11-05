@@ -620,6 +620,54 @@ func TestExecuteStreamWithAuthManager_CancelDuringSynchronousBootstrap(t *testin
 	}
 }
 
+func TestExecuteStreamWithPreFTKeepAlive_CancelWaitsForBootstrapGoroutine(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	started := make(chan struct{})
+	releaseExec := make(chan struct{})
+	execExited := false
+	executor := &bootstrapStreamExecutor{stream: func(ctx context.Context, _ int) (*coreexecutor.StreamResult, error) {
+		close(started)
+		<-ctx.Done()
+		<-releaseExec
+		execExited = true
+		return nil, ctx.Err()
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+
+	reqCtx, reqCancel := context.WithCancel(context.Background())
+	defer reqCancel()
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil).WithContext(reqCtx)
+
+	cliCtx, cliCancel := context.WithCancel(context.Background())
+	defer cliCancel()
+	tickChan := make(chan time.Time)
+
+	done := make(chan bool, 1)
+	go func() {
+		_, _, _, ok := handler.ExecuteStreamWithPreFTKeepAlive(
+			c, cliCtx, func(error) { cliCancel() }, "openai", "bootstrap-model", []byte("{\"model\":\"bootstrap-model\"}"), "", tickChan, func() bool { return true },
+		)
+		done <- ok
+	}()
+
+	<-started
+	reqCancel()
+	select {
+	case <-done:
+		t.Fatal("ExecuteStreamWithPreFTKeepAlive returned before bootstrap goroutine finished")
+	default:
+	}
+	close(releaseExec)
+	if ok := <-done; ok {
+		t.Fatal("ExecuteStreamWithPreFTKeepAlive ok = true, want false after cancel")
+	}
+	if !execExited {
+		t.Fatal("expected bootstrap executor goroutine to exit before return")
+	}
+}
+
 func TestExecuteStreamWithAuthManager_EmptyClosedStream(t *testing.T) {
 	executor := &bootstrapStreamExecutor{stream: func(_ context.Context, _ int) (*coreexecutor.StreamResult, error) {
 		chunks := make(chan coreexecutor.StreamChunk)
@@ -1524,5 +1572,111 @@ func TestExecuteStreamWithAuthManager_ConsumesBootstrapRetriesOnSilentUpstream(t
 	}
 	if executor.Calls() != 2 {
 		t.Fatalf("expected 2 stream attempts under one bootstrap retry, got %d", executor.Calls())
+	}
+}
+
+func TestProbeDroppedChunkErrorThenSilentTimeout(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(ctx context.Context, call int) (*coreexecutor.StreamResult, error) {
+		if call == 1 {
+			chunks := make(chan coreexecutor.StreamChunk, 2)
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("drop")}
+			chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}}
+			close(chunks)
+			return &coreexecutor.StreamResult{Chunks: chunks}, nil
+		}
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	handler.Cfg.Streaming.BootstrapTimeout = "25ms"
+	handler.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+		return pluginapi.StreamChunkInterceptResponse{Body: cloneBytes(req.Body), DropChunk: string(req.Body) == "drop"}
+	}})
+	data, _, errs := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+	if data != nil {
+		for range data {
+		}
+	}
+	var got *interfaces.ErrorMessage
+	for msg := range errs {
+		got = msg
+	}
+	if got == nil || got.StatusCode != http.StatusGatewayTimeout {
+		t.Fatalf("got error %+v; want 504, calls=%d", got, executor.Calls())
+	}
+}
+
+func TestProbeDroppedChunkErrorThenSilentTimeoutThenSuccess(t *testing.T) {
+	executor := &bootstrapStreamExecutor{stream: func(ctx context.Context, call int) (*coreexecutor.StreamResult, error) {
+		if call == 2 {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		chunks := make(chan coreexecutor.StreamChunk, 2)
+		if call == 1 {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("drop")}
+			chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}}
+		} else {
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("ok")}
+		}
+		close(chunks)
+		return &coreexecutor.StreamResult{Chunks: chunks}, nil
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	handler.Cfg.Streaming.BootstrapTimeout = "25ms"
+	handler.Cfg.Streaming.BootstrapRetries = 2
+	handler.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+		return pluginapi.StreamChunkInterceptResponse{Body: cloneBytes(req.Body), DropChunk: string(req.Body) == "drop"}
+	}})
+	data, _, errs := handler.ExecuteStreamWithAuthManager(context.Background(), "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+	var got []byte
+	if data != nil {
+		for chunk := range data {
+			got = append(got, chunk...)
+		}
+	}
+	for msg := range errs {
+		if msg != nil {
+			t.Fatalf("unexpected error: %+v", msg)
+		}
+	}
+	if string(got) != "ok" || executor.Calls() != 3 {
+		t.Fatalf("payload=%q calls=%d, want ok and 3", got, executor.Calls())
+	}
+}
+
+func TestExecuteStreamWithAuthManager_CancelDuringRetryDoesNotConsumeMoreRetries(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	executor := &bootstrapStreamExecutor{stream: func(attemptCtx context.Context, call int) (*coreexecutor.StreamResult, error) {
+		if call == 1 {
+			chunks := make(chan coreexecutor.StreamChunk, 2)
+			chunks <- coreexecutor.StreamChunk{Payload: []byte("drop")}
+			chunks <- coreexecutor.StreamChunk{Err: &coreauth.Error{HTTPStatus: http.StatusUnauthorized, Message: "unauthorized"}}
+			close(chunks)
+			return &coreexecutor.StreamResult{Chunks: chunks}, nil
+		}
+		cancel()
+		<-attemptCtx.Done()
+		return nil, attemptCtx.Err()
+	}}
+	handler, _ := registerBootstrapExecutor(t, executor)
+	handler.Cfg.Streaming.BootstrapTimeout = "1s"
+	handler.Cfg.Streaming.BootstrapRetries = 2
+	handler.SetPluginHost(&handlerInterceptorTestHost{interceptStreamChunk: func(_ context.Context, req pluginapi.StreamChunkInterceptRequest) pluginapi.StreamChunkInterceptResponse {
+		return pluginapi.StreamChunkInterceptResponse{Body: cloneBytes(req.Body), DropChunk: string(req.Body) == "drop"}
+	}})
+	data, _, errs := handler.ExecuteStreamWithAuthManager(ctx, "openai", "bootstrap-model", []byte(`{"model":"bootstrap-model"}`), "")
+	if data != nil {
+		for range data {
+		}
+	}
+	for msg := range errs {
+		if msg != nil && msg.StatusCode != 499 {
+			t.Fatalf("got error %+v, want cancellation", msg)
+		}
+	}
+	if executor.Calls() != 2 {
+		t.Fatalf("got %d attempts, want 2", executor.Calls())
 	}
 }

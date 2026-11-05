@@ -17,7 +17,7 @@ env:
   # Keep PR checks on the same toolchain that release builds use. Formatting
   # output can differ between Go releases and must not depend on go.mod's
   # minimum version alone.
-  GO_VERSION: '1.26.4'
+  GO_VERSION: '1.26.10'
 
 jobs:
   build:

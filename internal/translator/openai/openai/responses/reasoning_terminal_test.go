@@ -38,9 +38,40 @@ func TestReasoningOnlyExplicitFinishEmitsTerminal(t *testing.T) {
 						t.Fatalf("terminal lost output/status/usage: %s", chunk)
 					}
 				}
+				if i == 2 {
+					finalizer, ok := state.(interface{ CanFinalizeResponseStream() bool })
+					if !ok || !finalizer.CanFinalizeResponseStream() {
+						t.Fatal("explicitly finished reasoning could not complete at clean EOF")
+					}
+				}
 			}
 			if terminalCount != 1 {
 				t.Fatalf("expected one %s, got %d", tc.event, terminalCount)
+			}
+		})
+	}
+}
+
+func TestReasoningOnlyUnknownOrToolFinishDoesNotComplete(t *testing.T) {
+	for _, reason := range []string{"tool_calls", "unknown"} {
+		t.Run(reason, func(t *testing.T) {
+			var state any
+			lines := []string{
+				`data: {"id":"reasoning_only","choices":[{"index":0,"delta":{"reasoning_content":"checking"}}]}`,
+				fmt.Sprintf(`data: {"id":"reasoning_only","choices":[{"index":0,"delta":{},"finish_reason":%q}]}`, reason),
+				`data: [DONE]`,
+			}
+			for _, line := range lines {
+				for _, chunk := range ConvertOpenAIChatCompletionsResponseToOpenAIResponses(context.Background(), "m", nil, nil, []byte(line), &state) {
+					event, _ := parseOpenAIResponsesSSEEvent(t, chunk)
+					if event == "response.completed" || event == "response.incomplete" {
+						t.Fatalf("unsubstantiated finish emitted %s", event)
+					}
+				}
+			}
+			finalizer, ok := state.(interface{ CanFinalizeResponseStream() bool })
+			if !ok || finalizer.CanFinalizeResponseStream() {
+				t.Fatal("unsubstantiated finish was marked safe to finalize")
 			}
 		})
 	}

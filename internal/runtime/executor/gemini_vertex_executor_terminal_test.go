@@ -79,15 +79,8 @@ func TestVertexStreamReadErrorDoesNotSynthesizeCompletion(t *testing.T) {
 	}
 }
 
-func TestVertexStreamPendingTerminalIsNotCompletedOnReadError(t *testing.T) {
-	frames := geminiTerminalContentFrame + "\n\n" + geminiTerminalFinishFrame + "\n\n"
-	observed := runVertexResponsesTerminalStream(t, frames, true)
-	if len(observed.Errors) != 1 {
-		t.Fatalf("stream errors = %d (%v), want 1", len(observed.Errors), observed.Errors)
-	}
-	if len(observed.Terminals) != 0 {
-		t.Fatalf("pending terminal was completed by a read error: %s", observed.Terminals[0].Raw)
-	}
+func TestVertexStreamCompletesBeforeFutureReadError(t *testing.T) {
+	requireGeminiTerminalBeforeFutureReadError(t, true)
 }
 
 func TestVertexStreamCleanEndOfStreamFinalizesOnce(t *testing.T) {

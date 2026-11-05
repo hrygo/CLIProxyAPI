@@ -21,6 +21,7 @@ func TestConfigV8ClientMultiAgentMigration(t *testing.T) {
 	} {
 		t.Run(raw, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "config.yaml")
+			raw += "client: {codex: {enable-apply-patch: true}}\n"
 			if errWrite := os.WriteFile(path, []byte(raw), 0600); errWrite != nil {
 				t.Fatalf("write: %v", errWrite)
 			}
@@ -64,7 +65,7 @@ func TestConfigV8ClientMultiAgentMigration(t *testing.T) {
 					body = "true"
 				}
 				request(http.MethodPut, canonical, body, http.StatusOK)
-				if h.cfg.Client.Codex.OptimizeMultiAgentV2 != enabled {
+				if h.cfg.Client.Codex.OptimizeMultiAgentV2 != enabled || !h.cfg.Client.Codex.EnableApplyPatch {
 					t.Fatal("management update changed client settings")
 				}
 				data, errRead = os.ReadFile(path)
@@ -80,8 +81,8 @@ func TestConfigV8ClientMultiAgentMigration(t *testing.T) {
 				}
 			}
 			request(http.MethodDelete, canonical, "", http.StatusOK)
-			if h.cfg.Client.Codex.OptimizeMultiAgentV2 {
-				t.Fatal("delete did not restore default false")
+			if h.cfg.Client.Codex.OptimizeMultiAgentV2 || !h.cfg.Client.Codex.EnableApplyPatch {
+				t.Fatal("delete did not restore default false or changed apply_patch")
 			}
 		})
 	}
