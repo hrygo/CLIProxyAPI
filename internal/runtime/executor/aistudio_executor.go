@@ -615,6 +615,11 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 		payload, _ = sjson.DeleteBytes(payload, "safetySettings")
 	}
 	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", payload, originalTranslated, requestedModel, requestPath, opts.Headers)
+	if action != "countTokens" {
+		if errGuard := helps.ValidateOutboundToolContract(ctx, payload, helps.WireContractByteLimit(ctx)); errGuard != nil {
+			return nil, translatedPayload{}, errGuard
+		}
+	}
 	return payload, translatedPayload{payload: payload, action: action, toFormat: to}, nil
 }
 

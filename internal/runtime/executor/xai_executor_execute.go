@@ -48,6 +48,9 @@ func (e *XAIExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
 	prepared.body = sanitizeXAIInputEncryptedContentForBaseURL(prepared.body, baseURL)
 	prepared.body = prepared.finalizePayload(prepared.body)
+	if errGuard := helps.ValidateOutboundToolContract(ctx, prepared.body, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return resp, errGuard
+	}
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(prepared.body))
 	if err != nil {
@@ -214,6 +217,9 @@ func (e *XAIExecutor) executeCompactRequest(ctx context.Context, auth *cliproxya
 	requestURL := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
 	prepared.body = sanitizeXAIInputEncryptedContentForBaseURL(prepared.body, baseURL)
 	prepared.body = prepared.finalizePayload(prepared.body)
+	if errGuard := helps.ValidateOutboundToolContract(ctx, prepared.body, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return nil, nil, nil, nil, errGuard
+	}
 	reporter.SetTranslatedReasoningEffort(prepared.body, e.Identifier())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(prepared.body))
 	if err != nil {

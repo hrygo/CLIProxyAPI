@@ -3,13 +3,16 @@ package executor
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
@@ -78,9 +81,22 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 	body = sanitizeOpenAIResponsesReasoningEncryptedContentForMetaBaseURL(ctx, "meta executor", body, baseURL)
 	body = helps.SanitizeMetaWebSearchTools(body)
 	body = helps.NormalizeCodexToolIntegerTypes(body, opts.Headers)
+	beforeMuse := gjson.GetBytes(body, "tools").Array()
 	body = helps.EnsureMetaMuseToolNamespace(body)
+	afterMuse := gjson.GetBytes(body, "tools").Array()
+	var injectedMuse string
+	if len(afterMuse) == len(beforeMuse)+1 {
+		injectedMuse = afterMuse[len(afterMuse)-1].Raw
+	}
 
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, e.Identifier(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	guardBody, errGuardBody := metaGuardPayload(ctx, body, injectedMuse)
+	if errGuardBody != nil {
+		return nil, errGuardBody
+	}
+	if errGuard := helps.ValidateOutboundToolContract(ctx, guardBody, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return nil, errGuard
+	}
 	return &metaPreparedRequest{
 		applyPatch:      applyPatch,
 		baseModel:       baseModel,
@@ -90,6 +106,45 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 		originalPayload: originalPayload,
 		body:            body,
 	}, nil
+}
+
+// metaGuardPayload accounts for the provider-injected namespace without allowing
+// post rules to alter it or exempt a caller-supplied namespace from validation.
+func metaGuardPayload(ctx context.Context, body []byte, injected string) ([]byte, error) {
+	wire := cliproxyexecutor.WireContractFromContext(ctx)
+	if wire == nil || injected == "" {
+		return body, nil
+	}
+	budgetCtx := cliproxyexecutor.WithWireContract(ctx, &cliproxyexecutor.WireContract{MaxActiveToolBytes: wire.MaxActiveToolBytes})
+	if err := helps.ValidateOutboundToolContract(budgetCtx, body, helps.WireContractByteLimit(ctx)); err != nil {
+		return nil, err
+	}
+	var expected any
+	if json.Unmarshal([]byte(injected), &expected) != nil {
+		return nil, &responsestools.ToolCompatibilityError{Reason: responsestools.ReasonUpstreamContract, Err: fmt.Errorf("cannot validate injected Meta tool namespace")}
+	}
+	index := -1
+	for i, tool := range gjson.GetBytes(body, "tools").Array() {
+		if tool.Get("type").String() != "namespace" || tool.Get("name").String() != "muse" {
+			continue
+		}
+		var actual any
+		if index >= 0 || json.Unmarshal([]byte(tool.Raw), &actual) != nil || !reflect.DeepEqual(expected, actual) {
+			return nil, &responsestools.ToolCompatibilityError{Reason: responsestools.ReasonUpstreamContract, Err: fmt.Errorf("post rule changed injected Meta tool namespace")}
+		}
+		index = i
+	}
+	if index < 0 {
+		if err := helps.ValidateOutboundToolContract(ctx, body, helps.WireContractByteLimit(ctx)); err != nil {
+			return nil, err
+		}
+		return nil, &responsestools.ToolCompatibilityError{Reason: responsestools.ReasonUpstreamContract, Err: fmt.Errorf("post rule removed injected Meta tool namespace")}
+	}
+	filtered, err := sjson.DeleteBytes(body, fmt.Sprintf("tools.%d", index))
+	if err != nil {
+		return nil, &responsestools.ToolCompatibilityError{Reason: responsestools.ReasonUpstreamContract, Err: fmt.Errorf("cannot inspect injected Meta tool namespace: %w", err)}
+	}
+	return filtered, nil
 }
 
 func (e *MetaExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (resp cliproxyexecutor.Response, err error) {
