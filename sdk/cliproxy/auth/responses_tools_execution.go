@@ -31,7 +31,7 @@ func (m *Manager) responsesToolsCall(
 	execOpts cliproxyexecutor.Options,
 	call func(context.Context, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error),
 ) (cliproxyexecutor.Response, error) {
-	toFormat := requestToFormat(provider, nil, execReq, execOpts)
+	toFormat := requestToFormatWithAuth(provider, nil, auth, execReq, execOpts)
 	// Without an executor instance the RequestToFormat capability is unknown;
 	// callers pass the real executor through responsesToolsCallWithExecutor.
 	return m.responsesToolsCallToFormat(execCtx, auth, provider, toFormat, execReq, execOpts, call)
@@ -49,7 +49,7 @@ func (m *Manager) responsesToolsCallWithExecutor(
 	execOpts cliproxyexecutor.Options,
 	call func(context.Context, cliproxyexecutor.Request, cliproxyexecutor.Options) (cliproxyexecutor.Response, error),
 ) (cliproxyexecutor.Response, error) {
-	toFormat := requestToFormat(provider, executor, execReq, execOpts)
+	toFormat := requestToFormatWithAuth(provider, executor, auth, execReq, execOpts)
 	return m.responsesToolsCallToFormat(execCtx, auth, provider, toFormat, execReq, execOpts, call)
 }
 
@@ -162,7 +162,7 @@ func (m *Manager) responsesToolsCountCall(
 	if m == nil || call == nil {
 		return cliproxyexecutor.Response{}, nil
 	}
-	toFormat := requestToFormat(provider, executor, execReq, execOpts)
+	toFormat := requestToFormatWithAuth(provider, executor, auth, execReq, execOpts)
 	var errClaude error
 	execCtx, execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(execCtx, auth, provider, toFormat, execReq, execOpts)
 	if errClaude != nil {
@@ -218,13 +218,14 @@ func (m *Manager) responsesToolsStreamCall(
 	if m == nil || call == nil {
 		return nil, false, nil
 	}
-	toFormat := requestToFormat(provider, executor, execReq, execOpts)
+	toFormat := requestToFormatWithAuth(provider, executor, auth, execReq, execOpts)
 	var errClaude error
 	parentCtx, execReq, execOpts, errClaude = m.prepareClaudeDeferredRequest(parentCtx, auth, provider, toFormat, execReq, execOpts)
 	if errClaude != nil {
 		return nil, false, errClaude
 	}
 	if !isResponsesFamily(execOpts.SourceFormat, cliproxyexecutor.ResponseFormatOrSource(execOpts)) {
+		cliproxyexecutor.ReportResponsesToolsPreparation(parentCtx, false)
 		result, err := call(parentCtx, execReq, execOpts)
 		return result, false, err
 	}
@@ -235,6 +236,12 @@ func (m *Manager) responsesToolsStreamCall(
 	if errPrepare != nil {
 		responsestools.ReportPreparationFailure(parentCtx, errPrepare)
 		return nil, false, errPrepare
+	}
+	replay := attempt != nil || !bytes.Equal(payload, wireBody)
+	if cliproxyexecutor.ReportResponsesToolsPreparation(parentCtx, replay) && replay && !cliproxyexecutor.RequiredUpstreamWebsocket(parentCtx) {
+		// Raw duplex frames do not carry this attempt's preparation or response
+		// mapping. Keep them queued for the handler until this turn finishes.
+		parentCtx = cliproxyexecutor.WithWebsocketInput(parentCtx, nil)
 	}
 	if attempt == nil {
 		if req, opts, repaired := repairedResponsesToolsRequest(execReq, execOpts, payload, wireBody); repaired {

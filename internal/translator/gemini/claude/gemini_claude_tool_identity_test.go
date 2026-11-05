@@ -32,10 +32,14 @@ func TestClaudeGeminiCollidingToolIdentitiesRoundTrip(t *testing.T) {
 			}
 			for _, compat := range []bool{false, true} {
 				var request []byte
+				var errConvert error
 				if compat {
-					request = ConvertClaudeRequestToGeminiWithCompat("gemini-test", original, false)
+					request, errConvert = ConvertClaudeRequestToGeminiWithCompat("gemini-test", original, false)
 				} else {
-					request = ConvertClaudeRequestToGemini("gemini-test", original, false)
+					request, errConvert = ConvertClaudeRequestToGemini("gemini-test", original, false)
+				}
+				if errConvert != nil {
+					t.Fatalf("request translation (compat=%v): %v", compat, errConvert)
 				}
 				declared := gjson.GetBytes(request, "tools.0.functionDeclarations").Array()
 				if len(declared) != 2 || declared[0].Get("name").String() == declared[1].Get("name").String() {

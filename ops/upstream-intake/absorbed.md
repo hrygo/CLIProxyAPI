@@ -58,6 +58,27 @@ record that decision explicitly, including any remaining skipped work.
 
 ## Assessments
 
+### v8.0.51 — replay candidate, not accepted, 2026-11-05
+
+The candidate replays fork changes on upstream release v8.0.51
+(`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`) from the fork-change inventory at
+`main` `cd45bd7b81659d33347ff066982f02261598e60e`. The maintainer chose prompt
+completion even when Gemini sends usage or continuation signatures later; those
+late fields can be lost. Already-buffered usage and errors observed at
+completion are handled without waiting for further network data. After the
+governance and release-tooling replay, the complete Go 1.26.10 intake gate
+passed: maintenance tooling, formatting, `go vet`, responses-tools invariants,
+the full test suite, all seven race-sensitive packages and the server build
+(`gate-reconciled-rerun-20261105-223020.log`; confirmed on the reconciled tree at
+`5949b687`, `gate-final-C-5949b687.log`). An earlier gate failed on an
+intermittent Claude credential race also present in upstream v8.0.51; the
+candidate restores the original fork's synchronization fix and its race
+regressions. The [replay spike](reviews/v8.0.51-replay-spike.md) records the
+per-capability dispositions F01–F14, the completion tradeoff, Home WebSocket
+tests, the upstream behaviors deliberately retained unchanged, and remaining
+validation limits. Acceptance remains deferred and this candidate does not
+advance the accepted comparison baseline.
+
 ### v8.0.7 — absorbed, 2026-10-01, ahead of the age gate by owner decision
 
 Baseline `v8.0.5`, candidate `v8.0.7` (`97f244b8ddb9cbf564b6e6faab0159102cca8617`),

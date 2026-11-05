@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -204,7 +205,11 @@ func (m *Manager) markResponsesToolsNeutral(ctx context.Context, result Result) 
 // must take the request-scoped stop branch regardless of user-configured
 // error regex rules.
 func isResponsesToolsError(err error) bool {
-	return responsestools.IsRequestScopedError(err)
+	var neutral interface {
+		IsRequestScoped() bool
+		AvailabilityNeutral() bool
+	}
+	return errors.As(err, &neutral) && neutral.IsRequestScoped() && neutral.AvailabilityNeutral()
 }
 
 // normalizeAuthKindForPolicy maps internal auth kinds to policy spellings.

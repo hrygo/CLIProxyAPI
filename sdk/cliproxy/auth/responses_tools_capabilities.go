@@ -98,6 +98,7 @@ func (m *Manager) responsesToolsCandidateRoutes(modelID, authID string) []respon
 		if !ok || executor == nil {
 			continue
 		}
+		executor = executorForAuth(executor, auth)
 		// Capability is stable across temporary availability changes. Resolve
 		// the same aliases and pools as execution without its cooldown filter.
 		models, pooled, _, _ := m.executionModelCandidatesWithAlias(auth, modelID)
@@ -118,7 +119,7 @@ func (m *Manager) responsesToolsCandidateRoutes(modelID, authID string) []respon
 			}
 			probeReq := cliproxyexecutor.Request{Model: upstreamModel}
 			probeOpts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatCodex}
-			toFormat := requestToFormat(providerKey, executor, probeReq, probeOpts)
+			toFormat := requestToFormatWithAuth(providerKey, executor, auth, probeReq, probeOpts)
 			route := responsesToolsRoute(auth, providerKey, upstreamModel, toFormat)
 			route.AuthKind = normalizeAuthKindForPolicy(route.AuthKind)
 			routes = append(routes, route)
@@ -319,5 +320,70 @@ func (m *Manager) ResponsesToolsMayApplyToClientModel(modelID, provider, authID 
 	}
 	// A native Responses route resolves to client-search native with no custom
 	// handling, which needs no rewriting and therefore no replay.
+	return false
+}
+
+// ResponsesToolsRequiresReplayForSession resolves a Home credential bound to
+// this session before falling back to the local candidate lookup.
+func (m *Manager) ResponsesToolsRequiresReplayForSession(payload []byte, modelID, provider, authID, sessionID string) bool {
+	if m == nil {
+		return false
+	}
+	if !m.HomeEnabled() {
+		if _, ok := m.GetByID(authID); ok {
+			return m.ResponsesToolsRequiresReplayForClientModel(payload, modelID, provider, authID)
+		}
+	}
+	sessionID, authID = strings.TrimSpace(sessionID), strings.TrimSpace(authID)
+	m.mu.RLock()
+	var auth *Auth
+	if current := m.homeRuntimeAuths[sessionID][authID]; current != nil {
+		auth = current.Clone()
+	}
+	owner := m.homeRuntimeAuthOwners[sessionID][authID]
+	m.mu.RUnlock()
+	if auth == nil {
+		if m.HomeEnabled() {
+			// Home never authorizes a local credential with the same ID. A
+			// missing session binding is not enough evidence to send raw frames.
+			return true
+		}
+		return m.ResponsesToolsRequiresReplayForClientModel(payload, modelID, provider, authID)
+	}
+	state := m.responsesToolsSnapshot()
+	state.mu.Lock()
+	policy, enabled := state.policy, state.enabled
+	state.mu.Unlock()
+	if !enabled {
+		return false
+	}
+	providerKey := executorKeyFromAuth(auth)
+	executor, _ := m.Executor(providerKey)
+	if owner != nil {
+		if owner.Provider != "" {
+			providerKey = owner.Provider
+		}
+		if owner.Executor != nil {
+			executor = owner.Executor
+		}
+	}
+	if providerKey == "" || (provider != "" && !strings.EqualFold(strings.TrimSpace(provider), providerKey)) || executor == nil {
+		return true
+	}
+	executor = executorForAuth(executor, auth)
+	models, _, _, _ := m.executionModelCandidatesWithAlias(auth, modelID)
+	if len(models) == 0 {
+		return true
+	}
+	for _, model := range models {
+		req := cliproxyexecutor.Request{Model: model}
+		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatCodex}
+		route := responsesToolsRoute(auth, providerKey, model, requestToFormatWithAuth(providerKey, executor, auth, req, opts))
+		route.AuthKind = normalizeAuthKindForPolicy(route.AuthKind)
+		effective, err := responsestools.EffectivePolicy(policy, route)
+		if err != nil || responsestools.RequiresToolReplay(payload, effective, policy.Limits) {
+			return true
+		}
+	}
 	return false
 }

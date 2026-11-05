@@ -104,7 +104,7 @@ policy below carries the matching exception.
 
 ### CI
 
-Only `release.yaml` and `pr-test-build.yml` are kept. Both use Go `1.26.4`.
+Only `release.yaml` and `pr-test-build.yml` are kept. Both use Go `1.26.10`.
 `pr-test-build.yml` runs on pull requests and pushes to `main`, and gates on
 `gofmt`, an offline validation of the tracked Codex model catalog,
 `go vet ./...`, `go test ./... -count=1`, and a server build. Run the

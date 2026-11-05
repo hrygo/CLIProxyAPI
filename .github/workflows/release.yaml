@@ -24,7 +24,7 @@ concurrency:
 
 env:
   GH_REPO: ${{ github.repository }}
-  GO_VERSION: '1.26.4'
+  GO_VERSION: '1.26.10'
   # Tag to publish. On a tag push this is the pushed tag; on workflow_dispatch
   # it comes from the required input, because github.ref_name would be a branch.
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}

@@ -19,7 +19,7 @@ func TestClientCodexOptimizeMultiAgentV2(t *testing.T) {
 	}{
 		{"omitted", "config-version: 8\n", false},
 		{"disabled", "client: {codex: {optimize-multi-agent-v2: false}}\n", false},
-		{"enabled", "client: {codex: {optimize-multi-agent-v2: true}}\n", true},
+		{"enabled", "client: {codex: {optimize-multi-agent-v2: true, enable-apply-patch: true}}\n", true},
 		{"null", "client: {codex: {optimize-multi-agent-v2: null}}\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -180,6 +180,7 @@ func TestClientCodexOptimizeMultiAgentV2Save(t *testing.T) {
 			parts := strings.Split(old.old, ".")
 			parent := yamlPath(&root, strings.Join(parts[:len(parts)-1], "."))
 			parent.Content[findMapKeyIndex(parent, parts[len(parts)-1])].HeadComment = "keep optimize heading"
+			setYAMLPath(&root, "client.codex.enable-apply-patch", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
 			raw, errMarshal := yaml.Marshal(&root)
 			if errMarshal != nil {
 				t.Fatalf("marshal: %v", errMarshal)
@@ -208,7 +209,7 @@ func TestClientCodexOptimizeMultiAgentV2Save(t *testing.T) {
 				if errReload != nil {
 					t.Fatalf("reload: %v", errReload)
 				}
-				if loaded.Client.Codex.OptimizeMultiAgentV2 != enabled {
+				if loaded.Client.Codex.OptimizeMultiAgentV2 != enabled || !loaded.Client.Codex.EnableApplyPatch {
 					t.Fatal("save changed client settings")
 				}
 				if !bytes.Contains(data, []byte("keep optimize comment")) || !bytes.Contains(data, []byte("keep optimize heading")) {

@@ -29,7 +29,7 @@ func TestAntigravityModelCatalogObserverRejectsBeforeTransport(t *testing.T) {
 		return nil, errors.New("synthetic admission rejection")
 	})
 	svc := &Service{}
-	hints, _ := svc.probeAntigravityModelCapabilityHints(ctx, auth, []string{server.URL}, "", "synthetic-token")
+	hints, _ := svc.probeAntigravityModelCapabilityHints(ctx, auth, []string{server.URL}, "", "synthetic-token", "fixture-agent")
 	if observed != 1 || dispatched.Load() != 0 || hints.ModelIDs != nil {
 		t.Fatalf("catalog escaped admission: observed=%d dispatched=%d", observed, dispatched.Load())
 	}
@@ -49,7 +49,7 @@ func TestAntigravityModelCatalogOwnerWaitsForActualHTTPRelease(t *testing.T) {
 	go func() {
 		defer close(done)
 		svc := &Service{}
-		svc.probeAntigravityModelCapabilityHints(ctx, antigravityTestAuth(t.Name(), "https://fixture.invalid"), []string{"https://fixture.invalid"}, "", "synthetic-token")
+		svc.probeAntigravityModelCapabilityHints(ctx, antigravityTestAuth(t.Name(), "https://fixture.invalid"), []string{"https://fixture.invalid"}, "", "synthetic-token", "fixture-agent")
 	}()
 	work := <-reached
 	if state := scope.Snapshot(); state.Started != 1 || state.Active != 1 {

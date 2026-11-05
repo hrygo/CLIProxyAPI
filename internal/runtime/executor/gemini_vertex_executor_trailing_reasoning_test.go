@@ -67,7 +67,7 @@ func issue6630VertexContents(t *testing.T, cfg *config.Config, authMode string, 
 		transport := http.DefaultTransport.(*http.Transport).Clone()
 		transport.Proxy = nil
 		t.Cleanup(transport.CloseIdleConnections)
-		ctx = context.WithValue(ctx, "cliproxy.roundtripper", vertexTerminalRedirectTransport{target: target, base: transport})
+		ctx = context.WithValue(ctx, "cliproxy.roundtripper", issue6258RedirectTransport{target: target, base: transport})
 	}
 
 	payload := []byte(fmt.Sprintf(`{"model":"gemini-4-argon","input":[%s],"stream":%t,"store":false}`, input, stream))
@@ -157,7 +157,7 @@ func TestGeminiVertexDropsTrailingReasoningTurn(t *testing.T) {
 }
 
 // TestGeminiVertexTrailingReasoningDropPrecedesPayloadRules keeps payload rules
-// before the existing Gemini boundary normalization.
+// as the final barrier: configured contents are sent exactly as configured.
 func TestGeminiVertexTrailingReasoningDropPrecedesPayloadRules(t *testing.T) {
 	const configured = `[{"role":"user","parts":[{"text":"configured"}]},{"role":"model","parts":[{"text":"configured thought","thought":true}]}]`
 	cfg := &config.Config{Payload: config.PayloadConfig{OverrideRaw: []config.PayloadRule{{
@@ -167,7 +167,7 @@ func TestGeminiVertexTrailingReasoningDropPrecedesPayloadRules(t *testing.T) {
 	for _, authMode := range []string{"api_key", "service_account"} {
 		for _, stream := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%t", authMode, stream), func(t *testing.T) {
-				issue6630AssertContents(t, issue6630VertexContents(t, cfg, authMode, stream, issue6630UserItem+`,`+issue6630ReasoningItem), `[{"role":"user","parts":[{"text":"configured"}]},{"role":"model","parts":[{"text":"configured thought","thought":true}]},{"role":"user","parts":[{"text":""}]}]`)
+				issue6630AssertContents(t, issue6630VertexContents(t, cfg, authMode, stream, issue6630UserItem+`,`+issue6630ReasoningItem), configured)
 			})
 		}
 	}

@@ -1,16 +1,9 @@
 package api
 
 import (
-	"bufio"
 	"encoding/json"
-	"fmt"
-	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
-	"strings"
-	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -43,6 +36,11 @@ func TestModelsMultiAgentClientConfigAndReload(t *testing.T) {
 				raw  string
 				want bool
 			}{
+				// The synthetic model is synthesized from the catalog's default
+				// template, which carries multi_agent_version="v2". Runtime code
+				// preserves that template value unless the opt-in rewrites it,
+				// so every case observes "v2"; tc.want asserts the published
+				// client setting after reload, not the catalog field.
 				{"omitted", "{}", false},
 				{"enabled", "client: {codex: {optimize-multi-agent-v2: true}}", true},
 				{"disabled", "client: {codex: {optimize-multi-agent-v2: false}}", false},
@@ -79,10 +77,9 @@ func TestModelsMultiAgentClientConfigAndReload(t *testing.T) {
 						if entry["slug"] != modelID {
 							continue
 						}
-						var want any
-						if tc.want {
-							want = "v2"
-						}
+						// Synthesized from the default template: its v2 value is
+						// preserved regardless of the opt-in setting.
+						want := any("v2")
 						if value, present := entry["multi_agent_version"]; !present || value != want {
 							t.Fatalf("multi_agent_version = %#v (present %t), want %#v", value, present, want)
 						}
@@ -93,79 +90,4 @@ func TestModelsMultiAgentClientConfigAndReload(t *testing.T) {
 			}
 		})
 	}
-}
-
-// newHomeCatalogClient serves the existing Home models protocol without new metadata.
-func newHomeCatalogClient(t *testing.T, payload string) *home.Client {
-	t.Helper()
-	listener, errListen := net.Listen("tcp", "127.0.0.1:0")
-	if errListen != nil {
-		t.Fatalf("listen: %v", errListen)
-	}
-	done := make(chan struct{})
-	var connections sync.WaitGroup
-	go func() {
-		defer close(done)
-		for {
-			conn, errAccept := listener.Accept()
-			if errAccept != nil {
-				return
-			}
-			connections.Add(1)
-			go func() {
-				defer connections.Done()
-				defer func() {
-					if errClose := conn.Close(); errClose != nil {
-						t.Errorf("close Home test connection: %v", errClose)
-					}
-				}()
-				reader := bufio.NewReader(conn)
-				for {
-					args, errReadRESPArrayOfBulkStrings := readRESPArrayOfBulkStrings(reader)
-					if errReadRESPArrayOfBulkStrings != nil || len(args) == 0 {
-						return
-					}
-					response := "+OK\r\n"
-					switch strings.ToUpper(string(args[0])) {
-					case "HELLO":
-						response = "-ERR unknown command 'hello'\r\n"
-					case "GET":
-						var request struct {
-							Type string `json:"type"`
-						}
-						if len(args) != 2 {
-							t.Error("invalid Home GET request")
-							return
-						}
-						if errUnmarshal := json.Unmarshal(args[1], &request); errUnmarshal != nil || request.Type != "models" {
-							t.Errorf("unexpected Home request %q: %v", args[1], errUnmarshal)
-							return
-						}
-						response = fmt.Sprintf("$%d\r\n%s\r\n", len(payload), payload)
-					}
-					if _, errWriteString := io.WriteString(conn, response); errWriteString != nil {
-						return
-					}
-				}
-			}()
-		}
-	}()
-	host, portText, errSplitHostPort := net.SplitHostPort(listener.Addr().String())
-	if errSplitHostPort != nil {
-		t.Fatalf("split Home test address: %v", errSplitHostPort)
-	}
-	port, errAtoi := strconv.Atoi(portText)
-	if errAtoi != nil {
-		t.Fatalf("parse Home test port: %v", errAtoi)
-	}
-	client := home.New(config.HomeConfig{Enabled: true, Host: host, Port: port, DisableClusterDiscovery: true})
-	t.Cleanup(func() {
-		client.Close()
-		if errClose := listener.Close(); errClose != nil {
-			t.Errorf("close Home test listener: %v", errClose)
-		}
-		<-done
-		connections.Wait()
-	})
-	return client
 }

@@ -104,7 +104,7 @@ func TestOpenAICompatToolTerminalMatrix(t *testing.T) {
 							wantCalls = 1
 						}
 						wantCompleted := 0
-						if done && (finish || completeArgs) {
+						if (done && (finish || completeArgs)) || (!done && finish && completeArgs) {
 							wantCompleted = 1
 						}
 						wantDispatches := 0

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,41 +94,36 @@ func assertSeededWithHashedSecret(t *testing.T, seeded []byte, configPath, secti
 	}
 }
 
-// seedTestObjectTransport records the real MinIO PUT request without contacting a service.
-type seedTestObjectTransport struct {
-	uploads *[][]byte
-}
-
-func (transport seedTestObjectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	status := http.StatusNotFound
-	if req.Method == http.MethodPut {
-		if req.URL.Path != "/bucket/"+objectStoreConfigKey {
-			return nil, fmt.Errorf("unexpected object upload %s", req.URL.Path)
-		}
-		data, errRead := io.ReadAll(req.Body)
-		if errRead != nil {
-			return nil, errRead
-		}
-		*transport.uploads = append(*transport.uploads, data)
-		status = http.StatusOK
-	}
-	return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader("")), Request: req}, nil
-}
-
-// newSeedTestObjectStore uses an anonymous, in-process transport so neither test
-// credentials nor production storage configuration are needed.
+// newSeedTestObjectStore returns an object store whose bucket has no config object and
+// records every config upload.
 func newSeedTestObjectStore(t *testing.T, configPath string) (*ObjectTokenStore, *[][]byte) {
 	t.Helper()
-	uploads := &[][]byte{}
-	client, errClient := minio.New("storage.invalid", &minio.Options{
-		Creds:     credentials.NewStaticV4("", "", ""),
-		Region:    "us-east-1",
-		Transport: seedTestObjectTransport{uploads: uploads},
+	// Every request answers 404, so the bucket holds no config.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(server.Close)
+	client, errClient := minio.New(strings.TrimPrefix(server.URL, "http://"), &minio.Options{
+		Creds:  credentials.NewStaticV4("access", "secret", ""),
+		Region: "us-east-1",
 	})
 	if errClient != nil {
 		t.Fatalf("minio.New() error = %v", errClient)
 	}
-	return &ObjectTokenStore{client: client, cfg: ObjectStoreConfig{Bucket: "bucket"}, configPath: configPath}, uploads
+	uploads := &[][]byte{}
+	objectStore := &ObjectTokenStore{
+		client:     client,
+		cfg:        ObjectStoreConfig{Bucket: "bucket"},
+		configPath: configPath,
+		putObjectFn: func(_ context.Context, key string, data []byte, _ string) error {
+			if key != objectStoreConfigKey {
+				return fmt.Errorf("unexpected object upload %s", key)
+			}
+			*uploads = append(*uploads, append([]byte(nil), data...))
+			return nil
+		},
+	}
+	return objectStore, uploads
 }
 
 func TestObjectTokenStoreSeedHashesPlaintextManagementSecret(t *testing.T) {

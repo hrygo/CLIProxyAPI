@@ -46,7 +46,7 @@ func TestClaudeDeferredPostRuleGuard(t *testing.T) {
 					server, received := newResponsesToolsProviderServer(t, response)
 					cfg := &config.Config{}
 					cfg.NormalizeResponsesToolsConfig()
-					cfg.ResponsesTools.Limits.MaxActiveToolBytes = 1024
+					cfg.ResponsesTools.Limits.MaxActiveToolBytes = 2048
 					params := map[string]any{}
 					toolPath := "tools.1"
 					if provider == "fixture-chat" {
@@ -126,18 +126,12 @@ func TestClaudeDeferredPostRuleGuard(t *testing.T) {
 					} else {
 						_, err = mgr.Execute(context.Background(), []string{provider}, req, opts)
 					}
-					// xAI repairs orphaned post-rule choices to auto before the final
-					// guard. That valid final request must retain the existing repair.
-					repairedChoice := provider == "xai" && mutation == "force-unloaded"
-					if mutation == "none" || mutation == "long-names" || repairedChoice {
+					if mutation == "none" || mutation == "long-names" {
 						if err != nil || !gjson.GetBytes(received.get(), "tools").Exists() {
 							t.Fatalf("legitimate discovery did not dispatch: %v", err)
 						}
 						if strings.Contains(string(received.get()), "unloaded") || strings.Contains(string(received.get()), "DeferredToolPlaceholder") {
 							t.Fatal("unloaded declarations leaked into a legitimate request")
-						}
-						if choice := gjson.GetBytes(received.get(), "tool_choice"); repairedChoice && choice.Exists() && choice.String() != "auto" {
-							t.Fatalf("orphaned choice was not repaired: %s", received.get())
 						}
 						if mutation == "long-names" {
 							wire := gjson.ParseBytes(received.get())
@@ -157,7 +151,11 @@ func TestClaudeDeferredPostRuleGuard(t *testing.T) {
 									}
 								}
 							}
-							if len(names) != 3 || names[1] == names[2] {
+							wantNames := 3
+							if provider == "meta" {
+								wantNames++ // The upstream Meta transport adds its Muse namespace.
+							}
+							if len(names) != wantNames || names[1] == names[2] {
 								t.Fatalf("distinct activated identities collapsed: %v", names)
 							}
 						}

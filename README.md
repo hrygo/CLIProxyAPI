@@ -18,10 +18,10 @@ and publishes independent `vX.Y.Z-upstreamA.B.C` releases.
 | Item | Value |
 | --- | --- |
 | Development branch | `main` |
-| Published release | [v1.3.0-upstream8.0.16](https://github.com/hrygo/CLIProxyAPI/releases/tag/v1.3.0-upstream8.0.16) |
-| Go toolchain | `1.26.4` |
+| Published release | [v1.3.5-upstream8.0.35](https://github.com/hrygo/CLIProxyAPI/releases/tag/v1.3.5-upstream8.0.35) |
+| Go toolchain | `1.26.10` |
 | Module path | `github.com/router-for-me/CLIProxyAPI/v8` |
-| Upstream policy | Released upstream versions only; individual commits are assessed |
+| Upstream policy | Mature upstream releases replayed as a complete tree; fork deltas are verified each intake |
 | Release channel | [GitHub Releases](https://github.com/hrygo/CLIProxyAPI/releases) |
 | Homebrew tap | `hrygo/cliproxyapi` |
 
@@ -82,7 +82,7 @@ and retain failures, retries, unknown usage and client/provider boundaries.
 
 ### Prerequisites
 
-- Go `1.26.4` or a compatible newer Go toolchain.
+- Go `1.26.10` or a compatible newer Go toolchain.
 - A provider account or an API key that can access the selected model.
 
 ### Build

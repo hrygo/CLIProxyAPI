@@ -48,7 +48,6 @@ type antigravityConnectionTraceTransport struct {
 func (t *antigravityConnectionTraceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	request := WithAntigravityConnectionTrace(req, &t.auth, t.operation)
 	if t.identity.Operation == "" {
-		// Generate transports already use their model-bound usage reporter.
 		return t.base.RoundTrip(request)
 	}
 	return observeHTTPAttempt(request, t.base.RoundTrip, func() HTTPAttemptIdentity { return t.identity })
