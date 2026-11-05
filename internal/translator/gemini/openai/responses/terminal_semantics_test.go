@@ -106,57 +106,53 @@ func TestTerminalSameFrameUsageFinalizesImmediately(t *testing.T) {
 	requireStrictlyIncreasing(t, observed)
 }
 
-func TestTerminalFinishWithoutUsageDefersTerminalUntilUsageTail(t *testing.T) {
+func TestTerminalFinishWithoutUsageCompletesBeforeUsageTail(t *testing.T) {
 	finishOnly := observeTerminalStream(t, requireValidFrame(t, terminalContentFrame), requireValidFrame(t, terminalFrame("STOP", "")))
-	if len(finishOnly.Terminals) != 0 {
-		t.Fatalf("finish reason without usage emitted %d terminal events", len(finishOnly.Terminals))
+	terminal := requireSingleTerminal(t, finishOnly, "response.completed")
+	if usage := terminal.Get("response.usage"); usage.Exists() {
+		t.Fatalf("finish without observed usage fabricated usage: %s", usage.Raw)
 	}
-	if finishOnly.TextDones != 0 {
-		t.Fatalf("pending terminal closed the message early: %d text done events", finishOnly.TextDones)
+	if terminal.Get("response.output.0.content.0.text").String() != "answer" {
+		t.Fatalf("finish lost the output text: %s", terminal.Raw)
 	}
+	if finishOnly.TextDones != 1 || len(finishOnly.ItemDone) != 1 {
+		t.Fatalf("finish closures: texts=%d items=%d, want one each", finishOnly.TextDones, len(finishOnly.ItemDone))
+	}
+	requireStrictlyIncreasing(t, finishOnly)
 
-	// The tail must be consumed, not dropped by the completed guard.
+	// Once the terminal has been emitted, later frames cannot change it.
 	var param any
 	for _, frame := range []string{terminalContentFrame, terminalFrame("STOP", "")} {
 		ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-3.6-flash-high", nil, nil, []byte(frame), &param)
 	}
-	tail := ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-3.6-flash-high", nil, nil, []byte(`data: {`+terminalUsageObject+`,"responseId":"terminal"}`), &param)
-	done := ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-3.6-flash-high", nil, nil, []byte(terminalDoneFrame), &param)
-	if len(done) != 0 {
-		t.Fatalf("[DONE] emitted %d duplicate events after the complete usage tail", len(done))
-	}
-	observed := terminalObservation{}
-	for _, chunk := range tail {
-		event, data := parseSSEEvent(t, chunk)
-		observed.SequenceNums = append(observed.SequenceNums, data.Get("sequence_number").Int())
-		switch event {
-		case "response.completed", "response.incomplete":
-			observed.Terminals = append(observed.Terminals, data)
-		case "response.output_item.done":
-			observed.ItemDone = append(observed.ItemDone, data)
+	for _, frame := range []string{`data: {` + terminalUsageObject + `,"responseId":"terminal"}`, terminalFrame("STOP", ""), terminalDoneFrame, terminalDoneFrame} {
+		later := ConvertGeminiResponseToOpenAIResponses(context.Background(), "gemini-3.6-flash-high", nil, nil, []byte(frame), &param)
+		if len(later) != 0 {
+			t.Fatalf("frame after completion emitted %d duplicate events", len(later))
 		}
-	}
-	terminal := requireSingleTerminal(t, observed, "response.completed")
-	usage := terminal.Get("response.usage")
-	if usage.Get("input_tokens").Int() != 100 || usage.Get("output_tokens").Int() != 60 ||
-		usage.Get("output_tokens_details.reasoning_tokens").Int() != 50 || usage.Get("total_tokens").Int() != 160 {
-		t.Fatalf("split-frame usage = %s", usage.Raw)
 	}
 }
 
 func TestTerminalUsesInternalUsageCarrier(t *testing.T) {
-	observed := observeTerminalStream(t,
-		terminalContentFrame,
-		terminalFrame("STOP", ""),
-		`data: {"cpaUsageMetadata":{"promptTokenCount":8,"candidatesTokenCount":2,"totalTokenCount":10},"responseId":"terminal"}`,
-		terminalDoneFrame,
-	)
-	terminal := requireSingleTerminal(t, observed, "response.completed")
-	if terminal.Get("response.usage.total_tokens").Int() != 10 {
-		t.Fatalf("cpaUsageMetadata carrier was not consumed: %s", terminal.Raw)
-	}
-	if strings.Contains(terminal.Raw, "cpaUsageMetadata") {
-		t.Fatalf("internal usage carrier leaked downstream: %s", terminal.Raw)
+	for _, tc := range []struct {
+		name   string
+		frames []string
+	}{
+		{"before_finish", []string{terminalContentFrame, `data: {"cpaUsageMetadata":{"promptTokenCount":8,"candidatesTokenCount":2,"totalTokenCount":10},"responseId":"terminal"}`, terminalFrame("STOP", ""), terminalDoneFrame}},
+		{"on_finish", []string{terminalContentFrame, terminalFrame("STOP", `,"cpaUsageMetadata":{"promptTokenCount":8,"candidatesTokenCount":2,"totalTokenCount":10}`), terminalDoneFrame}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := observeTerminalStream(t, tc.frames...)
+			terminal := requireSingleTerminal(t, observed, "response.completed")
+			usage := terminal.Get("response.usage")
+			if usage.Get("input_tokens").Int() != 8 || usage.Get("output_tokens").Int() != 2 || usage.Get("total_tokens").Int() != 10 {
+				t.Fatalf("cpaUsageMetadata carrier was not consumed: %s", terminal.Raw)
+			}
+			if strings.Contains(terminal.Raw, "cpaUsageMetadata") {
+				t.Fatalf("internal usage carrier leaked downstream: %s", terminal.Raw)
+			}
+			requireStrictlyIncreasing(t, observed)
+		})
 	}
 }
 
@@ -202,7 +198,7 @@ func TestTerminalExplicitZeroUsageOverwritesPreviousValue(t *testing.T) {
 	)
 	terminal := requireSingleTerminal(t, observed, "response.completed")
 	usage := terminal.Get("response.usage")
-	if usage.Get("output_tokens_details.reasoning_tokens").Int() != 0 || usage.Get("output_tokens").Int() != 5 {
+	if !usage.Exists() || !usage.Get("output_tokens_details.reasoning_tokens").Exists() || usage.Get("output_tokens_details.reasoning_tokens").Int() != 0 || usage.Get("output_tokens").Int() != 5 {
 		t.Fatalf("explicit zero did not overwrite the previous value: %s", usage.Raw)
 	}
 }
@@ -266,7 +262,9 @@ func TestTerminalMaxTokensReportsIncompleteStream(t *testing.T) {
 	requireStrictlyIncreasing(t, observed)
 }
 
-func TestTerminalMaxTokensSurvivesUsageTailAndDone(t *testing.T) {
+func TestTerminalMaxTokensCompletesBeforeUsageTailAndDone(t *testing.T) {
+	finishOnly := observeTerminalStream(t, terminalContentFrame, terminalFrame("MAX_TOKENS", ""))
+	requireSingleTerminal(t, finishOnly, "response.incomplete")
 	observed := observeTerminalStream(t,
 		terminalContentFrame,
 		terminalFrame("MAX_TOKENS", ""),
@@ -277,9 +275,13 @@ func TestTerminalMaxTokensSurvivesUsageTailAndDone(t *testing.T) {
 	if terminal.Get("response.incomplete_details.reason").String() != "max_output_tokens" {
 		t.Fatalf("[DONE] overwrote the pending finish reason: %s", terminal.Raw)
 	}
-	if terminal.Get("response.usage.total_tokens").Int() != 160 {
-		t.Fatalf("incomplete response lost the usage tail: %s", terminal.Raw)
+	if usage := terminal.Get("response.usage"); usage.Exists() {
+		t.Fatalf("incomplete response fabricated usage from a later frame: %s", usage.Raw)
 	}
+	if got := terminal.Get(`response.output.#(type=="message").content.0.text`).String(); got != "answer" {
+		t.Fatalf("incomplete response lost partial output: %q", got)
+	}
+	requireStrictlyIncreasing(t, observed)
 }
 
 func TestTerminalMaxTokensMarksOnlyTheActiveMessageIncomplete(t *testing.T) {

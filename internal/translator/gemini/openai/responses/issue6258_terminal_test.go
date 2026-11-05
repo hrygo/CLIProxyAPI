@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -92,72 +93,104 @@ func issue6258AssertUsage(t *testing.T, response gjson.Result, input, output, re
 	}
 }
 
-func TestIssue6258GeminiResponsesSplitStopUsage(t *testing.T) {
+func TestIssue6258GeminiResponsesStopUsageTiming(t *testing.T) {
 	for _, wrapped := range []bool{false, true} {
 		for _, usageKey := range []string{"usageMetadata", "cpaUsageMetadata"} {
-			t.Run(fmt.Sprintf("wrapped=%t/%s", wrapped, usageKey), func(t *testing.T) {
-				frame := func(body string) string {
-					if wrapped {
-						return `data: {"response":` + body + `}`
+			for _, timing := range []string{"before_finish", "on_finish", "after_finish"} {
+				t.Run(fmt.Sprintf("wrapped=%t/%s/%s", wrapped, usageKey, timing), func(t *testing.T) {
+					frame := func(body string) string {
+						if wrapped {
+							return `data: {"response":` + body + `}`
+						}
+						return "data: " + body
 					}
-					return "data: " + body
-				}
-				var param any
-				events := issue6258Translate(t, &param, frame(`{"responseId":"split-stop","candidates":[{"content":{"parts":[{"text":"answer"}]}}]}`))
-				finish := frame(`{"candidates":[{"content":{"parts":[{"text":" tail"}]},"finishReason":"STOP"}]}`)
-				beforeUsage := issue6258Translate(t, &param, finish)
-				for _, event := range beforeUsage {
-					if event.Get("type").String() == "response.completed" {
-						t.Error("STOP without usage emitted a terminal before the usage tail")
+					var param any
+					events := issue6258Translate(t, &param, frame(`{"responseId":"split-stop","candidates":[{"content":{"parts":[{"text":"answer"}]}}]}`))
+					usageFrame := frame(`{"` + usageKey + `":` + issue6258Usage + `}`)
+					if timing == "before_finish" {
+						events = append(events, issue6258Translate(t, &param, usageFrame)...)
 					}
-				}
-				events = append(events, beforeUsage...)
-				repeatedFinish := issue6258Translate(t, &param, frame(`{"candidates":[{"finishReason":"STOP"}]}`))
-				for _, event := range repeatedFinish {
-					if event.Get("type").String() == "response.completed" {
-						t.Error("repeated pending STOP emitted a terminal before usage")
+					finishBody := `{"candidates":[{"content":{"parts":[{"text":" tail"}]},"finishReason":"STOP"}]`
+					if timing == "on_finish" {
+						finishBody += `,"` + usageKey + `":` + issue6258Usage
 					}
-				}
-				events = append(events, repeatedFinish...)
-				afterUsage := issue6258Translate(t, &param, frame(`{"`+usageKey+`":`+issue6258Usage+`}`))
-				tailTerminals := 0
-				for _, event := range afterUsage {
-					if event.Get("type").String() == "response.completed" {
-						tailTerminals++
+					finish := frame(finishBody + `}`)
+					finishEvents := issue6258Translate(t, &param, finish)
+					finishTerminals := 0
+					for _, event := range finishEvents {
+						if event.Get("type").String() == "response.completed" {
+							finishTerminals++
+						}
 					}
-				}
-				if tailTerminals != 1 {
-					t.Errorf("usage tail emitted %d terminals, want 1", tailTerminals)
-				}
-				events = append(events, afterUsage...)
-				for _, repeated := range []string{finish, "data: [DONE]", "data: [DONE]"} {
-					events = append(events, issue6258Translate(t, &param, repeated)...)
-				}
-				response := issue6258Terminal(t, events)
-				if response.Get("status").String() != "completed" || response.Get("output.0.content.0.text").String() != "answer tail" {
-					t.Errorf("lost finish-frame content or wrong status: %s", response.Raw)
-				}
-				issue6258AssertUsage(t, response, 100, 60, 50, 160, 7)
-			})
+					if finishTerminals != 1 {
+						t.Errorf("finish emitted %d completed terminals, want 1", finishTerminals)
+					}
+					events = append(events, finishEvents...)
+					for _, later := range []string{usageFrame, finish, "data: [DONE]", "data: [DONE]"} {
+						laterEvents := issue6258Translate(t, &param, later)
+						if len(laterEvents) != 0 {
+							t.Errorf("frame after completion emitted %d events", len(laterEvents))
+						}
+						events = append(events, laterEvents...)
+					}
+					response := issue6258Terminal(t, events)
+					if response.Get("status").String() != "completed" || response.Get("output.0.content.0.text").String() != "answer tail" {
+						t.Errorf("lost finish-frame content or wrong status: %s", response.Raw)
+					}
+					if timing == "after_finish" {
+						if usage := response.Get("usage"); usage.Exists() {
+							t.Errorf("finish without observed usage fabricated usage: %s", usage.Raw)
+						}
+					} else {
+						issue6258AssertUsage(t, response, 100, 60, 50, 160, 7)
+					}
+					for _, event := range events {
+						if strings.Contains(event.Raw, "cpaUsageMetadata") {
+							t.Errorf("internal usage carrier leaked downstream: %s", event.Raw)
+						}
+					}
+				})
+			}
 		}
 	}
 }
 
 func TestIssue6258GeminiResponsesMaxTokens(t *testing.T) {
-	for _, mode := range []string{"same_frame", "split_usage", "no_usage_clean_done"} {
+	for _, mode := range []string{"before_finish", "same_frame", "split_usage", "no_usage_clean_done"} {
 		t.Run("stream/"+mode, func(t *testing.T) {
 			var param any
 			events := issue6258Translate(t, &param, `{"responseId":"max","candidates":[{"content":{"parts":[{"text":"partial"}]}}]}`)
+			if mode == "before_finish" {
+				events = append(events, issue6258Translate(t, &param, `{"usageMetadata":`+issue6258Usage+`}`)...)
+			}
 			finish := `{"candidates":[{"finishReason":"MAX_TOKENS"}]`
 			if mode == "same_frame" {
 				finish += `,"usageMetadata":` + issue6258Usage
 			}
-			events = append(events, issue6258Translate(t, &param, finish+`}`)...)
+			finishEvents := issue6258Translate(t, &param, finish+`}`)
+			finishTerminals := 0
+			for _, event := range finishEvents {
+				if event.Get("type").String() == "response.incomplete" {
+					finishTerminals++
+				}
+			}
+			if finishTerminals != 1 {
+				t.Errorf("MAX_TOKENS finish emitted %d incomplete terminals, want 1", finishTerminals)
+			}
+			events = append(events, finishEvents...)
 			if mode == "split_usage" {
-				events = append(events, issue6258Translate(t, &param, `{"usageMetadata":`+issue6258Usage+`}`)...)
+				later := issue6258Translate(t, &param, `{"usageMetadata":`+issue6258Usage+`}`)
+				if len(later) != 0 {
+					t.Errorf("usage after MAX_TOKENS emitted %d events", len(later))
+				}
+				events = append(events, later...)
 			}
 			for _, frame := range []string{"[DONE]", "[DONE]", finish + `}`} {
-				events = append(events, issue6258Translate(t, &param, frame)...)
+				later := issue6258Translate(t, &param, frame)
+				if len(later) != 0 {
+					t.Errorf("frame after MAX_TOKENS emitted %d events", len(later))
+				}
+				events = append(events, later...)
 			}
 			response := issue6258Terminal(t, events)
 			for _, event := range events {
@@ -167,8 +200,10 @@ func TestIssue6258GeminiResponsesMaxTokens(t *testing.T) {
 				}
 			}
 			issue6258AssertIncomplete(t, response)
-			if mode != "no_usage_clean_done" {
+			if mode == "same_frame" || mode == "before_finish" {
 				issue6258AssertUsage(t, response, 100, 60, 50, 160, 7)
+			} else if usage := response.Get("usage"); usage.Exists() {
+				t.Errorf("MAX_TOKENS without observed usage fabricated usage: %s", usage.Raw)
 			}
 		})
 	}
