@@ -75,13 +75,14 @@ type vertexASTNode struct {
 // streaming functionCall.partialArgs fragments and emits valid JSON deltas that can
 // be concatenated directly by downstream OpenAI and Claude clients.
 type VertexPartialArgsAssembler struct {
-	root             *vertexASTNode
-	lastStringNode   *vertexASTNode
-	cleaner          func(string) string
-	closedEmptyCache map[string]bool
-	fullBuf          strings.Builder
-	bufferedBytes    int
-	err              error
+	root                        *vertexASTNode
+	lastStringNode              *vertexASTNode
+	cleaner                     func(string) string
+	closedEmptyCache            map[string]bool
+	fullBuf                     strings.Builder
+	bufferedBytes               int
+	err                         error
+	unfinishedValueAtCompletion bool
 }
 
 // NewVertexPartialArgsAssembler creates a new assembler for a single streaming function call.
@@ -102,6 +103,33 @@ func (a *VertexPartialArgsAssembler) SetArgumentCleaner(cleaner func(string) str
 // Err returns the first structural or limits error encountered while assembling partialArgs.
 func (a *VertexPartialArgsAssembler) Err() error {
 	return a.err
+}
+
+// HasUnfinishedValueAtCompletion reports whether a completed function call
+// still had a PartialArg value marked as continuing. It does not change the
+// assembled arguments or expose their contents.
+func (a *VertexPartialArgsAssembler) HasUnfinishedValueAtCompletion() bool {
+	return a.unfinishedValueAtCompletion
+}
+
+func vertexHasUnfinishedValue(node *vertexASTNode) bool {
+	if node == nil {
+		return false
+	}
+	if node.kind == vertexNodeString && node.stringOpen {
+		return true
+	}
+	for _, child := range node.children {
+		if vertexHasUnfinishedValue(child) {
+			return true
+		}
+	}
+	for _, child := range node.elements {
+		if vertexHasUnfinishedValue(child) {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *VertexPartialArgsAssembler) setError(err error) {
@@ -183,6 +211,9 @@ func (a *VertexPartialArgsAssembler) PushFunctionCall(fc gjson.Result) (string, 
 		}
 	}
 
+	if !outerWillContinue {
+		a.unfinishedValueAtCompletion = vertexHasUnfinishedValue(a.root)
+	}
 	if a.root != nil {
 		if !outerWillContinue && a.cleaner != nil && a.hasHeldNodes(a.root) {
 			var rawBuf strings.Builder

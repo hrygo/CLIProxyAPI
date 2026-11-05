@@ -169,24 +169,26 @@ type geminiToResponsesState struct {
 	HiddenTextSignatures      map[string][]string
 
 	// function call aggregation (keyed by output_index)
-	NextIndex              int
-	FuncArgsBuf            map[int]*strings.Builder
-	FuncInputBuf           map[int]string
-	FuncCustom             map[int]bool
-	FuncToolSearch         map[int]bool
-	FuncNames              map[int]string
-	FuncNamespaces         map[int]string
-	FuncCallIDs            map[int]string
-	FuncDone               map[int]bool
-	SanitizedNameMap       map[string]string
-	ToolIdentityMap        map[string]util.ResponsesToolIdentity
-	RequestJSON            []byte
-	RequestResolved        bool
-	ToolMapsResolved       bool
-	FunctionEvidence       map[string]*geminiFunctionCallEvidence
-	ActiveStreamingFunc    *translatorcommon.VertexStreamingToolCall
-	ActiveStreamingPatch   *translatorcommon.ApplyPatchCallState
-	HasFailedStreamingFunc bool
+	NextIndex               int
+	FuncArgsBuf             map[int]*strings.Builder
+	FuncInputBuf            map[int]string
+	FuncCustom              map[int]bool
+	FuncToolSearch          map[int]bool
+	FuncNames               map[int]string
+	FuncNamespaces          map[int]string
+	FuncCallIDs             map[int]string
+	FuncDone                map[int]bool
+	SanitizedNameMap        map[string]string
+	ToolIdentityMap         map[string]util.ResponsesToolIdentity
+	RequestJSON             []byte
+	RequestResolved         bool
+	ToolMapsResolved        bool
+	FunctionEvidence        map[string]*geminiFunctionCallEvidence
+	ActiveStreamingFunc     *translatorcommon.VertexStreamingToolCall
+	ActiveStreamingPatch    *translatorcommon.ApplyPatchCallState
+	HasFailedStreamingFunc  bool
+	HasFailedStreamingPatch bool
+	GenericToolInputError   bool
 
 	// web search aggregation
 	WebSearchStreamMode          bool
@@ -211,6 +213,21 @@ type geminiToResponsesState struct {
 	TextPartRunActive            bool
 	CurrentMsgRuneOffset         int64
 	EmittedAnnotationCount       map[int]int
+}
+
+// ToolInputErrorIsGeneric distinguishes ordinary tool failures from apply_patch failures.
+func (st *geminiToResponsesState) ToolInputErrorIsGeneric() bool {
+	return st.GenericToolInputError && st.ToolInputError() != nil
+}
+
+func (st *geminiToResponsesState) failStreamingToolInput() []byte {
+	st.GenericToolInputError = st.ActiveStreamingPatch == nil && !st.HasFailedStreamingPatch
+	st.SetToolInputError(fmt.Errorf("upstream streaming tool arguments are invalid or incomplete"))
+	st.Completed = true
+	st.Seq++
+	failure := translatorcommon.ApplyPatchFailure(st.ResponseID, st.Seq)
+	failure, _ = sjson.SetBytes(failure, "response.error.message", "Invalid or incomplete tool arguments received from upstream.")
+	return emitEvent("response.failed", failure)
 }
 
 type geminiStreamBufferedPart struct {
@@ -415,7 +432,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	}
 	done := bytes.Equal(rawJSON, []byte("[DONE]"))
 	if done {
-		if !st.Started || st.ActiveStreamingFunc != nil || st.HasFailedStreamingFunc {
+		if !st.Started {
 			return [][]byte{}
 		}
 		if st.FinishReason == "" {
@@ -1192,6 +1209,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 					if !isStreamingFuncContinuation {
 						if st.ActiveStreamingFunc != nil {
 							st.HasFailedStreamingFunc = true
+							st.HasFailedStreamingPatch = st.HasFailedStreamingPatch || st.ActiveStreamingPatch != nil
 							st.ActiveStreamingFunc = nil
 							st.ActiveStreamingPatch = nil
 						}
@@ -1271,6 +1289,10 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 						}
 						return true
 					}
+					if fcDone && active.Assembler.HasUnfinishedValueAtCompletion() {
+						out = append(out, st.failStreamingToolInput())
+						return false
+					}
 					if delta != "" {
 						st.FuncArgsBuf[idx].WriteString(delta)
 						if st.FuncCustom[idx] {
@@ -1315,7 +1337,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 						} else if st.FuncCustom[idx] {
 							var inputStr string
 							if st.ActiveStreamingPatch != nil {
-								tail, fullInput, errFinishArguments := st.ActiveStreamingPatch.FinishArguments("")
+								tail, fullInput, errFinishArguments := st.ActiveStreamingPatch.FinishArguments(fullArgs)
 								if errFinishArguments != nil {
 									st.SetToolInputError(errFinishArguments)
 									st.Completed = true
@@ -1377,6 +1399,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 
 				if st.ActiveStreamingFunc != nil {
 					st.HasFailedStreamingFunc = true
+					st.HasFailedStreamingPatch = st.HasFailedStreamingPatch || st.ActiveStreamingPatch != nil
 					st.ActiveStreamingFunc = nil
 					st.ActiveStreamingPatch = nil
 				}
@@ -1576,7 +1599,10 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	if fr := root.Get("candidates.0.finishReason").String(); fr != "" && st.FinishReason == "" {
 		st.FinishReason = fr
 	}
-	if st.FinishReason != "" && st.ActiveStreamingFunc == nil && !st.HasFailedStreamingFunc {
+	if st.FinishReason != "" && (st.ActiveStreamingFunc != nil || st.HasFailedStreamingFunc) {
+		return append(out, st.failStreamingToolInput())
+	}
+	if st.FinishReason != "" {
 		if errIdentity := geminiPendingIdentityError(st); errIdentity != nil {
 			st.SetToolInputError(errIdentity)
 			st.Completed = true
@@ -2471,6 +2497,9 @@ func (st *geminiToResponsesState) FinalizeToolInput() [][]byte {
 	}
 	if !enabled {
 		return nil
+	}
+	if (st.ActiveStreamingFunc != nil || st.HasFailedStreamingFunc) && st.ActiveStreamingPatch == nil && !st.HasFailedStreamingPatch {
+		return [][]byte{st.failStreamingToolInput()}
 	}
 	if st.ToolInputError() == nil {
 		st.SetToolInputError(fmt.Errorf("upstream apply_patch stream ended before protocol completion"))
