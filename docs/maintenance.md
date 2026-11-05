@@ -16,14 +16,17 @@ operations; a request to review them does not authorize publishing or deployment
 
 ## Release a version
 
-1. Merge the reviewed task branch into our `main`. Resolve compatibility changes
-   and choose our semantic version: patch for compatible fixes, minor for
-   compatible additions, major for breaking changes.
+1. When integration is authorized, merge the reviewed task branch into our
+   `main`. For a replay, follow the [intake procedure](../ops/upstream-intake/README.md)
+   and [branch governance](../AGENTS.md#branch-governance), including its stop
+   condition while the remote linear-history rule remains in force. Resolve
+   compatibility changes and choose our semantic version: patch for compatible
+   fixes, minor for compatible additions, major for breaking changes.
 2. Build the release tag as `vX.Y.Z-upstreamA.B.C`, where `A.B.C` is the
    upstream release this version is aligned to. A version without a new upstream replay keeps the previous release's suffix; the `Ported` field records that no new upstream release was taken. The
    suffix is what distinguishes our tags from upstream's identical-looking
-   `vX.Y.Z` names, and the workflow rejects a tag that still points at an
-   upstream commit.
+   `vX.Y.Z` names. The release workflow requires the suffix even though the
+   standalone note validator also accepts some historical bare tags.
 3. Copy `docs/releases/RELEASE_TEMPLATE.md` to `docs/releases/<tag>.md` and
    write the release from the user's perspective. Explain the compatibility or
    migration impact, validation actually performed, known limitations, and the
@@ -39,35 +42,69 @@ operations; a request to review them does not authorize publishing or deployment
    explain compatibility and are not a substitute for this file.
 4. Run `ops/upstream-intake/verify-absorb.sh` on the candidate. For protocol
    changes, include the relevant client replay evidence and its coverage limits.
-5. Confirm a clean checkout, exact release commit, `origin/main` ancestry, and
-   absence of the proposed tag both locally and remotely. Read-only checks:
+5. For a release based on a replay, compare the aligned upstream release's exact
+   SHA with the accepted baseline and confirm that commit is an ancestor of the
+   reviewed replay candidate. Verify the integration commit has the recorded
+   prior `main` and the replay candidate as parents; the PR merge has the prior
+   `main` and that integration commit as parents. Both integration trees must
+   match the accepted candidate tree. Any subsequent changes in the release
+   commit, including a fork hotfix or release note, need their own review,
+   inventory and applicable validation. The
+   [intake procedure](../ops/upstream-intake/README.md) records the evidence.
+
+   Before tagging a release, repair `guard-release-tag.sh` and verify the full
+   [intake release-guard contract](../ops/upstream-intake/README.md#procedure)
+   with behavioral tests. It must verify the suffix's upstream release and SHA,
+   the accepted ledger and eligible fork `main` commit, and their documented
+   relationship; historical selective baselines need their actual evidence.
+   It must reject an upstream commit, fail closed on lookup or authentication
+   errors, and accept a valid fork release. The release workflow must provide
+   the read-only authentication needed for the check. The current guard checks
+   only a same-named upstream tag and treats a failed initial API request as
+   absence. Stop before creating or pushing any release tag until the repair,
+   CI integration and tests pass.
+6. Confirm a clean checkout, exact release commit on the `origin/main`
+   first-parent chain, and absence of the proposed tag both locally and remotely.
+   Both tag listings must be empty; a failed command blocks release:
 
    ```bash
    git status --short
    git fetch --no-tags origin main
-   git merge-base --is-ancestor HEAD origin/main
    git rev-parse HEAD
+   git rev-list --first-parent origin/main | grep -Fx "$(git rev-parse HEAD)"
+   git tag --list v1.2.3-upstream8.0.6
    git ls-remote --tags origin refs/tags/v1.2.3-upstream8.0.6
-   ops/upstream-intake/guard-release-tag.sh v1.2.3-upstream8.0.6
    ```
 
-6. When release execution is authorized, create an annotated tag and push only
-   its ref. Replace `v1.2.3-upstream8.0.6` with the reviewed tag:
+7. When release execution has explicit authorization, create an annotated tag.
+   Replace `v1.2.3-upstream8.0.6` with the reviewed tag:
 
    ```bash
    git tag -a v1.2.3-upstream8.0.6 -m "Release v1.2.3-upstream8.0.6"
+   ```
+
+   Run the repaired and tested guard against the locally created tag. A failure
+   blocks the push:
+
+   ```bash
+   ops/upstream-intake/guard-release-tag.sh v1.2.3-upstream8.0.6
+   ```
+
+   Only after the guard succeeds, push the single release ref:
+
+   ```bash
    git push origin refs/tags/v1.2.3-upstream8.0.6:refs/tags/v1.2.3-upstream8.0.6
    ```
 
    Never push `--tags`, `--mirror` or upstream refs. Do not move a published tag.
 
-7. `release.yaml` validates stable tag syntax, ancestry on `main`, the curated
-   release note and its upstream-alignment statement, then runs the full
-   regression gate. It creates a draft and builds ten platform archives from the
-   tagged source. One final job verifies the complete archive set, downloads the
+8. `release.yaml` validates stable tag syntax, ancestry on `main`, the curated
+   release note and its upstream-alignment statement, invokes the guard, then
+   runs the full regression gate. It creates a draft and builds ten platform
+   archives from the tagged source. One final job verifies the complete archive set, downloads the
    uploaded assets and checks their hashes, uploads `checksums.txt`, then
    publishes the draft. A failed build leaves the release unpublished.
-7. Verify workflow success and the public assets before updating the tap.
+9. Verify workflow success and the public assets before updating the tap.
    Manual workflow dispatch accepts an existing tag and resumes an incomplete
    draft; published releases are refused. Fix a published regression with a new
    version rather than replacing its binaries.
@@ -97,9 +134,11 @@ Official documents checked on **2026-10-01**:
   progressive disclosure. Keep project invariants in `AGENTS.md`, specific
   procedures in `ops/`, and decision guidance in the skill.
 - [GitHub immutable releases](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/immutable-releases):
-  create a draft, attach assets, then publish. The workflow follows this order
-  and refuses to rewrite published releases even without account-level
-  immutability enabled.
+  create a draft, attach assets, then publish. The workflow checks for a
+  published release before building and uploads draft assets with `--clobber`.
+  Without repository-level immutability, that initial check alone does not
+  prevent a concurrent publication during later uploads. Do not publish the
+  draft separately while the workflow runs or modify a published release.
 - [GitHub Actions security](https://docs.github.com/en/actions/security-for-github-actions/security-guides/security-hardening-for-github-actions):
   minimum token permissions and full commit SHA pins. Workflows use read
   permissions by default, write only where assets are published, and pin
@@ -114,6 +153,5 @@ The 72-hour settling rule and release-tree replay are fork policy, not
 requirements imposed by GitHub or Homebrew.
 
 Repository-level immutable releases, tag protection and artifact attestations
-need separate configuration or a further reviewed workflow change. No remote
-settings were changed by the documentation/tooling optimization. SHA256 verifies
+need separate configuration or a further reviewed workflow change. SHA256 verifies
 integrity; it is not a substitute for provenance.

@@ -278,7 +278,7 @@ class ReleaseNoteTests(unittest.TestCase):
             with self.subTest(workflow=name):
                 self.assertFalse((ROOT / ".github/workflows" / name).exists())
 
-    def test_workflow_rejects_upstream_tags(self):
+    def test_release_workflow_routes_own_tag_names_to_guard(self):
         workflow = (ROOT / ".github/workflows/release.yaml").read_text()
         self.assertIn(
             'ops/upstream-intake/guard-release-tag.sh "$RELEASE_TAG"',
@@ -287,7 +287,7 @@ class ReleaseNoteTests(unittest.TestCase):
         self.assertIn("v[0-9]+.[0-9]+.[0-9]+-upstream*", workflow)
         self.assertNotIn("'v[0-9]+.[0-9]+.[0-9]+'", workflow)
 
-    def test_guard_script_accepts_the_tags_the_workflow_pushes(self):
+    def test_guard_tag_pattern_accepts_the_workflow_tag_shape(self):
         # The workflow only ever pushes vX.Y.Z-upstreamA.B.C and then hands
         # that exact string to guard-release-tag.sh. A guard that rejects the
         # suffix fails every release at the validate job.
@@ -368,32 +368,96 @@ class IntakeTests(unittest.TestCase):
         self.assertIn("complete release tree", result.stdout)
         self.assertNotIn("decide what to port", result.stdout)
 
-    def test_replay_tree_can_be_applied_without_rewriting_main(self):
-        # A release-based candidate is integrated as a complete tree on the
-        # fork's own parent, including upstream deletions and fork additions.
+    def replay_fixture(self, *, main_only=False, candidate_fork="fork change"):
         self.git(self.local, "fetch", "--no-tags", "upstream", "refs/tags/v8.0.4")
         self.git(self.local, "checkout", "-qb", "main", "FETCH_HEAD")
         (self.local / "fork").write_text("fork change")
-        self.git(self.local, "add", "fork")
+        if main_only:
+            (self.local / "main-only").write_text("must not be lost")
+        self.git(self.local, "add", "-A")
         self.git(self.local, "commit", "-qm", "fork")
         main = self.git(self.local, "rev-parse", "HEAD").strip()
         self.git(self.local, "fetch", "--no-tags", "upstream", "refs/tags/v8.0.6")
+        upstream = self.git(self.local, "rev-parse", "FETCH_HEAD^{commit}").strip()
         self.git(self.local, "checkout", "-qb", "candidate", "FETCH_HEAD")
         (self.local / "data").unlink()
-        (self.local / "fork").write_text("fork replayed")
+        (self.local / "fork").write_text(candidate_fork)
         self.git(self.local, "add", "-A")
         self.git(self.local, "commit", "-qm", "replay")
         candidate = self.git(self.local, "rev-parse", "HEAD").strip()
+        self.git(self.local, "checkout", "-qb", "codex/integration", main)
+        return main, upstream, candidate
+
+    def replay_sop_step(self, marker, candidate):
+        readme = (ROOT / "ops/upstream-intake/README.md").read_text()
+        blocks = re.findall(r"(?ms)^[ \t]*```bash[ \t]*\n(.*?)^[ \t]*```[ \t]*$", readme)
+        matches = [block for block in blocks if marker in block]
+        self.assertEqual(len(matches), 1, f"expected one replay SOP block for {marker}")
+        return subprocess.run(
+            ["bash", "-uo", "pipefail", "-c", matches[0]],
+            cwd=self.local, env=dict(self.env, C=candidate),
+            text=True, capture_output=True,
+        )
+
+    def test_replay_sop_preserves_both_histories_and_reviewed_tree(self):
+        main, upstream, candidate = self.replay_fixture(candidate_fork="fork replayed")
         expected_tree = self.git(self.local, "rev-parse", f"{candidate}^{{tree}}").strip()
+
+        # The fork file conflicts. Resolve it explicitly, then run the actual
+        # documented tree and pending-merge checks before creating the merge.
+        merge = self.replay_sop_step('git merge --no-ff --no-commit "$C"', candidate)
+        self.assertNotEqual(merge.returncode, 0)
+        self.assertIn("fork", self.git(self.local, "diff", "--name-only", "--diff-filter=U"))
+        (self.local / "fork").write_text("fork replayed")
+        self.git(self.local, "add", "fork")
+        checked = self.replay_sop_step("MERGE_HEAD", candidate)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(self.git(self.local, "write-tree").strip(), expected_tree)
+        self.git(self.local, "commit", "-qm", "integrate replay")
+        integration = self.git(self.local, "rev-parse", "HEAD").strip()
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^1").strip(), main)
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^2").strip(), candidate)
+        self.assertEqual(self.git(self.local, "rev-parse", "main").strip(), main)
+
+        # Emulate a protected PR merge, then verify both ancestry and final tree.
+        self.git(self.local, "checkout", "-q", "main")
+        self.git(self.local, "merge", "--no-ff", "-qm", "reviewed replay", integration)
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^1").strip(), main)
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^2").strip(), integration)
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^{tree}").strip(), expected_tree)
+        for ancestor in (upstream, candidate):
+            self.git(self.local, "merge-base", "--is-ancestor", ancestor, "HEAD")
+
+        # An already-merged candidate has no pending merge and must not pass.
+        again = self.replay_sop_step('git merge --no-ff --no-commit "$C"', candidate)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        checked = self.replay_sop_step("MERGE_HEAD", candidate)
+        self.assertNotEqual(checked.returncode, 0)
+
+    def test_replay_sop_rejects_candidate_missing_main_changes(self):
+        _, _, candidate = self.replay_fixture(main_only=True)
+        merge = self.replay_sop_step('git merge --no-ff --no-commit "$C"', candidate)
+        self.assertEqual(merge.returncode, 0, merge.stderr)
+        self.assertTrue((self.local / "main-only").exists())
+        checked = self.replay_sop_step("MERGE_HEAD", candidate)
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertNotEqual(
+            self.git(self.local, "write-tree").strip(),
+            self.git(self.local, "rev-parse", f"{candidate}^{{tree}}").strip(),
+        )
+
+    def test_replay_sop_rejects_single_parent_snapshot(self):
+        main, _, candidate = self.replay_fixture()
         patch = subprocess.check_output([
             "git", "-C", str(self.local), "diff", "--binary", "--full-index", main, candidate,
         ])
-        self.git(self.local, "checkout", "-qb", "codex/integration", main)
         subprocess.run(["git", "apply", "--index"], cwd=self.local, input=patch, check=True)
-        self.assertEqual(self.git(self.local, "write-tree").strip(), expected_tree)
-        self.git(self.local, "commit", "-qm", "integrate replay")
-        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^").strip(), main)
-        self.assertEqual(self.git(self.local, "rev-parse", "main").strip(), main)
+        self.assertEqual(
+            self.git(self.local, "write-tree").strip(),
+            self.git(self.local, "rev-parse", f"{candidate}^{{tree}}").strip(),
+        )
+        checked = self.replay_sop_step("MERGE_HEAD", candidate)
+        self.assertNotEqual(checked.returncode, 0)
 
     def test_reject_before_fetch(self):
         for args, env in [

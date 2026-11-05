@@ -38,9 +38,13 @@ policy below carries the matching exception.
   `router-for-me/CLIProxyAPI`.
 - **Upstream intake is release-only.** Track `upstream` releases, not its `dev` or
   `main` branches. Use each accepted mature release as the complete source
-  baseline, then replay only necessary fork changes and verify equivalent fixes.
-  Preserve existing `main` history. Fetch upstream tags into the local-only `refs/upstream/tags/*`
-  namespace and never push them to `origin`: `release.yaml` triggers a full
+  baseline, then preserve every fork capability in atomic commits; retire a
+  fork implementation only after verifying upstream equivalence. Integrate the
+  reviewed replay with a
+  PR merge commit, preserving both upstream and existing `main` history; see
+  the branch governance prerequisites below. Fetch upstream tags into the
+  local-only `refs/upstream/tags/*` namespace and never push them to `origin`:
+  `release.yaml` triggers a full
   multi-platform build on a `vX.Y.Z-upstream*` tag push, so pushing upstream
   tags here would publish spurious releases from our fork.
 - **Our releases carry their own `vX.Y.Z-upstreamA.B.C` tags**, where the suffix
@@ -48,11 +52,12 @@ policy below carries the matching exception.
   keeps the previous suffix; the `Ported` field records that nothing new was
   taken. The suffix separates our tags from upstream's identical-looking names
   and must agree with the note's upstream-alignment statement. Push only the
-  specific release ref, never `--tags` or `--mirror`. Release CI rejects any tag
-  that still points at an upstream commit, requires a curated
-  `docs/releases/<tag>.md`, checks the tag and main ancestry, runs the regression
-  gate, builds a draft, and publishes only after all archives and checksums are
-  verified.
+  specific release ref, never `--tags` or `--mirror`. Release CI checks tag
+  syntax and main ancestry, invokes the release guard, requires a curated
+  `docs/releases/<tag>.md`, runs the regression gate, builds a draft, and
+  publishes only after all archives and checksums are verified. The guard has
+  known gaps and must be repaired and behavior-tested before any new release;
+  see the [maintenance guide](docs/maintenance.md).
 - **Module path stays upstream.** `go.mod` keeps
   `module github.com/router-for-me/CLIProxyAPI/v8` so upstream release baselines need no import-path rewrite. Do not rename it.
 - **Installation consumes our release artifacts** through the Homebrew tap
@@ -62,12 +67,13 @@ policy below carries the matching exception.
   over a Homebrew-managed path; that leaves a stale regular file outside Cellar
   management. Homebrew has no `brew rollback` command; prepare a versioned
   formula before upgrading if rollback is required.
-- **The tap formula is generated, not hand-maintained.** Edit
-  `ops/homebrew/cli-proxy-api.rb` and run `ops/homebrew/render-formula.py <tag>
-  <checksums.txt>`; never edit `Formula/cli-proxy-api.rb` in the tap repo. The
+- **The tap formula is generated, not hand-maintained.** Run
+  `ops/homebrew/render-formula.py <tag> <checksums.txt>` and apply the generated
+  formula to the tap; edit `ops/homebrew/cli-proxy-api.rb` only to change the
+  template itself, and never hand-edit `Formula/cli-proxy-api.rb` in the tap. The
   formula's `version` is the version in the asset filenames, which for an
-  upstream-aligned release equals the tag minus `v`; the tag's `-upstream`
-  suffix appears only in the download URL.
+  upstream-aligned release equals the full tag minus `v`, including the
+  `-upstream` suffix. The download URL uses the full tag.
 - [Maintenance guide](docs/maintenance.md) is the workflow entrypoint.
   Detailed intake and installation procedures live under `ops/`.
 - Project skills live in `.agents/skills/`; use `cliproxyapi-fork-maintenance` for intake.
@@ -77,10 +83,17 @@ policy below carries the matching exception.
 ### Branch governance
 
 - `main` is protected. Direct pushes are rejected; open a PR from a `codex/*`
-  branch, let the `build` check pass, then merge with a rebase or squash so the
-  linear-history rule holds. Approval is not required, so a solo maintainer is
-  never blocked. Force pushes and branch deletion are disabled, including for
-  admins, and unresolved review threads block the merge.
+  branch and let the `build` check pass. Ordinary changes may merge by rebase or
+  squash when permitted by branch protection. Approval is not required. Force
+  pushes and branch deletion are disabled, including for admins, and unresolved
+  review threads block the merge.
+- Integrate upstream replays with a protected PR merge commit. Its first parent
+  is the recorded prior `main`; its second parent is the reviewed integration
+  branch, whose merge commit has that `main` and the replay candidate as its
+  parents. Verify the resulting tree and upstream and fork commit ancestry.
+  If remote protection forbids merge commits, stop until the necessary rule
+  change is explicitly authorized and verified. Keep all other protections;
+  do not bypass them or substitute a squash or rebase merge.
 - `codex/codex-tool-search-shim` is a locked read-only archive branch that is
   never merged into `main` and must not be built on. The tool-search work it
   explored shipped through the responses-tools pipeline instead, so the branch
