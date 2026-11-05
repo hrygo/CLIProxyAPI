@@ -59,9 +59,11 @@ that a complete upstream release tree has been replayed. Follow the current
 ### v8.0.51 — replay candidate, not accepted, 2026-11-05
 
 The candidate replays fork changes on upstream release v8.0.51
-(`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`). Its Go 1.26.10 intake gate
-fails on `TestReplayAuditPartialUsageTailsRetainLaterFields`: a terminal response
-can precede later Gemini usage fields. All other intake-gate stages pass. The
+(`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`). The maintainer chose prompt
+completion even when Gemini sends usage or continuation signatures later; those
+late fields can be lost. The Go 1.26.10 intake gate therefore fails retained
+full-suite and race-stage assertions for those fields and for errors arriving
+after completion. The other gate stages pass. The
 [replay spike](reviews/v8.0.51-replay-spike.md) records the reproduced tradeoff,
 local Home WebSocket evidence, and remaining validation limits. This candidate
 does not advance the accepted comparison baseline.
