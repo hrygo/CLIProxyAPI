@@ -2,23 +2,67 @@ name: pr-test-build
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
+concurrency:
+  group: pr-test-build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep PR checks on the same toolchain that release builds use. Formatting
+  # output can differ between Go releases and must not depend on go.mod's
+  # minimum version alone.
+  GO_VERSION: '1.26.10'
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Bound a hung step so it cannot consume runner minutes indefinitely.
+    timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version-file: go.mod
+          go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Refresh models catalog
-        run: bash .github/scripts/refresh-model-catalogs.sh
+      - name: Check maintenance tooling
+        run: python3 ops/tests/test_maintenance.py
+      - name: Check performance accounting
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/tool-loading-pycache
+        run: |
+          python3 -m unittest discover -s ops/tool-loading/tests -p test_report.py
+          python3 -m unittest discover -s ops/tool-loading/tests -p test_usage.py
+      # Upstream refreshes this catalog from the network in its PR CI. We
+      # validate the tracked copy offline instead, so the gate stays hermetic
+      # and never mutates the checkout.
+      - name: Validate Codex model catalog
+        run: go run ./cmd/validate_codex_models --file internal/registry/models/codex_client_models.json
+      - name: Check formatting
+        run: |
+          set -euo pipefail
+          # Use the formatter shipped with the active toolchain and check only
+          # tracked sources, matching ops/upstream-intake/verify-absorb.sh. A
+          # separately installed gofmt on PATH may be a different Go release
+          # and disagree with what CI will reject.
+          gofmt_bin="$(go env GOROOT)/bin/gofmt"
+          unformatted="$(git ls-files -z '*.go' | xargs -0 "$gofmt_bin" -l)"
+          if [ -n "$unformatted" ]; then
+            echo "These files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./... -count=1
       - name: Build
         run: |
           go build -o test-output ./cmd/server

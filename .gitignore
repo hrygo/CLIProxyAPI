@@ -31,6 +31,10 @@ auths/*
 # Documentation
 docs/*
 !docs/management-api-v8.md
+!/docs/maintenance.md
+!/docs/releases/
+!/docs/responses-tools.md
+!/docs/responses-tools_CN.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
@@ -48,6 +52,10 @@ AGENTS.override.md
 .agents
 .pi
 .agents/*
+!/.agents/
+!/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/cliproxyapi-fork-maintenance/
 .opencode/*
 .idea/*
 .beads/*
