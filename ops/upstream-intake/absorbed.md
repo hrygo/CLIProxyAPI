@@ -69,7 +69,8 @@ completion are handled without waiting for further network data. After the
 governance and release-tooling replay, the complete Go 1.26.10 intake gate
 passed: maintenance tooling, formatting, `go vet`, responses-tools invariants,
 the full test suite, all seven race-sensitive packages and the server build
-(`gate-reconciled-rerun-20261105-223020.log`). An earlier gate failed on an
+(`gate-reconciled-rerun-20261105-223020.log`; confirmed on the reconciled tree at
+`5949b687`, `gate-final-C-5949b687.log`). An earlier gate failed on an
 intermittent Claude credential race also present in upstream v8.0.51; the
 candidate restores the original fork's synchronization fix and its race
 regressions. The [replay spike](reviews/v8.0.51-replay-spike.md) records the
