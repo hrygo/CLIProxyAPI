@@ -848,9 +848,18 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk, 1)
+	stopDeliverySupport := supportGeminiResponsesDelivery(ctx, responseFormat)
 	go func() {
-		defer close(out)
-		defer reporter.EnsurePublished(ctx)
+		var streamUsage helps.StreamUsageBuffer
+		streamUsage.SetRequestPayload(body)
+		var terminalDelivered bool
+		if responseFormat == sdktranslator.FormatOpenAIResponse {
+			defer finishGeminiResponsesStream(ctx, out, reporter, &streamUsage, &terminalDelivered, stopDeliverySupport)
+		} else {
+			defer close(out)
+			defer reporter.EnsurePublished(ctx)
+			defer streamUsage.Publish(ctx, reporter)
+		}
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("vertex executor: close response body error: %v", errClose)
@@ -859,16 +868,13 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
-		var streamUsage helps.StreamUsageBuffer
-		streamUsage.SetRequestPayload(body)
-		defer streamUsage.Publish(ctx, reporter)
 		var streamErr error
 		defer func() {
 			_ = helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out)
 		}()
-		var terminalDelivered bool
 		var sawFinishReason bool
 		var param any
+		var responsesDetector geminiResponsesStreamClassifier
 		helps.InitializeApplyPatchStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), body, &param)
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -892,25 +898,44 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 				return
 			}
 			lines := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), body, bytes.Clone(line), &param, claudeInputTokens)
-			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
+			events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, lines, &responsesDetector, param, reporter, &streamUsage, out)
+			if !ok {
+				return
+			}
 			helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 				return statusErr{code: http.StatusBadGateway, msg: msg}
 			})
+			var responsesTerminal string
 			for i := range lines {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
-					if helps.IsGeminiTerminalStreamChunk(lines[i]) {
+					if responseFormat != sdktranslator.FormatOpenAIResponse && helps.IsGeminiTerminalStreamChunk(lines[i]) {
 						terminalDelivered = true
+					}
+					if responseFormat == sdktranslator.FormatOpenAIResponse {
+						responsesTerminal = events[i]
+						if responsesTerminal != "" {
+							terminalDelivered = true
+						}
 					}
 				case <-ctx.Done():
 					return
 				}
+				if responsesTerminal != "" {
+					break
+				}
+			}
+			if geminiResponsesTerminalFailed(responsesTerminal) && !geminiPatchStreamError(param) {
+				return
 			}
 			if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 				return
 			}
+			if responsesTerminal != "" {
+				return
+			}
 		}
-		if helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+		if endGeminiToolStream(ctx, responseFormat, &responsesDetector, param, reporter, &streamUsage, out, &terminalDelivered) {
 			return
 		}
 		if helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out) {
@@ -921,7 +946,13 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 				return
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			if !deferGeminiDeliveryCancellation(ctx, responseFormat, errScan) {
+				if responseFormat == sdktranslator.FormatOpenAIResponse {
+					streamUsage.PublishFailure(ctx, reporter, errScan)
+				} else {
+					reporter.PublishFailure(ctx, errScan)
+				}
+			}
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
@@ -944,16 +975,32 @@ func (e *GeminiVertexExecutor) executeStreamWithServiceAccount(ctx context.Conte
 			return
 		}
 		lines := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), body, []byte("[DONE]"), &param, claudeInputTokens)
-		helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
+		events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, lines, &responsesDetector, param, reporter, &streamUsage, out)
+		if !ok {
+			return
+		}
 		helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 			return statusErr{code: http.StatusBadGateway, msg: msg}
 		})
+		var responsesTerminal string
 		for i := range lines {
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
+				if responseFormat == sdktranslator.FormatOpenAIResponse {
+					responsesTerminal = events[i]
+					if responsesTerminal != "" {
+						terminalDelivered = true
+					}
+				}
 			case <-ctx.Done():
 				return
 			}
+			if responsesTerminal != "" {
+				break
+			}
+		}
+		if geminiResponsesTerminalFailed(responsesTerminal) && !geminiPatchStreamError(param) {
+			return
 		}
 		if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 			return
@@ -1071,9 +1118,18 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 	}
 
 	out := make(chan cliproxyexecutor.StreamChunk, 1)
+	stopDeliverySupport := supportGeminiResponsesDelivery(ctx, responseFormat)
 	go func() {
-		defer close(out)
-		defer reporter.EnsurePublished(ctx)
+		var streamUsage helps.StreamUsageBuffer
+		streamUsage.SetRequestPayload(body)
+		var terminalDelivered bool
+		if responseFormat == sdktranslator.FormatOpenAIResponse {
+			defer finishGeminiResponsesStream(ctx, out, reporter, &streamUsage, &terminalDelivered, stopDeliverySupport)
+		} else {
+			defer close(out)
+			defer reporter.EnsurePublished(ctx)
+			defer streamUsage.Publish(ctx, reporter)
+		}
 		defer func() {
 			if errClose := httpResp.Body.Close(); errClose != nil {
 				log.Errorf("vertex executor: close response body error: %v", errClose)
@@ -1082,16 +1138,13 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 		scanner := bufio.NewScanner(httpResp.Body)
 		scanner.Buffer(nil, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
-		var streamUsage helps.StreamUsageBuffer
-		streamUsage.SetRequestPayload(body)
-		defer streamUsage.Publish(ctx, reporter)
 		var streamErr error
 		defer func() {
 			_ = helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out)
 		}()
-		var terminalDelivered bool
 		var sawFinishReason bool
 		var param any
+		var responsesDetector geminiResponsesStreamClassifier
 		helps.InitializeApplyPatchStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), body, &param)
 		for scanner.Scan() {
 			line := scanner.Bytes()
@@ -1115,25 +1168,44 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 				return
 			}
 			lines := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), body, bytes.Clone(line), &param, claudeInputTokens)
-			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
+			events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, lines, &responsesDetector, param, reporter, &streamUsage, out)
+			if !ok {
+				return
+			}
 			helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 				return statusErr{code: http.StatusBadGateway, msg: msg}
 			})
+			var responsesTerminal string
 			for i := range lines {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
-					if helps.IsGeminiTerminalStreamChunk(lines[i]) {
+					if responseFormat != sdktranslator.FormatOpenAIResponse && helps.IsGeminiTerminalStreamChunk(lines[i]) {
 						terminalDelivered = true
+					}
+					if responseFormat == sdktranslator.FormatOpenAIResponse {
+						responsesTerminal = events[i]
+						if responsesTerminal != "" {
+							terminalDelivered = true
+						}
 					}
 				case <-ctx.Done():
 					return
 				}
+				if responsesTerminal != "" {
+					break
+				}
+			}
+			if geminiResponsesTerminalFailed(responsesTerminal) && !geminiPatchStreamError(param) {
+				return
 			}
 			if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 				return
 			}
+			if responsesTerminal != "" {
+				return
+			}
 		}
-		if helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+		if endGeminiToolStream(ctx, responseFormat, &responsesDetector, param, reporter, &streamUsage, out, &terminalDelivered) {
 			return
 		}
 		if helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out) {
@@ -1144,7 +1216,13 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 				return
 			}
 			helps.RecordAPIResponseError(ctx, e.cfg, errScan)
-			reporter.PublishFailure(ctx, errScan)
+			if !deferGeminiDeliveryCancellation(ctx, responseFormat, errScan) {
+				if responseFormat == sdktranslator.FormatOpenAIResponse {
+					streamUsage.PublishFailure(ctx, reporter, errScan)
+				} else {
+					reporter.PublishFailure(ctx, errScan)
+				}
+			}
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Err: errScan}:
 			case <-ctx.Done():
@@ -1167,16 +1245,32 @@ func (e *GeminiVertexExecutor) executeStreamWithAPIKey(ctx context.Context, auth
 			return
 		}
 		lines := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), body, []byte("[DONE]"), &param, claudeInputTokens)
-		helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
+		events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, lines, &responsesDetector, param, reporter, &streamUsage, out)
+		if !ok {
+			return
+		}
 		helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 			return statusErr{code: http.StatusBadGateway, msg: msg}
 		})
+		var responsesTerminal string
 		for i := range lines {
 			select {
 			case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
+				if responseFormat == sdktranslator.FormatOpenAIResponse {
+					responsesTerminal = events[i]
+					if responsesTerminal != "" {
+						terminalDelivered = true
+					}
+				}
 			case <-ctx.Done():
 				return
 			}
+			if responsesTerminal != "" {
+				break
+			}
+		}
+		if geminiResponsesTerminalFailed(responsesTerminal) && !geminiPatchStreamError(param) {
+			return
 		}
 		if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 			return

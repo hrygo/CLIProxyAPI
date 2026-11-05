@@ -220,19 +220,35 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		streamUsage.SetRequestPayload(requestPayload)
 		var streamErr error
 		var pendingJSON []byte
+		var pendingSSE bool
 		var replayCommitted bool
+		var responsesSucceeded bool
 		var terminalDelivered bool
 		var param any
+		var responsesDetector geminiResponsesStreamClassifier
 		commitReplay := func() {
 			if !replayCommitted && replayAccumulator != nil && replayAccumulator.terminal && helps.ApplyPatchTranslationError(param) == nil {
 				replayAccumulator.Commit(ctx)
 				replayCommitted = true
 			}
 		}
+		failIncompleteFrame := func() {
+			streamErr = statusErr{code: http.StatusBadGateway, msg: "incomplete upstream JSON frame"}
+			stopDeliverySupport()
+			helps.RecordAPIResponseError(ctx, e.cfg, streamErr)
+			select {
+			case out <- cliproxyexecutor.StreamChunk{Err: streamErr}:
+			case <-ctx.Done():
+			}
+		}
 		defer func() {
 			defer stopDeliverySupport()
-			if helps.ApplyPatchTranslationError(param) != nil {
-				streamErr = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+			if helps.ApplyPatchTranslationError(param) != nil && streamErr == nil {
+				if geminiPatchStreamError(param) {
+					streamErr = statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}
+				} else {
+					streamErr = statusErr{code: http.StatusBadGateway, msg: "translated response failed"}
+				}
 				stopDeliverySupport()
 			}
 			// Replay is settled before forwarding completion; accounting still waits
@@ -244,13 +260,14 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			if streamErr == nil {
 				streamErr = ctx.Err()
 			}
-			if deliveryErr, tracked := usage.WaitStreamDelivery(ctx); tracked {
+			deliveryErr, tracked := usage.WaitStreamDelivery(ctx)
+			if tracked {
 				if streamErr == nil || errors.Is(streamErr, context.Canceled) {
 					streamErr = deliveryErr
 				}
 			}
 			if streamErr != nil {
-				if terminalDelivered && errors.Is(streamErr, context.Canceled) {
+				if terminalDelivered && !tracked && errors.Is(streamErr, context.Canceled) && (responseFormat != sdktranslator.FormatOpenAIResponse || responsesSucceeded) {
 					streamUsage.Publish(ctx, reporter)
 					reporter.EnsurePublished(ctx)
 					return
@@ -268,22 +285,27 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 		for scanner.Scan() {
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
-			if replayAccumulator != nil {
-				replayAccumulator.ObserveSSELine(line)
+			if responseFormat == sdktranslator.FormatOpenAIResponse {
+				trimmed := bytes.TrimSpace(line)
+				if bytes.HasPrefix(trimmed, []byte("data:")) && bytes.Equal(bytes.TrimSpace(trimmed[len("data:"):]), []byte("[DONE]")) {
+					break
+				}
 			}
-
 			// Capture accounting before the client-facing filter renames usage.
 			streamUsage.ObserveAntigravityStream(line)
 
-			// Filter usage metadata for all models
-			// Only retain usage statistics in the terminal chunk
-			line = helps.FilterSSEUsageMetadata(line)
-
 			payload := helps.JSONPayload(line)
+			reassembled := false
 			if len(pendingJSON) > 0 {
+				if pendingSSE && len(line) == 0 {
+					failIncompleteFrame()
+					return
+				}
 				trimmedLine := bytes.TrimSpace(line)
 				if bytes.HasPrefix(trimmedLine, []byte("data:")) {
 					trimmedLine = bytes.TrimSpace(trimmedLine[len("data:"):])
+				} else if pendingSSE {
+					continue
 				}
 				if len(trimmedLine) > 0 {
 					pendingJSON = append(pendingJSON, '\n')
@@ -294,8 +316,11 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				}
 				payload = pendingJSON
 				pendingJSON = nil
+				pendingSSE = false
+				reassembled = true
 			} else if payload != nil && !gjson.ValidBytes(payload) {
 				pendingJSON = append([]byte(nil), payload...)
+				pendingSSE = bytes.HasPrefix(bytes.TrimSpace(line), []byte("data:"))
 				continue
 			}
 			if payload == nil {
@@ -315,11 +340,32 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 				}
 				return
 			}
+			if replayAccumulator != nil {
+				replayAccumulator.observeResponsePayload(payload)
+			}
+			if reassembled {
+				// A valid reassembled object can carry usage across SSE data lines.
+				streamUsage.ObserveAntigravityStream(payload)
+				line = append([]byte("data: "), bytes.ReplaceAll(payload, []byte("\n"), nil)...)
+			}
+			// Only retain usage statistics in the terminal chunk.
+			payload = helps.JSONPayload(helps.FilterSSEUsageMetadata(line))
+			if payload == nil {
+				continue
+			}
 			reporter.ObserveResponseModel(payload)
 
 			payload = e.resolveWebSearchGroundingURLs(ctx, auth, from, originalPayload, translated, payload)
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, bytes.Clone(payload), &param, claudeInputTokens)
-			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
+			// Replay follows the complete upstream response and validated tool input,
+			// independently of plugin rewrites or downstream cancellation.
+			if responseFormat == sdktranslator.FormatOpenAIResponse {
+				commitReplay()
+			}
+			events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, chunks, &responsesDetector, param, reporter, &streamUsage, out)
+			if !ok {
+				return
+			}
 			var isTerminalChunk bool
 			if finishReason := gjson.GetBytes(payload, "candidates.0.finishReason"); finishReason.Exists() && strings.TrimSpace(finishReason.String()) != "" {
 				isTerminalChunk = true
@@ -355,41 +401,48 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 					}
 				}
 			}
-			if replayAccumulator != nil && replayAccumulator.terminal && !replayCommitted && responseFormat == sdktranslator.FormatOpenAIResponse {
-				// Wait for the translated completion, not the first finishReason:
-				// split usage/signature frames may still extend the replay ledger.
-				for _, chunk := range chunks {
-					for _, line := range bytes.Split(chunk, []byte("\n")) {
-						if gjson.GetBytes(helps.JSONPayload(line), "type").String() == "response.completed" {
-							commitReplay()
-						}
-					}
-				}
-			}
+			var responsesTerminal string
 			for i := range chunks {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
+					if responseFormat == sdktranslator.FormatOpenAIResponse {
+						responsesTerminal = events[i]
+						if responsesTerminal != "" && !geminiResponsesTerminalFailed(responsesTerminal) {
+							responsesSucceeded = true
+						}
+					}
 				case <-ctx.Done():
 					return
 				}
+				if responsesTerminal != "" {
+					break
+				}
 			}
-			if isTerminalChunk {
+			if isTerminalChunk || responsesTerminal != "" {
 				terminalDelivered = true
+			}
+			if geminiResponsesTerminalFailed(responsesTerminal) && !geminiPatchStreamError(param) {
+				streamErr = statusErr{code: http.StatusBadGateway, msg: "translated response failed"}
+				return
 			}
 			if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 				return
 			}
+			if responsesTerminal != "" {
+				return
+			}
 		}
-		if helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
+		if scanner.Err() == nil && len(pendingJSON) > 0 && ctx.Err() == nil {
+			failIncompleteFrame()
+			return
+		}
+		if endGeminiToolStream(ctx, responseFormat, &responsesDetector, param, reporter, &streamUsage, out, &terminalDelivered) {
 			return
 		}
 		if errScan := scanner.Err(); errScan != nil {
 			streamErr = errScan
 			if errors.Is(errScan, context.Canceled) && ctx.Err() != nil {
 				if terminalDelivered {
-					return
-				}
-				if deliveryErr, tracked := usage.WaitStreamDelivery(ctx); tracked && deliveryErr == nil {
 					return
 				}
 			}
@@ -406,18 +459,33 @@ func (e *AntigravityExecutor) ExecuteStream(ctx context.Context, auth *cliproxya
 			// even without finishReason: real Antigravity tool-call streams
 			// end that way (see antigravityNoFinishReasonSSE).
 			tail := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, []byte("[DONE]"), &param, claudeInputTokens)
-			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
-			// Commit upstream output before EOF-generated completion reaches interceptors.
-			// Commit itself rejects partial streams without an upstream terminal.
+			// Commit rejects streams without a real upstream terminal signal.
 			commitReplay()
+			events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, tail, &responsesDetector, param, reporter, &streamUsage, out)
+			if !ok {
+				return
+			}
+			var responsesTerminal string
 			for i := range tail {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: tail[i]}:
+					if responseFormat == sdktranslator.FormatOpenAIResponse {
+						responsesTerminal = events[i]
+						if responsesTerminal != "" && !geminiResponsesTerminalFailed(responsesTerminal) {
+							responsesSucceeded = true
+						}
+					}
 				case <-ctx.Done():
 					return
 				}
+				if responsesTerminal != "" {
+					break
+				}
 			}
 			terminalDelivered = true
+			if geminiResponsesTerminalFailed(responsesTerminal) && !geminiPatchStreamError(param) {
+				streamErr = statusErr{code: http.StatusBadGateway, msg: "translated response failed"}
+			}
 		}
 	}(httpResp)
 	return &cliproxyexecutor.StreamResult{Headers: httpResp.Header.Clone(), Chunks: out}, nil

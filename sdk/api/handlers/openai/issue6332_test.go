@@ -423,8 +423,11 @@ func TestIssue6332NativeGeminiCompletedWithoutEOF(t *testing.T) {
 		}
 	}}
 	done := make(chan struct{})
+	requestCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	go func() {
-		router.ServeHTTP(writer, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.7-flash","input":"hello","stream":true}`)))
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.7-flash","input":"hello","stream":true}`)).WithContext(requestCtx)
+		router.ServeHTTP(writer, request)
 		close(done)
 	}()
 	select {
@@ -432,14 +435,12 @@ func TestIssue6332NativeGeminiCompletedWithoutEOF(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("completion not delivered")
 	}
-	// The unsupported executor must retain its EOF lifecycle, not be cancelled by completion.
+	// The server is released only during cleanup; handler completion may cancel the upstream request.
 	select {
 	case <-done:
-		t.Error("native Gemini cancelled before EOF without client cancellation")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(5 * time.Second):
+		t.Fatal("native Gemini handler did not finish after terminal delivery while upstream remained open")
 	}
-	release <- struct{}{}
-	<-done
 	select {
 	case record := <-capture.records:
 		if record.Failed || record.Detail.InputTokens != 11 || record.Detail.OutputTokens != 22 || record.Detail.TotalTokens != 33 {
