@@ -8,6 +8,7 @@ config.yaml
 
 # Generated content
 bin/*
+__pycache__/
 /logs
 conv/*
 temp/*
@@ -31,6 +32,8 @@ auths/*
 # Documentation
 docs/*
 !docs/management-api-v8.md
+# Curated release notes are a release requirement: release.yaml reads
+# docs/releases/<tag>.md from the tagged tree.
 !/docs/maintenance.md
 !/docs/releases/
 !/docs/responses-tools.md
@@ -57,6 +60,7 @@ AGENTS.override.md
 /.agents/skills/*
 !/.agents/skills/cliproxyapi-fork-maintenance/
 .opencode/*
+.omo/*
 .idea/*
 .beads/*
 .bmad/*

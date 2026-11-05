@@ -2,9 +2,10 @@
 #
 # Derive the inherited upstream baseline for a ref.
 #
-# Ancestry identifies inherited upstream history, not a reviewed tree replay.
-# Tree-based integration preserves fork history without making a later upstream
-# release an ancestor, so consult the ledger for the accepted baseline.
+# The first intake has to establish which upstream release our trunk already
+# contains. Reading tag presence is not enough: this is a fork, so upstream tags
+# reach our history through the shared ancestor set whether or not we ever
+# assessed them. Ancestry against the trunk is the evidence that matters.
 #
 # Usage: ops/upstream-intake/establish-baseline.sh [ref] [--remote]
 
@@ -94,15 +95,17 @@ if [ -z "$baseline" ]; then
   cat >&2 <<EOF
 No upstream release is an ancestor of $target_ref.
 
-Ancestry cannot identify a tree-based replay. Consult the accepted baseline
-and evidence in ops/upstream-intake/absorbed.md; do not infer a baseline from tags.
+That is expected only before the first intake. Establish the inherited baseline
+from repository history and record the evidence in ops/upstream-intake/absorbed.md
+before assessing a candidate.
 EOF
   exit 1
 fi
 
 cat <<EOF
-Newest upstream ancestor: $baseline ($baseline_sha)
+Inherited baseline: $baseline ($baseline_sha)
 
-This identifies inherited history only, not the accepted comparison baseline or
-a completed tree replay. Consult ops/upstream-intake/absorbed.md for those facts.
+This is the newest upstream release already contained in $target_ref. Record it
+in ops/upstream-intake/absorbed.md together with the evidence above, and state
+plainly that ancestry alone carries no per-commit assessment or replay evidence.
 EOF

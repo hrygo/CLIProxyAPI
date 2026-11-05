@@ -27,13 +27,29 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - name: Detect release guard changes
+        id: release_scope
+        env:
+          BASE_COMMIT: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          relevant="$(ops/upstream-intake/guard-release-tag.sh --ci-relevant "$BASE_COMMIT")"
+          case "$relevant" in true|false) ;; *) echo 'Unable to classify release changes' >&2; exit 1 ;; esac
+          printf 'relevant=%s\n' "$relevant" >> "$GITHUB_OUTPUT"
+      - name: Verify upstream API authentication
+        if: steps.release_scope.outputs.relevant == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ops/upstream-intake/guard-release-tag.sh --verify-upstream
       - name: Set up Go
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
       - name: Check maintenance tooling
-        run: python3 ops/tests/test_maintenance.py
+        run: python3 -m unittest discover -s ops/tests -p 'test_*.py'
       - name: Check performance accounting
         env:
           PYTHONPYCACHEPREFIX: ${{ runner.temp }}/tool-loading-pycache
