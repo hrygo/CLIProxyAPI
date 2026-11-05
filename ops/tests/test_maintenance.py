@@ -189,6 +189,19 @@ class ReleaseNoteTests(unittest.TestCase):
     def test_valid_aligned_release_note(self):
         self.assertEqual(release_notes.validate_note("v1.2.3", self.aligned), [])
 
+    def test_empty_alignment_values_do_not_consume_the_next_line(self):
+        for field in ("Upstream release", "Previous baseline", "Intake record", "Ported", "Skipped"):
+            for whitespace in ("", "  \t"):
+                with self.subTest(field=field, whitespace=repr(whitespace)):
+                    note = re.sub(
+                        rf"(?m)^- {re.escape(field)}:.*$",
+                        f"- {field}:{whitespace}", self.aligned,
+                    )
+                    self.assertIn(
+                        f"missing upstream alignment field: {field}",
+                        release_notes.validate_note("v1.2.3", note),
+                    )
+
     def test_valid_fork_only_release_note(self):
         note = self.aligned
         note = note.replace(
