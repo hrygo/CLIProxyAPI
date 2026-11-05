@@ -896,7 +896,7 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponses(ctx context.Context, 
 		if hasActiveUnfinishedTool {
 			return out
 		}
-		if len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 {
+		if len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 && !st.canFinalizeReasoningOnly() {
 			return out
 		}
 		st.CompletedEmitted = true
@@ -1245,8 +1245,13 @@ func ConvertOpenAIChatCompletionsResponseToOpenAIResponsesNonStream(_ context.Co
 	return resp
 }
 
+func (st *oaiToResponsesState) canFinalizeReasoningOnly() bool {
+	_, incomplete := incompleteByFinishReason(st.FinishReason)
+	return len(st.Reasonings) > 0 && (st.FinishReason == "stop" || incomplete)
+}
+
 func (st *oaiToResponsesState) canFinalizeResponse() bool {
-	if st.ToolInputError() != nil || st.FinishReason == "" || (len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0) {
+	if st.ToolInputError() != nil || st.FinishReason == "" || (len(st.MsgItemAdded) == 0 && len(st.FuncItemAdded) == 0 && !st.canFinalizeReasoningOnly()) {
 		return false
 	}
 	for idx := range st.MsgItemAdded {
