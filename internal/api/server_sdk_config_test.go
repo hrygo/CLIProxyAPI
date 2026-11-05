@@ -37,6 +37,26 @@ func TestEffectiveSDKConfigCopiesClientCodexOptimizeMultiAgentV2(t *testing.T) {
 	}
 }
 
+func TestEffectiveSDKConfigSupportsHistoricalMultiAgentFields(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  *config.Config
+	}{
+		{name: "codex", cfg: &config.Config{Codex: config.CodexConfig{OptimizeMultiAgentV2: true}}},
+		{name: "sdk", cfg: &config.Config{SDKConfig: config.SDKConfig{CodexOptimizeMultiAgentV2: true}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sdkCfg := effectiveSDKConfig(tc.cfg)
+			if sdkCfg == nil || !sdkCfg.Client.Codex.OptimizeMultiAgentV2 || !sdkCfg.CodexMultiAgentV2Enabled() {
+				t.Fatal("historical programmatic configuration lost client optimization")
+			}
+			if tc.cfg.Client.Codex.OptimizeMultiAgentV2 {
+				t.Fatal("SDK projection mutated the original canonical configuration")
+			}
+		})
+	}
+}
+
 func TestEffectiveSDKConfigCopiesCodexOrphanDelegationCompatibility(t *testing.T) {
 	cfg := &config.Config{Codex: config.CodexConfig{OrphanDelegationCompatibility: true}}
 

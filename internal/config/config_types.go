@@ -276,6 +276,10 @@ func (c ResponseCompressionConfig) EffectiveMinBytes() int {
 
 // CodexConfig configures provider-wide Codex request behavior.
 type CodexConfig struct {
+	// Deprecated: use Client.Codex.OptimizeMultiAgentV2 on Config.
+	// Retained for programmatic callers; historical YAML paths are boundary aliases.
+	OptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
+
 	// WebsocketCompression controls upstream and downstream permessage-deflate; unset means enabled.
 	WebsocketCompression *bool `yaml:"websocket-compression,omitempty" json:"websocket-compression,omitempty"`
 	// UpstreamRequestCompression enables zstd request bodies for the ChatGPT Codex backend.
