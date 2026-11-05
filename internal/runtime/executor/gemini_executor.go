@@ -405,6 +405,10 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			line := scanner.Bytes()
 			helps.AppendAPIResponseChunk(ctx, e.cfg, line)
 			reporter.ObserveResponseModel(line)
+			trimmed := bytes.TrimSpace(line)
+			if bytes.HasPrefix(trimmed, []byte("data:")) && bytes.Equal(bytes.TrimSpace(trimmed[len("data:"):]), []byte("[DONE]")) {
+				break
+			}
 			rawPayload := helps.JSONPayload(line)
 			if !sawFinishReason && geminiStreamHasFinishSignal(rawPayload) {
 				sawFinishReason = true
