@@ -616,7 +616,11 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		}
 		if !streamFailed && !streamAborted && !seenDone && errScan == nil && responseFormat == sdktranslator.FormatOpenAIResponse && ctx.Err() == nil && helps.CanFinalizeResponseStream(param) {
 			finalChunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, []byte("data: [DONE]"), &param, claudeInputTokens)
+			finalTerminal := false
 			for _, finalChunk := range finalChunks {
+				if helps.HasResponsesTerminalEvent(finalChunk) {
+					finalTerminal = true
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: finalChunk}:
 				case <-ctx.Done():
@@ -626,7 +630,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 					break
 				}
 			}
-			if len(finalChunks) > 0 && !streamAborted {
+			if finalTerminal && !streamAborted {
 				seenDone = true
 			}
 		}
