@@ -135,6 +135,9 @@ func (e *DevinExecutor) HttpRequest(ctx context.Context, auth *cliproxyauth.Auth
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
 		return nil, err
 	}
+	if err := helps.ValidateDevinOutboundToolContractRequest(ctx, httpReq); err != nil {
+		return nil, err
+	}
 	httpClient := helps.NewDevinHTTPClient(ctx, e.cfg, auth, 0)
 	return httpClient.Do(httpReq)
 }
@@ -486,6 +489,9 @@ func (e *DevinExecutor) prepareDevinHTTPRequest(ctx context.Context, auth *clipr
 	}
 
 	if err := e.PrepareRequest(httpReq, auth); err != nil {
+		return nil, "", nil, err
+	}
+	if err := helps.ValidateDevinOutboundToolContractRequest(ctx, httpReq); err != nil {
 		return nil, "", nil, err
 	}
 
