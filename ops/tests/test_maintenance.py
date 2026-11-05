@@ -189,6 +189,19 @@ class ReleaseNoteTests(unittest.TestCase):
     def test_valid_aligned_release_note(self):
         self.assertEqual(release_notes.validate_note("v1.2.3", self.aligned), [])
 
+    def test_empty_alignment_values_do_not_consume_the_next_line(self):
+        for field in ("Upstream release", "Previous baseline", "Intake record", "Ported", "Skipped"):
+            for whitespace in ("", "  \t"):
+                with self.subTest(field=field, whitespace=repr(whitespace)):
+                    note = re.sub(
+                        rf"(?m)^- {re.escape(field)}:.*$",
+                        f"- {field}:{whitespace}", self.aligned,
+                    )
+                    self.assertIn(
+                        f"missing upstream alignment field: {field}",
+                        release_notes.validate_note("v1.2.3", note),
+                    )
+
     def test_valid_fork_only_release_note(self):
         note = self.aligned
         note = note.replace(
@@ -298,7 +311,7 @@ class ReleaseNoteTests(unittest.TestCase):
         )
         self.assertNotIn("releases/generate-notes", workflow)
 
-    def test_workflow_rejects_upstream_tags(self):
+    def test_release_workflow_routes_own_tag_names_to_guard(self):
         workflow = (ROOT / ".github/workflows/release.yaml").read_text()
         self.assertIn(
             'ops/upstream-intake/guard-release-tag.sh "$RELEASE_TAG"',
@@ -306,22 +319,6 @@ class ReleaseNoteTests(unittest.TestCase):
         )
         self.assertIn("v[0-9]+.[0-9]+.[0-9]+-upstream*", workflow)
         self.assertNotIn("'v[0-9]+.[0-9]+.[0-9]+'", workflow)
-
-    def test_guard_script_accepts_the_tags_the_workflow_pushes(self):
-        # The workflow only ever pushes vX.Y.Z-upstreamA.B.C and then hands
-        # that exact string to guard-release-tag.sh. A guard that rejects the
-        # suffix fails every release at the validate job.
-        script = (ROOT / "ops/upstream-intake/guard-release-tag.sh").read_text()
-        pattern = re.search(r'\[\[ "\$tag" =~ (\^\S+) \]\]', script)
-        self.assertIsNotNone(pattern, "guard-release-tag.sh lost its tag shape check")
-        regex = re.compile(pattern.group(1))
-        for accepted in ["v1.0.0", "v1.2.3-upstream8.0.6", "v10.20.30-upstream8.0.7"]:
-            with self.subTest(tag=accepted):
-                self.assertIsNotNone(regex.fullmatch(accepted))
-        for rejected in ["v1.2.3-upstreamv8.0.6", "v1.2.3-upstream8.0",
-                         "v1.2.3-upstream8.0.6-extra", "1.2.3"]:
-            with self.subTest(tag=rejected):
-                self.assertIsNone(regex.fullmatch(rejected))
 
     def test_intake_scripts_are_executable(self):
         for name in ["guard-release-tag", "check-tag-namespace", "establish-baseline"]:
@@ -380,6 +377,105 @@ class IntakeTests(unittest.TestCase):
                          "refs/upstream/tags").splitlines()), 2,
         )
 
+    def test_assessment_describes_complete_tree_replay(self):
+        result = self.assess("v8.0.6", "v8.0.4")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Assessment only", result.stdout)
+        self.assertIn("complete release tree", result.stdout)
+        self.assertIn("grouped as review aids", result.stdout)
+        self.assertNotIn("decide what to port", result.stdout)
+
+    def replay_fixture(self, *, main_only=False, candidate_fork="fork change"):
+        self.git(self.local, "fetch", "--no-tags", "upstream", "refs/tags/v8.0.4")
+        self.git(self.local, "checkout", "-qb", "main", "FETCH_HEAD")
+        (self.local / "fork").write_text("fork change")
+        if main_only:
+            (self.local / "main-only").write_text("must not be lost")
+        self.git(self.local, "add", "-A")
+        self.git(self.local, "commit", "-qm", "fork")
+        main = self.git(self.local, "rev-parse", "HEAD").strip()
+        self.git(self.local, "fetch", "--no-tags", "upstream", "refs/tags/v8.0.6")
+        upstream = self.git(self.local, "rev-parse", "FETCH_HEAD^{commit}").strip()
+        self.git(self.local, "checkout", "-qb", "candidate", "FETCH_HEAD")
+        (self.local / "data").unlink()
+        (self.local / "fork").write_text(candidate_fork)
+        self.git(self.local, "add", "-A")
+        self.git(self.local, "commit", "-qm", "replay")
+        candidate = self.git(self.local, "rev-parse", "HEAD").strip()
+        self.git(self.local, "checkout", "-qb", "codex/integration", main)
+        return main, upstream, candidate
+
+    def replay_sop_step(self, marker, candidate):
+        readme = (ROOT / "ops/upstream-intake/README.md").read_text()
+        blocks = re.findall(r"(?ms)^[ \t]*```bash[ \t]*\n(.*?)^[ \t]*```[ \t]*$", readme)
+        matches = [block for block in blocks if marker in block]
+        self.assertEqual(len(matches), 1, f"expected one replay SOP block for {marker}")
+        return subprocess.run(
+            ["bash", "-uo", "pipefail", "-c", matches[0]],
+            cwd=self.local, env=dict(self.env, C=candidate),
+            text=True, capture_output=True,
+        )
+
+    def test_replay_sop_preserves_both_histories_and_reviewed_tree(self):
+        main, upstream, candidate = self.replay_fixture(candidate_fork="fork replayed")
+        expected_tree = self.git(self.local, "rev-parse", f"{candidate}^{{tree}}").strip()
+
+        # The fork file conflicts. Resolve it explicitly, then run the actual
+        # documented tree and pending-merge checks before creating the merge.
+        merge = self.replay_sop_step('git merge --no-ff --no-commit "$C"', candidate)
+        self.assertNotEqual(merge.returncode, 0)
+        self.assertIn("fork", self.git(self.local, "diff", "--name-only", "--diff-filter=U"))
+        (self.local / "fork").write_text("fork replayed")
+        self.git(self.local, "add", "fork")
+        checked = self.replay_sop_step("MERGE_HEAD", candidate)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(self.git(self.local, "write-tree").strip(), expected_tree)
+        self.git(self.local, "commit", "-qm", "integrate replay")
+        integration = self.git(self.local, "rev-parse", "HEAD").strip()
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^1").strip(), main)
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^2").strip(), candidate)
+        self.assertEqual(self.git(self.local, "rev-parse", "main").strip(), main)
+
+        # Emulate a protected PR merge, then verify both ancestry and final tree.
+        self.git(self.local, "checkout", "-q", "main")
+        self.git(self.local, "merge", "--no-ff", "-qm", "reviewed replay", integration)
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^1").strip(), main)
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^2").strip(), integration)
+        self.assertEqual(self.git(self.local, "rev-parse", "HEAD^{tree}").strip(), expected_tree)
+        for ancestor in (upstream, candidate):
+            self.git(self.local, "merge-base", "--is-ancestor", ancestor, "HEAD")
+
+        # An already-merged candidate has no pending merge and must not pass.
+        again = self.replay_sop_step('git merge --no-ff --no-commit "$C"', candidate)
+        self.assertEqual(again.returncode, 0, again.stderr)
+        checked = self.replay_sop_step("MERGE_HEAD", candidate)
+        self.assertNotEqual(checked.returncode, 0)
+
+    def test_replay_sop_rejects_candidate_missing_main_changes(self):
+        _, _, candidate = self.replay_fixture(main_only=True)
+        merge = self.replay_sop_step('git merge --no-ff --no-commit "$C"', candidate)
+        self.assertEqual(merge.returncode, 0, merge.stderr)
+        self.assertTrue((self.local / "main-only").exists())
+        checked = self.replay_sop_step("MERGE_HEAD", candidate)
+        self.assertNotEqual(checked.returncode, 0)
+        self.assertNotEqual(
+            self.git(self.local, "write-tree").strip(),
+            self.git(self.local, "rev-parse", f"{candidate}^{{tree}}").strip(),
+        )
+
+    def test_replay_sop_rejects_single_parent_snapshot(self):
+        main, _, candidate = self.replay_fixture()
+        patch = subprocess.check_output([
+            "git", "-C", str(self.local), "diff", "--binary", "--full-index", main, candidate,
+        ])
+        subprocess.run(["git", "apply", "--index"], cwd=self.local, input=patch, check=True)
+        self.assertEqual(
+            self.git(self.local, "write-tree").strip(),
+            self.git(self.local, "rev-parse", f"{candidate}^{{tree}}").strip(),
+        )
+        checked = self.replay_sop_step("MERGE_HEAD", candidate)
+        self.assertNotEqual(checked.returncode, 0)
+
     def test_reject_before_fetch(self):
         for args, env in [
             (["v8.0.6"], {}),
@@ -435,6 +531,9 @@ class IntakeTests(unittest.TestCase):
 
 
 class ReleaseTests(unittest.TestCase):
+    tag = "v1.2.3-upstream8.0.6"
+    release_sha = "a" * 40
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -445,7 +544,7 @@ class ReleaseTests(unittest.TestCase):
         for path in [self.dist, self.remote, self.bin]:
             path.mkdir()
         self.names = [
-            f"CLIProxyAPI_1.2.3_{target}.{extension}"
+            f"CLIProxyAPI_{self.tag[1:]}_{target}.{extension}"
             for target, extension in [
                 ("darwin_amd64", "tar.gz"), ("darwin_aarch64", "tar.gz"),
                 ("windows_amd64", "zip"), ("windows_aarch64", "zip"),
@@ -462,41 +561,149 @@ class ReleaseTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/release.yaml").read_text()
         step = workflow.split("      - name: Verify complete assets and publish release\n", 1)[1]
         self.script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        prepare = workflow.split("      - name: Create release\n", 1)[1]
+        prepare = prepare.split("\n  build-hosted:", 1)[0]
+        self.prepare_script = textwrap.dedent(prepare.split("        run: |\n", 1)[1])
+        self.build_upload_scripts = {}
+        for name in ("build-hosted", "build-linux-glibc", "build-linux-no-plugin", "build-freebsd"):
+            build = workflow.split(f"\n  {name}:\n", 1)[1]
+            build = re.split(r"\n  [a-z][a-z0-9-]*:\n", build, maxsplit=1)[0]
+            step = build.split("      - name: Upload release assets\n", 1)[1]
+            self.build_upload_scripts[name] = textwrap.dedent(step.split("        run: |\n", 1)[1])
         gh = self.bin / "gh"
         gh.write_text("""#!/bin/sh
 set -eu
 case "$1 $2" in
+  "release view")
+    printf '%s\\n' "$*" >> "$FAKE_EVENTS"
+    [ "$FAKE_EXISTING" = true ]
+    ;;
   "release download")
     while [ "$#" -gt 0 ]; do
       if [ "$1" = "--dir" ]; then shift; cp "$FAKE_REMOTE/"* "$1/"; fi
       shift
     done
     ;;
-  "release upload"|"release edit")
+  "release upload"|"release edit"|"release create")
     printf '%s\\n' "$*" >> "$FAKE_EVENTS"
     ;;
   *) exit 1 ;;
 esac
 """)
         gh.chmod(0o755)
+        git = self.bin / "git"
+        git.write_text('''#!/bin/sh
+set -eu
+[ "$1" = "ls-remote" ] || exit 2
+case "$FAKE_TAG_STATE" in
+  lightweight) printf '%s\\trefs/tags/%s\\n' "$RELEASE_SHA" "$RELEASE_TAG" ;;
+  annotated) printf '%s\\trefs/tags/%s\\n%s\\trefs/tags/%s^{}\\n' \\
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$RELEASE_TAG" "$RELEASE_SHA" "$RELEASE_TAG" ;;
+  moved) printf '%s\\trefs/tags/%s\\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$RELEASE_TAG" ;;
+  missing) exit 2 ;;
+  change_after_first|missing_after_first)
+    if [ -e "$FAKE_COUNTER" ]; then
+      [ "$FAKE_TAG_STATE" != missing_after_first ] || exit 2
+      printf '%s\\trefs/tags/%s\\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$RELEASE_TAG"
+    else
+      : > "$FAKE_COUNTER"
+      printf '%s\\trefs/tags/%s\\n' "$RELEASE_SHA" "$RELEASE_TAG"
+    fi
+    ;;
+  *) exit 2 ;;
+esac
+''')
+        git.chmod(0o755)
+        guard = self.base / "ops/upstream-intake/guard-release-tag.sh"
+        guard.parent.mkdir(parents=True)
+        guard.symlink_to(ROOT / "ops/upstream-intake/guard-release-tag.sh")
+        validator = self.base / "ops/release-notes/validate.py"
+        validator.parent.mkdir(parents=True)
+        validator.symlink_to(ROOT / "ops/release-notes/validate.py")
+        self.notes = self.base / "notes.md"
+        self.notes.write_text(ReleaseNoteTests.aligned.replace("# v1.2.3", f"# {self.tag}", 1))
         self.events = self.base / "events"
+        self.counter = self.base / "counter"
 
-    def run_finalize(self):
+    def run_script(self, script, state="lightweight", existing=False):
         return subprocess.run(
-            ["bash", "-euo", "pipefail", "-c", self.script], cwd=self.base,
+            ["bash", "-euo", "pipefail", "-c", script], cwd=self.base,
             env=dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
-                     RELEASE_TAG="v1.2.3", FAKE_REMOTE=str(self.remote),
-                     FAKE_EVENTS=str(self.events)),
+                     RELEASE_TAG=self.tag, RELEASE_SHA=self.release_sha,
+                     FAKE_TAG_STATE=state, FAKE_REMOTE=str(self.remote),
+                     FAKE_EVENTS=str(self.events), FAKE_COUNTER=str(self.counter),
+                     FAKE_EXISTING=str(existing).lower(),
+                     GH_REPO="hrygo/CLIProxyAPI", RELEASE_NOTES_FILE=str(self.notes),
+                     PREVIOUS_TAG="v1.2.2-upstream8.0.5"),
             text=True, capture_output=True,
         )
 
+    def run_finalize(self, state="lightweight"):
+        return self.run_script(self.script, state)
+
+    def test_draft_creation_and_edit_check_the_remote_tag(self):
+        for state, existing in (("lightweight", False), ("annotated", True)):
+            with self.subTest(state=state, existing=existing):
+                self.events.unlink(missing_ok=True)
+                result = self.run_script(self.prepare_script, state, existing)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = self.events.read_text().splitlines()
+                self.assertEqual(len(events), 2)
+                self.assertIn(f"release view {self.tag}", events[0])
+                self.assertIn(f"release {'edit' if existing else 'create'} {self.tag}", events[1])
+
+    def test_moved_or_missing_remote_tag_cannot_mutate_draft(self):
+        for state in ("moved", "missing"):
+            for existing in (False, True):
+                with self.subTest(state=state, existing=existing):
+                    result = self.run_script(self.prepare_script, state, existing)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertFalse(self.events.exists())
+
     def test_complete_verified_release_publishes(self):
-        result = self.run_finalize()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        events = self.events.read_text().splitlines()
-        self.assertEqual(len(events), 2)
-        self.assertIn("release upload v1.2.3 checksums.txt", events[0])
-        self.assertIn("release edit v1.2.3 --draft=false --latest", events[1])
+        for state in ("lightweight", "annotated"):
+            with self.subTest(state=state):
+                self.events.unlink(missing_ok=True)
+                result = self.run_finalize(state)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = self.events.read_text().splitlines()
+                self.assertEqual(len(events), 2)
+                self.assertIn(f"release upload {self.tag} checksums.txt", events[0])
+                self.assertIn(f"release edit {self.tag} --draft=false --latest", events[1])
+
+    def test_moved_or_missing_remote_tag_never_publishes(self):
+        for state in ("moved", "missing"):
+            with self.subTest(state=state):
+                self.events.unlink(missing_ok=True)
+                result = self.run_finalize(state)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertFalse(self.events.exists())
+
+    def test_tag_moving_or_disappearing_after_checksum_upload_prevents_publish(self):
+        for state in ("change_after_first", "missing_after_first"):
+            with self.subTest(state=state):
+                self.events.unlink(missing_ok=True)
+                self.counter.unlink(missing_ok=True)
+                result = self.run_finalize(state)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                events = self.events.read_text().splitlines()
+                self.assertEqual(len(events), 1)
+                self.assertIn(f"release upload {self.tag} checksums.txt", events[0])
+
+    def test_asset_uploads_check_remote_tag(self):
+        for name, script in self.build_upload_scripts.items():
+            for state in ("lightweight", "annotated", "moved", "missing"):
+                with self.subTest(job=name, state=state):
+                    self.events.unlink(missing_ok=True)
+                    result = self.run_script(script, state)
+                    if state in ("lightweight", "annotated"):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        events = self.events.read_text().splitlines()
+                        self.assertEqual(len(events), 1)
+                        self.assertIn(f"release upload {self.tag}", events[0])
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        self.assertFalse(self.events.exists())
 
     def test_incomplete_or_corrupt_assets_never_publish(self):
         cases = [

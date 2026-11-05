@@ -33,21 +33,47 @@ env:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.release.outputs.release_sha }}
+      short_sha: ${{ steps.release.outputs.short_sha }}
+      release_version: ${{ steps.release.outputs.release_version }}
+      build_date: ${{ steps.release.outputs.build_date }}
+      previous_tag: ${{ steps.release.outputs.previous_tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ env.RELEASE_TAG }}
           fetch-depth: 0
       - name: Validate release tag and main ancestry
+        id: release
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-upstream(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-upstream(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Invalid release tag" >&2; exit 1;
+          }
           git show-ref --verify "refs/tags/$RELEASE_TAG"
+          release_sha="$(git rev-parse --verify "refs/tags/${RELEASE_TAG}^{commit}")"
+          [[ "$release_sha" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Release tag does not resolve to a full commit SHA" >&2; exit 1;
+          }
+          [[ "$release_sha" == "$(git rev-parse --verify 'HEAD^{commit}')" ]] || {
+            echo "Checked-out commit differs from the release tag" >&2; exit 1;
+          }
           git fetch --no-tags origin main
-          git merge-base --is-ancestor "refs/tags/$RELEASE_TAG^{commit}" origin/main
+          git merge-base --is-ancestor "$release_sha" origin/main
+
+          # Freeze all release inputs once; subsequent jobs check out this SHA.
+          previous_tag="$(git describe --tags --abbrev=0 "${release_sha}^" 2>/dev/null || true)"
+          echo "release_sha=$release_sha" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$(git rev-parse --short "$release_sha")" >> "$GITHUB_OUTPUT"
+          echo "release_version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "previous_tag=$previous_tag" >> "$GITHUB_OUTPUT"
       - name: Reject tags that belong to upstream
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ops/upstream-intake/guard-release-tag.sh "$RELEASE_TAG"
       - name: Validate curated release notes
         shell: bash
@@ -64,10 +90,13 @@ jobs:
     permissions:
       contents: write
     runs-on: ubuntu-latest
+    env:
+      RELEASE_SHA: ${{ needs.validate.outputs.release_sha }}
+      PREVIOUS_TAG: ${{ needs.validate.outputs.previous_tag }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.release_sha }}
           fetch-depth: 0
           fetch-tags: true
       - name: Refuse changes to a published release
@@ -91,19 +120,14 @@ jobs:
           updated_notes_file="$(mktemp)"
           trap 'rm -f "$updated_notes_file"' EXIT
 
-          git fetch --force --tags
-          previous_tag=""
-          if previous_tag_value="$(git describe --tags --abbrev=0 "${RELEASE_TAG}^" 2>/dev/null)"; then
-            previous_tag="$previous_tag_value"
-          fi
-
           render_args=(--repository "$GH_REPO" --output "$updated_notes_file")
-          if [[ -n "$previous_tag" ]]; then
-            render_args+=(--previous-tag "$previous_tag")
+          if [[ -n "$PREVIOUS_TAG" ]]; then
+            render_args+=(--previous-tag "$PREVIOUS_TAG")
           fi
           python3 ops/release-notes/validate.py render "$RELEASE_TAG" \
             "$RELEASE_NOTES_FILE" "${render_args[@]}"
 
+          ops/upstream-intake/guard-release-tag.sh --verify-remote "$RELEASE_TAG" "$RELEASE_SHA"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "$updated_notes_file"
           else
@@ -114,8 +138,13 @@ jobs:
     permissions:
       contents: write
     name: build ${{ matrix.target }}
-    needs: prepare-release
+    needs: [validate, prepare-release]
     runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_SHA: ${{ needs.validate.outputs.release_sha }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
+      COMMIT: ${{ needs.validate.outputs.short_sha }}
+      BUILD_DATE: ${{ needs.validate.outputs.build_date }}
     strategy:
       fail-fast: false
       matrix:
@@ -147,15 +176,12 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.release_sha }}
           fetch-depth: 0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Fetch tags
-        shell: bash
-        run: git fetch --force --tags
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -165,13 +191,6 @@ jobs:
           restore-keys: |
             go-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
             go-${{ runner.os }}-${{ runner.arch }}-
-      - name: Generate Build Metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
-          echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - name: Build archive
         shell: bash
         env:
@@ -220,14 +239,20 @@ jobs:
             printf '%s\n' "${assets[@]}" >&2
             exit 1
           fi
+          ops/upstream-intake/guard-release-tag.sh --verify-remote "$RELEASE_TAG" "$RELEASE_SHA"
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
   build-linux-glibc:
     permissions:
       contents: write
     name: build linux-${{ matrix.goarch }} glibc
-    needs: prepare-release
+    needs: [validate, prepare-release]
     runs-on: ${{ matrix.runner }}
+    env:
+      RELEASE_SHA: ${{ needs.validate.outputs.release_sha }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
+      COMMIT: ${{ needs.validate.outputs.short_sha }}
+      BUILD_DATE: ${{ needs.validate.outputs.build_date }}
     strategy:
       fail-fast: false
       matrix:
@@ -245,22 +270,12 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.release_sha }}
           fetch-depth: 0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Fetch tags
-        shell: bash
-        run: git fetch --force --tags
-      - name: Generate Build Metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
-          echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - name: Build archive
         shell: bash
         env:
@@ -327,14 +342,20 @@ jobs:
             printf '%s\n' "${assets[@]}" >&2
             exit 1
           fi
+          ops/upstream-intake/guard-release-tag.sh --verify-remote "$RELEASE_TAG" "$RELEASE_SHA"
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
   build-linux-no-plugin:
     permissions:
       contents: write
     name: build linux-${{ matrix.goarch }} no-plugin
-    needs: prepare-release
+    needs: [validate, prepare-release]
     runs-on: ubuntu-latest
+    env:
+      RELEASE_SHA: ${{ needs.validate.outputs.release_sha }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
+      COMMIT: ${{ needs.validate.outputs.short_sha }}
+      BUILD_DATE: ${{ needs.validate.outputs.build_date }}
     strategy:
       fail-fast: false
       matrix:
@@ -348,15 +369,12 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.release_sha }}
           fetch-depth: 0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Fetch tags
-        shell: bash
-        run: git fetch --force --tags
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -366,13 +384,6 @@ jobs:
           restore-keys: |
             go-linux-no-plugin-${{ matrix.goarch }}-
             go-linux-no-plugin-
-      - name: Generate Build Metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-          echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
-          echo "COMMIT=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-          echo "BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
       - name: Build archive
         shell: bash
         env:
@@ -417,19 +428,24 @@ jobs:
             printf '%s\n' "${assets[@]}" >&2
             exit 1
           fi
+          ops/upstream-intake/guard-release-tag.sh --verify-remote "$RELEASE_TAG" "$RELEASE_SHA"
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
   build-freebsd:
     permissions:
       contents: write
     name: build ${{ matrix.target }}
-    needs: prepare-release
+    needs: [validate, prepare-release]
     runs-on: ubuntu-latest
     env:
       TARGET: ${{ matrix.target }}
       TARGET_GOARCH: ${{ matrix.goarch }}
       ASSET_ARCH: ${{ matrix.asset_arch }}
       ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+      RELEASE_SHA: ${{ needs.validate.outputs.release_sha }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.release_version }}
+      COMMIT: ${{ needs.validate.outputs.short_sha }}
+      BUILD_DATE: ${{ needs.validate.outputs.build_date }}
     strategy:
       fail-fast: false
       matrix:
@@ -447,14 +463,12 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ needs.validate.outputs.release_sha }}
           fetch-depth: 0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
-      - name: Fetch tags
-        run: git fetch --force --tags
       - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
@@ -464,19 +478,6 @@ jobs:
           restore-keys: |
             go-freebsd-${{ matrix.goarch }}-
             go-freebsd-
-      - name: Generate Build Metadata
-        id: metadata
-        run: |
-          set -euo pipefail
-          release_version="${RELEASE_TAG#v}"
-          commit="$(git rev-parse --short HEAD)"
-          build_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          echo "RELEASE_VERSION=$release_version" >> "$GITHUB_ENV"
-          echo "COMMIT=$commit" >> "$GITHUB_ENV"
-          echo "BUILD_DATE=$build_date" >> "$GITHUB_ENV"
-          echo "release_version=$release_version" >> "$GITHUB_OUTPUT"
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
-          echo "build_date=$build_date" >> "$GITHUB_OUTPUT"
       - name: Prepare FreeBSD output
         shell: bash
         run: |
@@ -590,18 +591,20 @@ jobs:
             printf '%s\n' "${assets[@]}" >&2
             exit 1
           fi
+          ops/upstream-intake/guard-release-tag.sh --verify-remote "$RELEASE_TAG" "$RELEASE_SHA"
           gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
 
   publish-checksums:
     permissions:
       contents: write
     runs-on: ubuntu-latest
-    needs:
-      - build-hosted
-      - build-linux-glibc
-      - build-linux-no-plugin
-      - build-freebsd
+    needs: [validate, build-hosted, build-linux-glibc, build-linux-no-plugin, build-freebsd]
+    env:
+      RELEASE_SHA: ${{ needs.validate.outputs.release_sha }}
     steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.validate.outputs.release_sha }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
@@ -635,5 +638,8 @@ jobs:
           diff <(printf '%s\n' "${expected[@]}" | sort) <(find "$verify_dir" -type f -exec basename {} \; | sort)
           cp checksums.txt "$verify_dir/"
           (cd "$verify_dir" && sha256sum --check checksums.txt)
+          (cd .. && ops/upstream-intake/guard-release-tag.sh --verify-remote "$RELEASE_TAG" "$RELEASE_SHA")
           gh release upload "$RELEASE_TAG" checksums.txt --clobber
+          cd ..
+          ops/upstream-intake/guard-release-tag.sh --verify-remote "$RELEASE_TAG" "$RELEASE_SHA"
           gh release edit "$RELEASE_TAG" --draft=false --latest

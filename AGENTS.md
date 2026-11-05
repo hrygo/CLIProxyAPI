@@ -8,8 +8,9 @@ Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with 
 
 ## Maintenance Model
 This repository is a self-maintained fork. `main` is the trunk; `codex/*` are task
-branches that must merge back into `main`. Do not treat upstream as a merge target
-and do not wait for upstream review before shipping our own work.
+branches that must merge back into `main`. Preserve `main` history when
+integrating an upstream-based tree; do not wait for upstream review before
+shipping our own work.
 
 ## Fork purpose and convergence
 This fork exists only to fix problems upstream has not solved: the
@@ -23,12 +24,12 @@ of these problems with an equivalent fix, retire our implementation in favor
 of upstream's rather than maintaining both; the fork is not kept for its own
 sake and is retired once nothing it fixes remains unfixed upstream.
 
-One divergence is knowingly permanent. Upstream closed
+The opt-in bootstrap timeout is a fork divergence. Upstream closed
 `router-for-me/CLIProxyAPI#6930` as not planned because its design policy allows
 timeouts only during credential acquisition, so the opt-in
 `requests.streaming.bootstrap-timeout` bound in
-`sdk/api/handlers/handlers_stream.go` is not waiting to be absorbed: it is kept
-deliberately and retired only if upstream's policy changes. It is not upstream's
+`sdk/api/handlers/handlers_stream.go` is retained while upstream lacks equivalent
+behavior; reevaluate equivalence at every intake. It is not upstream's
 `codex.stream-bootstrap-timeout`, which covers Codex bootstrap buffering only and
 releases buffered frames instead of abandoning the attempt; abandoning a silent
 attempt on the general SSE path is the part upstream declined. The timeout
@@ -37,8 +38,13 @@ policy below carries the matching exception.
 - **Remotes:** `origin` is our fork (`hrygo/CLIProxyAPI`), `upstream` is
   `router-for-me/CLIProxyAPI`.
 - **Upstream intake is release-only.** Track `upstream` releases, not its `dev` or
-  `main` branches. Fetch upstream tags into the local-only `refs/upstream/tags/*`
-  namespace and never push them to `origin`: `release.yaml` triggers a full
+  `main` branches. Use each accepted mature release as the complete source
+  baseline, then preserve every fork capability in atomic commits; retire a fork
+  implementation only after verifying upstream equivalence. Integrate the
+  reviewed replay with a protected PR merge commit preserving upstream and
+  existing `main` history; see the branch governance prerequisites below. Fetch
+  upstream tags into the local-only `refs/upstream/tags/*` namespace and never
+  push them to `origin`: `release.yaml` triggers a full
   multi-platform build on a `vX.Y.Z-upstream*` tag push, so pushing upstream
   tags here would publish spurious releases from our fork.
 - **Our releases carry their own `vX.Y.Z-upstreamA.B.C` tags**, where the suffix
@@ -46,11 +52,12 @@ policy below carries the matching exception.
   keeps the previous suffix; the `Ported` field records that nothing new was
   taken. The suffix separates our tags from upstream's identical-looking names
   and must agree with the note's upstream-alignment statement. Push only the
-  specific release ref, never `--tags` or `--mirror`. Release CI rejects any tag
-  that still points at an upstream commit, requires a curated
-  `docs/releases/<tag>.md`, checks the tag and main ancestry, runs the regression
-  gate, builds a draft, and publishes only after all archives and checksums are
-  verified.
+  specific release ref, never `--tags` or `--mirror`. Release CI checks tag
+  syntax and main ancestry, invokes the release guard, requires a curated
+  `docs/releases/<tag>.md`, runs the regression gate, builds a draft, and
+  publishes only after all archives and checksums are verified. Before release,
+  verify the guard and workflow satisfy the behavioral contract in the
+  [maintenance guide](docs/maintenance.md); stop if the contract is not proven.
 - **Module path stays upstream.** `go.mod` keeps
   `module github.com/router-for-me/CLIProxyAPI/v8` so upstream releases can be ported
   without rewriting imports across the tree. Do not rename it.
@@ -61,12 +68,13 @@ policy below carries the matching exception.
   over a Homebrew-managed path; that leaves a stale regular file outside Cellar
   management. Homebrew has no `brew rollback` command; prepare a versioned
   formula before upgrading if rollback is required.
-- **The tap formula is generated, not hand-maintained.** Edit
-  `ops/homebrew/cli-proxy-api.rb` and run `ops/homebrew/render-formula.py <tag>
-  <checksums.txt>`; never edit `Formula/cli-proxy-api.rb` in the tap repo. The
+- **The tap formula is generated, not hand-maintained.** Run
+  `ops/homebrew/render-formula.py <tag> <checksums.txt>` and apply the generated
+  formula to the tap; edit `ops/homebrew/cli-proxy-api.rb` only to change the
+  template itself, and never hand-edit `Formula/cli-proxy-api.rb` in the tap. The
   formula's `version` is the version in the asset filenames, which for an
-  upstream-aligned release equals the tag minus `v`; the tag's `-upstream`
-  suffix appears only in the download URL.
+  upstream-aligned release equals the full tag minus `v`, including the
+  `-upstream` suffix. The download URL uses the full tag.
 - [Maintenance guide](docs/maintenance.md) is the workflow entrypoint.
   Detailed intake and installation procedures live under `ops/`.
 - Project skills live in `.agents/skills/`; use `cliproxyapi-fork-maintenance` for intake.
@@ -76,10 +84,17 @@ policy below carries the matching exception.
 ### Branch governance
 
 - `main` is protected. Direct pushes are rejected; open a PR from a `codex/*`
-  branch, let the `build` check pass, then merge with a rebase or squash so the
-  linear-history rule holds. Approval is not required, so a solo maintainer is
-  never blocked. Force pushes and branch deletion are disabled, including for
-  admins, and unresolved review threads block the merge.
+  branch and let the `build` check pass. Ordinary changes may merge by rebase or
+  squash when permitted by branch protection. Approval is not required. Force
+  pushes and branch deletion are disabled, including for admins, and unresolved
+  review threads block the merge.
+- Integrate upstream replays with a protected PR merge commit. Its first parent
+  is the recorded prior `main`; its second parent is the reviewed integration
+  branch, whose merge commit has that `main` and the replay candidate as its
+  parents. Verify the resulting tree and upstream and fork commit ancestry.
+  If remote protection forbids merge commits, stop until the necessary rule
+  change is explicitly authorized and verified. Keep all other protections;
+  do not bypass them or substitute a squash or rebase merge.
 - `codex/codex-tool-search-shim` is a locked read-only archive branch that is
   never merged into `main` and must not be built on. The tool-search work it
   explored shipped through the responses-tools pipeline instead, so the branch

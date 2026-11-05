@@ -114,7 +114,7 @@ def validate_note(tag: str, text: str) -> list[str]:
     values = {}
     for field in ALIGNMENT_FIELDS:
         matches = re.findall(
-            rf"^- {re.escape(field)}:\s*(\S.*)$",
+            rf"^- {re.escape(field)}:[ \t]*(\S.*)$",
             alignment,
             re.MULTILINE,
         )

@@ -37,17 +37,19 @@ running service and representative client behavior separately.
 
    ```bash
    release_dir="$(mktemp -d)"
-   gh release download v1.2.3 --repo hrygo/CLIProxyAPI \
+   gh release download v1.2.3-upstream8.0.6 --repo hrygo/CLIProxyAPI \
      --pattern checksums.txt --dir "$release_dir"
-   python3 ops/homebrew/render-formula.py v1.2.3 "$release_dir/checksums.txt" \
+   python3 ops/homebrew/render-formula.py v1.2.3-upstream8.0.6 "$release_dir/checksums.txt" \
      > "$release_dir/cli-proxy-api.rb"
    diff -u ops/homebrew/cli-proxy-api.rb "$release_dir/cli-proxy-api.rb"
    ```
 
    Replace the tag with the reviewed version. `diff` exits 1 for expected changes.
    The renderer rejects malformed versions, duplicate/invalid hashes and missing
-   platform entries, and does not overwrite the source or tap. Review the diff,
-   then apply it to this source and the tap checkout under the task's authorization.
+   platform entries, and does not overwrite the source or tap. Review the generated
+   formula and, when authorized, apply that generated result to the tap checkout.
+   Keep `ops/homebrew/cli-proxy-api.rb` as a placeholder template; edit it only
+   for changes to the template itself, never to insert a specific release.
 3. In the tap checkout, validate the candidate formula before publishing:
 
    ```bash
@@ -72,10 +74,13 @@ uploaded assets before publication.
 
 ## Prepare rollback before upgrading
 
-Homebrew has no `brew rollback` command. Maintain a tested versioned formula
-(e.g. `hrygo/cliproxyapi/cli-proxy-api@1.0.0`) with the old release URLs/checksums.
-`brew extract --version=1.0.0 hrygo/cliproxyapi/cli-proxy-api hrygo/cliproxyapi`
-can prepare one from available tap history; review and test it before relying on it.
+Homebrew has no `brew rollback` command. Prepare a tested versioned formula
+using the previously installed fork release and its verified checksums. Generate
+the old release values from the template, then adapt the versioned formula's
+filename and Ruby class to Homebrew's naming rules in the authorized tap
+checkout. [`brew extract`](https://docs.brew.sh/rubydoc/Homebrew/DevCmd/Extract.html)
+cannot extract a formula into its own source tap.
+Review and test the rollback formula before relying on it.
 Retain the matching configuration and any migration notes. On authorized rollback,
 unlink the current formula, install/link the prepared versioned formula, and
 restart via the existing manager. Verify disk version and running behavior.
