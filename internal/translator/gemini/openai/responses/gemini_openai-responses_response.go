@@ -429,7 +429,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		return [][]byte{}
 	}
 	root = unwrapGeminiResponseRoot(root)
-	hasUsage := st.Usage.Merge(root)
+	st.Usage.Merge(root)
 	messageStatus := "completed"
 
 	var out [][]byte
@@ -1572,7 +1572,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 		return out
 	}
 
-	// Preserve the first source finish, including across a usage-only tail or [DONE].
+	// Preserve the first source finish across subsequent frames or [DONE].
 	if fr := root.Get("candidates.0.finishReason").String(); fr != "" && st.FinishReason == "" {
 		st.FinishReason = fr
 	}
@@ -1581,9 +1581,6 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			st.SetToolInputError(errIdentity)
 			st.Completed = true
 			return append(out, emitEvent("response.failed", translatorcommon.ApplyPatchFailure(st.ResponseID, nextSeq())))
-		}
-		if !done && !hasUsage {
-			return out
 		}
 		eventType, status, incompleteDetails := geminiResponsesTerminalState(st.FinishReason)
 		messageStatus = status
