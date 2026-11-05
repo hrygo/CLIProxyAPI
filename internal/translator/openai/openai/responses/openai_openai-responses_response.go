@@ -1263,6 +1263,10 @@ func (st *oaiToResponsesState) canFinalizeResponse() bool {
 		if !st.FuncItemDone[key] {
 			return false
 		}
+		_, incomplete := incompleteByFinishReason(st.FinishReason)
+		if args := st.FuncArgsBuf[key]; !incomplete && !st.FuncItemCustom[key] && args != nil && args.Len() > 0 && !gjson.Valid(args.String()) {
+			return false
+		}
 	}
 	return st.ReasoningID == ""
 }

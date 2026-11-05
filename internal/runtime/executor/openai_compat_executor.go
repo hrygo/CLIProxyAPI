@@ -481,6 +481,7 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 		helps.InitializeApplyPatchStream(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, &param)
 		var streamUsage helps.StreamUsageBuffer
 		var seenDone bool
+		var seenResponsesTerminal bool
 		var sawFinishReason bool
 		var streamFailed bool
 		var streamAborted bool
@@ -554,6 +555,9 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 			chunks := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translated, streamLine, &param, claudeInputTokens)
 			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 			for i := range chunks {
+				if responseFormat == sdktranslator.FormatOpenAIResponse && helps.HasResponsesTerminalEvent(chunks[i]) {
+					seenResponsesTerminal = true
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: chunks[i]}:
 				case <-ctx.Done():
@@ -567,6 +571,9 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 			}
 			if isDone {
 				seenDone = true
+				if responseFormat == sdktranslator.FormatOpenAIResponse && !seenResponsesTerminal {
+					publishStreamError(statusErr{code: http.StatusBadGateway, msg: "upstream [DONE] arrived without a complete Responses terminal event"}, false)
+				}
 				return true
 			}
 			return false
