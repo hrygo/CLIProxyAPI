@@ -53,6 +53,7 @@ type geminiResponsesUsage struct {
 	Known      uint8
 	Invalid    uint8
 	Prompt     int64
+	ToolPrompt int64
 	Candidates int64
 	Thoughts   int64
 	Total      int64
@@ -85,6 +86,7 @@ func (usage *geminiResponsesUsage) Merge(root gjson.Result) bool {
 		{"thoughtsTokenCount", "thoughts_token_count", &usage.Thoughts},
 		{"totalTokenCount", "total_token_count", &usage.Total},
 		{"cachedContentTokenCount", "cached_content_token_count", &usage.Cached},
+		{"toolUsePromptTokenCount", "tool_use_prompt_token_count", &usage.ToolPrompt},
 	} {
 		value := metadata.Get(field.camel)
 		if !value.Exists() {
@@ -105,12 +107,14 @@ func (usage *geminiResponsesUsage) Merge(root gjson.Result) bool {
 }
 
 func (usage geminiResponsesUsage) CanEmit() bool {
-	return usage.Present && usage.Invalid == 0 && usage.Candidates <= math.MaxInt64-usage.Thoughts
+	return usage.Present && usage.Invalid == 0 &&
+		usage.Prompt <= math.MaxInt64-usage.ToolPrompt &&
+		usage.Candidates <= math.MaxInt64-usage.Thoughts
 }
 
 func (usage geminiResponsesUsage) JSON() []byte {
 	out := []byte(`{"input_tokens":0,"input_tokens_details":{"cached_tokens":0},"output_tokens":0,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":0}`)
-	out, _ = sjson.SetBytes(out, "input_tokens", usage.Prompt)
+	out, _ = sjson.SetBytes(out, "input_tokens", usage.Prompt+usage.ToolPrompt)
 	out, _ = sjson.SetBytes(out, "input_tokens_details.cached_tokens", usage.Cached)
 	out, _ = sjson.SetBytes(out, "output_tokens", usage.Candidates+usage.Thoughts)
 	out, _ = sjson.SetBytes(out, "output_tokens_details.reasoning_tokens", usage.Thoughts)
@@ -2327,7 +2331,7 @@ func ConvertGeminiResponseToOpenAIResponsesNonStream(_ context.Context, _ string
 	}
 
 	var usage geminiResponsesUsage
-	if usage.Merge(root) {
+	if usage.Merge(root) && usage.CanEmit() {
 		resp, _ = sjson.SetRawBytes(resp, "usage", usage.JSON())
 	}
 
