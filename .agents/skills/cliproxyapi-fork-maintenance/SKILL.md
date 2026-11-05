@@ -35,9 +35,15 @@ to apply; do not ask again for routine steps it covers.
   fixes surface upstream before we adopt a release. Upstream publishes
   frequently, so a fixed wait costs little; do not shorten it, tier it by
   commit prefix, or lower it through an environment override.
-- Use the explicitly accepted comparison baseline in the ledger; a fetched tag
-  or an assessment does not establish a completed replay. Ancestry can identify
-  inherited history, but cannot establish the contents of a later replayed tree.
+- Use the explicitly accepted comparison baseline in the human ledger and
+  [accepted baseline registry](../../../ops/upstream-intake/accepted-baselines.json);
+  they must agree. Record historical selective baselines as selective. After a
+  verified replay, commit the ledger as L, then update the registry in R to
+  reference L; integrate both in a protected follow-up PR with a merge commit
+  that preserves L's SHA. A registry check cannot establish that human review or
+  behavioral tests occurred. A fetched tag or assessment does not establish a
+  completed replay. Ancestry can identify inherited history, but cannot establish
+  the contents of a later replayed tree.
 - Fetch only into `refs/upstream/tags/*` with `--no-tags`. Never push those refs.
 - Use `check-tag-namespace.sh` as a diagnostic when upstream tags may have leaked
   into `refs/tags/*`. It can suppress failed remote lookups, so independently
@@ -64,6 +70,9 @@ to apply; do not ask again for routine steps it covers.
   remote rule change is explicitly authorized and applied; do not bypass it.
 - Verify the current baseline and the replay candidate. A baseline failure blocks
   intake; diagnose it without silently expanding scope or granting a waiver.
+- Ancestry and tree checks verify commit relationships and that the integrated
+  tree matches the candidate; they do not prove candidate completeness or rule
+  out regressions in later commits. Review and test each capability and change.
 - Record release and trunk SHAs, fork delta and equivalence decisions,
   baseline/candidate gate results and client replay coverage. An assessment or
   fetched tag is not a completed replay or a new baseline.
@@ -80,6 +89,9 @@ and publish after final checksum validation. Do not move published tags or
 overwrite published assets; fix forward with a new version. Every release
 requires a curated `docs/releases/<tag>.md` that explains
 user-visible changes, validation limits and the exact aligned upstream release.
+Before creating or pushing a release tag, verify that the release guard and CI
+satisfy the [release-guard contract](../../../ops/upstream-intake/README.md#procedure)
+with isolated behavioral tests; failures or missing evidence block release.
 Update the separate tap only after the public release is complete.
 
 Upgrade through Homebrew. Before an upgrade, prepare a versioned rollback formula

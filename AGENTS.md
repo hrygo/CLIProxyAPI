@@ -8,8 +8,9 @@ Go 1.26+ proxy server providing OpenAI/Gemini/Claude/Codex compatible APIs with 
 
 ## Maintenance Model
 This repository is a self-maintained fork. `main` is the trunk; `codex/*` are task
-branches that must merge back into `main`. Preserve the existing `main` history when integrating an upstream-based tree;
-do not wait for upstream review before shipping our own work.
+branches that must merge back into `main`. Preserve `main` history when
+integrating an upstream-based tree; do not wait for upstream review before
+shipping our own work.
 
 ## Fork purpose and convergence
 This fork exists only to fix problems upstream has not solved: the
@@ -27,8 +28,8 @@ The opt-in bootstrap timeout is a fork divergence. Upstream closed
 `router-for-me/CLIProxyAPI#6930` as not planned because its design policy allows
 timeouts only during credential acquisition, so the opt-in
 `requests.streaming.bootstrap-timeout` bound in
-`sdk/api/handlers/handlers_stream.go` is retained while upstream lacks equivalent behavior; reevaluate equivalence
-at every intake. It is not upstream's
+`sdk/api/handlers/handlers_stream.go` is retained while upstream lacks equivalent
+behavior; reevaluate equivalence at every intake. It is not upstream's
 `codex.stream-bootstrap-timeout`, which covers Codex bootstrap buffering only and
 releases buffered frames instead of abandoning the attempt; abandoning a silent
 attempt on the general SSE path is the part upstream declined. The timeout
@@ -38,13 +39,12 @@ policy below carries the matching exception.
   `router-for-me/CLIProxyAPI`.
 - **Upstream intake is release-only.** Track `upstream` releases, not its `dev` or
   `main` branches. Use each accepted mature release as the complete source
-  baseline, then preserve every fork capability in atomic commits; retire a
-  fork implementation only after verifying upstream equivalence. Integrate the
-  reviewed replay with a
-  PR merge commit, preserving both upstream and existing `main` history; see
-  the branch governance prerequisites below. Fetch upstream tags into the
-  local-only `refs/upstream/tags/*` namespace and never push them to `origin`:
-  `release.yaml` triggers a full
+  baseline, then preserve every fork capability in atomic commits; retire a fork
+  implementation only after verifying upstream equivalence. Integrate the
+  reviewed replay with a protected PR merge commit preserving upstream and
+  existing `main` history; see the branch governance prerequisites below. Fetch
+  upstream tags into the local-only `refs/upstream/tags/*` namespace and never
+  push them to `origin`: `release.yaml` triggers a full
   multi-platform build on a `vX.Y.Z-upstream*` tag push, so pushing upstream
   tags here would publish spurious releases from our fork.
 - **Our releases carry their own `vX.Y.Z-upstreamA.B.C` tags**, where the suffix
@@ -55,11 +55,12 @@ policy below carries the matching exception.
   specific release ref, never `--tags` or `--mirror`. Release CI checks tag
   syntax and main ancestry, invokes the release guard, requires a curated
   `docs/releases/<tag>.md`, runs the regression gate, builds a draft, and
-  publishes only after all archives and checksums are verified. The guard has
-  known gaps and must be repaired and behavior-tested before any new release;
-  see the [maintenance guide](docs/maintenance.md).
+  publishes only after all archives and checksums are verified. Before release,
+  verify the guard and workflow satisfy the behavioral contract in the
+  [maintenance guide](docs/maintenance.md); stop if the contract is not proven.
 - **Module path stays upstream.** `go.mod` keeps
-  `module github.com/router-for-me/CLIProxyAPI/v8` so upstream release baselines need no import-path rewrite. Do not rename it.
+  `module github.com/router-for-me/CLIProxyAPI/v8` so upstream releases can be ported
+  without rewriting imports across the tree. Do not rename it.
 - **Installation consumes our release artifacts** through the Homebrew tap
   `hrygo/homebrew-cliproxyapi`, tapped as `hrygo/cliproxyapi`
   (`brew install hrygo/cliproxyapi/cli-proxy-api`), which
@@ -169,7 +170,6 @@ Preserve unrelated untracked files and user configuration.
   them. Explain translator-only scope in the commit message; no upstream
   permission check is needed.
 - `internal/runtime/executor/` should contain executors and their unit tests only. Place any helper/supporting files under `internal/runtime/executor/helps/`.
-- Payload configuration MUST be the final semantic barrier before sending requests in every executor, including streaming, WebSocket, continuation, retry/fallback, image, and token-count paths where applicable. Complete all built-in payload translation, normalization, injection, and cleanup first, then evaluate and apply user payload rules exactly once to the final business payload. No subsequent logic may overwrite configured values or restore filtered fields. Only necessary transport framing, serialization, signature calculation, and read-only validation may follow without changing business payload semantics. Add regression tests when introducing or changing request-building paths to enforce this ordering.
 - Follow `gofmt`; keep imports goimports-style; wrap errors with context where helpful
 - Do not use `log.Fatal`/`log.Fatalf` (terminates the process); prefer returning errors and logging via logrus
 - Shadowed variables: use method suffix (`errStart := server.Start()`)

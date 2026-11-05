@@ -17,8 +17,9 @@ part of the hotfix commit, then reconcile that entry at the next intake.
 
 ## Procedure
 
-1. Read [absorbed.md](absorbed.md) and the [fork capability and patch
-   inventory](fork-capabilities.md). Record the accepted comparison baseline,
+1. Read [absorbed.md](absorbed.md), the [accepted baseline registry](accepted-baselines.json)
+   and the [fork capability and patch inventory](fork-capabilities.md). Check that
+   the registry's current declaration matches the human ledger. Record the accepted comparison baseline,
    refresh `origin/main`, and fix its exact commit as **M**. Earlier selective
    intake records describe a reviewed ceiling, not a complete upstream-based
    tree. If the previous tag is absent locally, fetch it only into the local
@@ -85,12 +86,14 @@ part of the hotfix commit, then reconcile that entry at the next intake.
    a commit cannot contain its own final SHA or tree ID. Run the regression gate
    on C. For request/response changes, also run representative requests against
    M and C with isolated, equivalent configurations; record actual client
-   coverage and limitations.
+   coverage and limitations. U being an ancestor of C does not by itself prove
+   that C retained all required upstream content or fork capabilities; review
+   and test each disposition.
 7. Integrate only when the protected `main` rules explicitly permit PR **merge
    commits** while retaining the required build check, protected branch and
    no-force-push safeguards, and require the branch to be up to date before
-   merging. The currently enforced linear-history rule rejects this method;
-   changing remote rules requires separate authorization. Do not
+   merging. Verify the actual remote rules before integration; changing remote
+   rules requires separate authorization. Do not
    bypass protection, use rebase or squash, force push, or flatten the candidate
    into a single tree patch as a substitute. If the rules do not permit a merge
    commit, stop before integration.
@@ -127,8 +130,8 @@ part of the hotfix commit, then reconcile that entry at the next intake.
 8. With authorization for remote changes, open the protected PR at I. Record M,
    U, C, I, the candidate tree, the complete dispositions and exact gate/client
    evidence in its review material. Require the PR `build` check and resolve
-   review threads. The current pull-request workflow tests GitHub's temporary
-   merge commit, not I itself: record the tested commit and confirm its tree
+   review threads. Determine whether the pull-request workflow tests I or
+   GitHub's temporary merge commit: record the tested commit and confirm its tree
    equals I's, as well as the PR head I and base M. Immediately before merging,
    confirm the target is still M, the PR head is still I, the upstream tag still
    resolves to U and all required checks passed for that PR state. Require the
@@ -143,32 +146,85 @@ part of the hotfix commit, then reconcile that entry at the next intake.
    tree, and both C and U are ancestors of J. Check J itself, not just the
    latest main tree, which may later receive other commits. If any check fails,
    do not claim intake completion or publish from it; investigate and fix
-   forward through the protected workflow.
+   forward through the protected workflow. Ancestry and tree equality establish
+   the stated relationship and that J matches C; they do not prove C preserved
+   all upstream content and fork capabilities, or that later commits do not
+   regress them. Those claims require item-by-item review and relevant tests.
 9. Record the decisions, exact commits and tree IDs, gate results and client
    coverage in [absorbed.md](absorbed.md). The actual J SHA and tree cannot be
-   embedded in J's own tree: capture them in PR evidence first, then record them
-   in a separate follow-up ledger commit and protected PR. Advance the accepted
-   baseline only after J and its ancestry and tree have been verified, and the
-   final ledger record has reached `main`. An assessment, candidate, or fetched
-   tag is not a completed replay.
-10. A release is a separate operation. The `Upstream release`, tag suffix,
-    previous baseline and `Ported` field must agree with the accepted ledger;
-    follow [docs/maintenance.md](../../docs/maintenance.md) when authorized.
-    Before publishing, the release guard must resolve the suffix's upstream tag
-    and commit, validate the accepted fork main commit and its documented
-    relationship to that upstream commit, and confirm the release target is
-    eligible on `main`. For a complete replay this includes U and C being
-    ancestors of J, J being an ancestor of the release target, and the release
-    target being an ancestor of `origin/main`. Historical
-    selective baselines must be checked against their actual ledger evidence,
-    not described as complete upstream ancestry.
+   embedded in J's own tree: capture them in PR evidence first. After J and its
+   ancestry and tree are verified, record them in a ledger commit **L**. In a
+   subsequent commit **R**, update the current declaration in
+   [accepted-baselines.json](accepted-baselines.json), including `ledger_commit`
+   pointing to L. Integrate both in a protected follow-up PR using a merge commit
+   that preserves L's identity; squash or rebase would rewrite the referenced
+   SHA. If protection forbids the required merge, stop until an authorized rule
+   change permits it. Advance the accepted baseline only after both updates
+   reach `main` and R still points to L. A registry check does not establish that
+   the underlying review or behavioral tests were actually performed. An
+   assessment, candidate, or fetched tag is not a completed replay.
 
-    The current `guard-release-tag.sh` checks a same-name upstream tag but does
-    not establish these conditions and treats any failed lookup as absence.
-    Its success alone is insufficient. Stop until the guard is corrected and
-    passes isolated behavioral tests for the required conditions. An unresolved
-    upstream version, network or authentication failure, failed guard, failed
-    validation or missing evidence blocks publishing, including a hotfix;
+   For a replay, the registry's `accepted` object uses `kind: "replay"` and
+   records `upstream` and `upstream_sha` as the tag and U, `previous_baseline`
+   as the preceding accepted intake, `main_before` as M, `candidate_commit` as
+   C, `integration_commit` as I, `intake_commit` as J, `candidate_tree` as C's
+   tree, and `ledger_commit` as L. All object IDs are full 40-character SHAs.
+   Set `assessment_heading` to the unique level-three ledger heading text,
+   beginning with the upstream tag and a space. The `## Comparison baseline`
+   section must use this form, replacing both placeholders:
+
+   ```markdown
+   ## Comparison baseline
+
+   **Accepted comparison baseline: `<upstream tag>`**
+   (`<full upstream SHA>`).
+
+   Previous comparison baseline: `<previous intake tag>`
+   ```
+
+   The uniquely named level-three assessment section uses the following fields;
+   replace every placeholder with the reviewed value, including full SHAs:
+
+   ```markdown
+   ### <upstream tag> — replay
+
+   - Previous intake baseline: `<previous intake tag>`
+   - Upstream commit (U): `<U>`
+   - Main before replay (M): `<M>`
+   - Candidate commit (C): `<C>`
+   - Integration commit (I): `<I>`
+   - Intake commit (J): `<J>`
+   - Candidate tree: `<candidate tree>`
+   ```
+
+   Set `assessment_heading` to this section's exact heading text without `###`.
+   Keep each field label exact, at the start of its line and unique in the
+   section; put only its backtick-delimited value after the colon. Include the
+   review decisions, test evidence and limits in the same section.
+
+   The guard compares these two sections with their versions in L. Unrelated
+   ledger sections may change without updating the registry. To change either
+   accepted evidence section, review and commit the change as a new L, then
+   update `ledger_commit` in a later R, preserving L as above.
+10. A release is a separate operation. The `Upstream release` and tag suffix
+    must agree with the accepted ledger. Verify `Previous baseline` against the
+    previous fork release and `Ported` against the actual changes; the previous
+    release's baseline can differ from the registry's previous intake. Follow
+    [docs/maintenance.md](../../docs/maintenance.md) when authorized.
+    Before publishing, the release guard must resolve the suffix's upstream tag
+    and commit, validate the accepted baseline registry and eligible fork main
+    commit, and confirm their documented relationship. For a complete replay this
+    includes U and C being ancestors of J, J being an ancestor of the release
+    target, and the release target being on the `origin/main` first-parent chain.
+    Historical selective baselines, including v8.0.35, must be checked against
+    their actual ledger evidence, not described as complete upstream ancestry.
+    Verify the registry and human ledger agree. The registry encodes reviewed
+    declarations; a machine check cannot prove the human review or tests occurred.
+
+    Before creating or pushing a release tag, verify the guard and its CI
+    integration against this contract with isolated behavioral tests. An
+    unresolved upstream version, network or authentication failure, failed guard,
+    failed validation or missing evidence blocks publishing, including a hotfix;
     never bypass the guard. Assessment or replay alone does not authorize
     publishing or deployment.
 
@@ -199,10 +255,9 @@ can also exist upstream while pointing to a different commit. Never delete or
 move a tag based on an incomplete comparison. The check also warns when
 `remote.upstream.tagOpt` is unset, since that is what makes the leak recur.
 
-At release time `ops/upstream-intake/guard-release-tag.sh <tag>` is intended to
-reject a tag that resolves to the same commit as the upstream tag of that name.
-The release workflow runs it before building, but failed initial API lookups
-currently pass; the repair and release stop condition above still apply.
+At release time `ops/upstream-intake/guard-release-tag.sh <tag>` and the release
+workflow must satisfy the release-guard contract above; verify their behavior
+before tagging or publishing.
 
 ## Regression gate
 

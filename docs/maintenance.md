@@ -18,8 +18,8 @@ operations; a request to review them does not authorize publishing or deployment
 
 1. When integration is authorized, merge the reviewed task branch into our
    `main`. For a replay, follow the [intake procedure](../ops/upstream-intake/README.md)
-   and [branch governance](../AGENTS.md#branch-governance), including its stop
-   condition while the remote linear-history rule remains in force. Resolve
+   and [branch governance](../AGENTS.md#branch-governance), including the stop
+   condition if remote protection does not permit merge commits. Resolve
    compatibility changes and choose our semantic version: patch for compatible
    fixes, minor for compatible additions, major for breaking changes.
 2. Build the release tag as `vX.Y.Z-upstreamA.B.C`, where `A.B.C` is the
@@ -52,17 +52,18 @@ operations; a request to review them does not authorize publishing or deployment
    inventory and applicable validation. The
    [intake procedure](../ops/upstream-intake/README.md) records the evidence.
 
-   Before tagging a release, repair `guard-release-tag.sh` and verify the full
-   [intake release-guard contract](../ops/upstream-intake/README.md#procedure)
-   with behavioral tests. It must verify the suffix's upstream release and SHA,
-   the accepted ledger and eligible fork `main` commit, and their documented
-   relationship; historical selective baselines need their actual evidence.
-   It must reject an upstream commit, fail closed on lookup or authentication
-   errors, and accept a valid fork release. The release workflow must provide
-   the read-only authentication needed for the check. The current guard checks
-   only a same-named upstream tag and treats a failed initial API request as
-   absence. Stop before creating or pushing any release tag until the repair,
-   CI integration and tests pass.
+   Before tagging a release, verify that `guard-release-tag.sh` and its CI
+   integration satisfy the [intake release-guard contract](../ops/upstream-intake/README.md#procedure)
+   with isolated behavioral tests. The guard must verify the suffix's upstream
+   release and SHA, the accepted baseline registry and eligible fork `main`
+   commit, and their documented relationship; historical selective baselines
+   need their actual evidence. Check that the registry agrees with the human
+   ledger. The guard must reject an upstream commit, fail closed on lookup or
+   authentication errors, and accept a valid fork release. The release workflow
+   must provide the read-only authentication needed for the check. Machine
+   validation does not prove human review or behavioral tests occurred. Stop
+   before creating or pushing any release tag unless the guard, CI integration,
+   behavioral tests and review evidence meet the contract.
 6. Confirm a clean checkout, exact release commit on the `origin/main`
    first-parent chain, and absence of the proposed tag both locally and remotely.
    Both tag listings must be empty; a failed command blocks release:
@@ -83,8 +84,8 @@ operations; a request to review them does not authorize publishing or deployment
    git tag -a v1.2.3-upstream8.0.6 -m "Release v1.2.3-upstream8.0.6"
    ```
 
-   Run the repaired and tested guard against the locally created tag. A failure
-   blocks the push:
+   Run the verified guard against the locally created tag. A failure blocks the
+   push:
 
    ```bash
    ops/upstream-intake/guard-release-tag.sh v1.2.3-upstream8.0.6
@@ -97,6 +98,12 @@ operations; a request to review them does not authorize publishing or deployment
    ```
 
    Never push `--tags`, `--mirror` or upstream refs. Do not move a published tag.
+
+   A tag push can run the workflow and guard from the tagged commit. A tag
+   pointing to an older commit may therefore run older checks; the current
+   scripts do not protect every possible tag push. Enforcing a repository-wide
+   boundary, such as a server-side tag ruleset, requires separate assessment
+   and authorization.
 
 8. `release.yaml` validates stable tag syntax, ancestry on `main`, the curated
    release note and its upstream-alignment statement, invokes the guard, then
