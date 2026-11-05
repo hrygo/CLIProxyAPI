@@ -41,6 +41,7 @@ func TestGeminiStreamInvalidUsageCompletesBeforeEOF(t *testing.T) {
 		} {
 			t.Run(provider+"/"+tc.name, func(t *testing.T) {
 				release := make(chan struct{})
+				tailAttempted := make(chan struct{})
 				var releaseOnce sync.Once
 				allowEnd := func() { releaseOnce.Do(func() { close(release) }) }
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -52,14 +53,12 @@ func TestGeminiStreamInvalidUsageCompletesBeforeEOF(t *testing.T) {
 					w.Header().Set("Content-Type", "text/event-stream")
 					_, _ = fmt.Fprintf(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"answer\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":%s}\n\n", tc.invalid)
 					w.(http.Flusher).Flush()
-					select {
-					case <-release:
-					case <-request.Context().Done():
-						return
-					}
+					// Do not send a later snapshot until the client stream has closed.
+					<-release
 					if tc.late {
 						_, _ = io.WriteString(w, "data: {\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":10,\"thoughtsTokenCount\":50,\"totalTokenCount\":160}}\n\n")
 						w.(http.Flusher).Flush()
+						close(tailAttempted)
 					}
 				}))
 				defer func() {
@@ -128,11 +127,18 @@ func TestGeminiStreamInvalidUsageCompletesBeforeEOF(t *testing.T) {
 								if got.Exists() {
 									t.Fatalf("terminal invented unknown usage: %s", got.Raw)
 								}
-								allowEnd()
 							}
 						}
 					case <-timer.C:
 						t.Fatal("terminal blocked while the upstream connection remained open")
+					}
+				}
+				allowEnd()
+				if tc.late {
+					select {
+					case <-tailAttempted:
+					case <-timer.C:
+						t.Fatal("upstream did not attempt its gated usage tail")
 					}
 				}
 				if terminals != 1 {
@@ -141,11 +147,16 @@ func TestGeminiStreamInvalidUsageCompletesBeforeEOF(t *testing.T) {
 				select {
 				case record := <-capture.records:
 					d := record.Detail
-					if record.Failed || (tc.late && (d.InputTokens != 100 || d.OutputTokens != 10 || d.ReasoningTokens != 50 || d.TotalTokens != 160)) {
+					// Integer record fields cannot distinguish an absent count from zero.
+					wantInput, wantTotal := int64(0), int64(0)
+					if strings.HasPrefix(tc.name, "field_") {
+						wantInput, wantTotal = 100, 100
+					}
+					if record.Failed || d.InputTokens != wantInput || d.OutputTokens != 0 || d.ReasoningTokens != 0 || d.TotalTokens != wantTotal {
 						t.Fatalf("reported usage = %+v, failed=%t", d, record.Failed)
 					}
 				case <-timer.C:
-					t.Fatal("final usage was not reported after clean EOF")
+					t.Fatal("observed usage was not reported after stream closure")
 				}
 			})
 		}

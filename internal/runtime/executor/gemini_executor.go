@@ -18,6 +18,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	internalsignature "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
@@ -397,8 +398,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 				log.Errorf("gemini executor: close response body error: %v", errClose)
 			}
 		}()
-		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, streamScannerBuffer)
+		scanner := helps.NewBufferedSSEScanner(httpResp.Body, streamScannerBuffer)
 		claudeInputTokens := helps.NewClaudeInputTokenState(from, to, responseFormat, originalPayload)
 		var streamErr error
 		defer func() {
@@ -438,7 +438,16 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			if len(payload) == 0 {
 				continue
 			}
-			lines := helps.TranslateStreamWithClaudeInputTokens(ctx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), body, bytes.Clone(payload), &param, claudeInputTokens)
+			translateCtx := ctx
+			var errBuffered error
+			bufferedObserved := false
+			if responseFormat == sdktranslator.FormatOpenAIResponse && geminiStreamHasFinishSignal(rawPayload) {
+				var snapshots [][]byte
+				snapshots, errBuffered = observeBufferedGeminiResponsesUsage(scanner, &streamUsage)
+				bufferedObserved = true
+				translateCtx = translatorcommon.WithGeminiBufferedUsage(ctx, &param, snapshots)
+			}
+			lines := helps.TranslateStreamWithClaudeInputTokens(translateCtx, to, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), body, bytes.Clone(payload), &param, claudeInputTokens)
 			events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, lines, &responsesDetector, param, reporter, &streamUsage, out)
 			if !ok {
 				return
@@ -448,6 +457,15 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			})
 			var responsesTerminal string
 			for i := range lines {
+				if responseFormat == sdktranslator.FormatOpenAIResponse && geminiResponsesTerminalType(events[i]) && !geminiResponsesTerminalFailed(events[i]) {
+					if !bufferedObserved {
+						_, errBuffered = observeBufferedGeminiResponsesUsage(scanner, &streamUsage)
+					}
+					if stopGeminiResponsesOnBufferedFailure(ctx, e.cfg, errBuffered, reporter, &streamUsage, out) ||
+						stopGeminiResponsesOnBufferedFailure(ctx, e.cfg, scanner.Err(), reporter, &streamUsage, out) {
+						return
+					}
+				}
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: lines[i]}:
 					if responseFormat != sdktranslator.FormatOpenAIResponse && helps.IsGeminiTerminalStreamChunk(lines[i]) {
@@ -579,6 +597,69 @@ func finishGeminiResponsesStream(ctx context.Context, out chan cliproxyexecutor.
 func deferGeminiDeliveryCancellation(ctx context.Context, responseFormat sdktranslator.Format, err error) bool {
 	return responseFormat == sdktranslator.FormatOpenAIResponse && usage.StreamDeliveryTracked(ctx) &&
 		(errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+}
+
+// observeBufferedGeminiResponsesUsage consumes only complete events already in
+// Scanner's memory. It never waits for additional provider data.
+func observeBufferedGeminiResponsesUsage(scanner *helps.BufferedSSEScanner, streamUsage *helps.StreamUsageBuffer) ([][]byte, error) {
+	events, errEvents := scanner.BufferedEventsAfterCurrent()
+	var snapshots [][]byte
+	for _, event := range events {
+		for _, path := range []string{"error", "response.error"} {
+			if upstreamErr := gjson.GetBytes(event, path); upstreamErr.Exists() && upstreamErr.Type != gjson.Null {
+				return snapshots, statusErr{code: bufferedGeminiErrorStatus(upstreamErr.Get("code")), msg: "upstream returned an error after finish"}
+			}
+		}
+		for _, prefix := range []string{"", "response."} {
+			if (gjson.GetBytes(event, prefix+"code").Exists() && gjson.GetBytes(event, prefix+"message").Exists()) || gjson.GetBytes(event, prefix+"type").String() == "error" {
+				return snapshots, statusErr{code: bufferedGeminiErrorStatus(gjson.GetBytes(event, prefix+"code")), msg: "upstream returned an error after finish"}
+			}
+		}
+		for _, path := range []string{"usageMetadata", "usage_metadata", "response.usageMetadata", "response.usage_metadata"} {
+			metadata := gjson.GetBytes(event, path)
+			if !metadata.Exists() {
+				continue
+			}
+			if metadata.IsObject() {
+				payload := []byte(`{"usageMetadata":` + metadata.Raw + `}`)
+				streamUsage.ObserveGeminiStream(payload)
+				snapshots = append(snapshots, payload)
+			}
+			break
+		}
+	}
+	if errEvents != nil {
+		var statusCoder interface{ StatusCode() int }
+		if errors.As(errEvents, &statusCoder) {
+			return snapshots, errEvents
+		}
+		return snapshots, statusErr{code: http.StatusBadGateway, msg: errEvents.Error()}
+	}
+	return snapshots, nil
+}
+
+func bufferedGeminiErrorStatus(value gjson.Result) int {
+	if code, ok := translatorcommon.ParseGeminiUsageCount(value); ok && code >= http.StatusBadRequest && code <= 599 {
+		return int(code)
+	}
+	return http.StatusBadGateway
+}
+
+// stopGeminiResponsesOnBufferedFailure reports an already-known read or
+// protocol failure without waiting for another read after a finish signal.
+func stopGeminiResponsesOnBufferedFailure(ctx context.Context, cfg *config.Config, err error, reporter *helps.UsageReporter, streamUsage *helps.StreamUsageBuffer, out chan<- cliproxyexecutor.StreamChunk) bool {
+	if err == nil {
+		return false
+	}
+	helps.RecordAPIResponseError(ctx, cfg, err)
+	if !deferGeminiDeliveryCancellation(ctx, sdktranslator.FormatOpenAIResponse, err) {
+		streamUsage.PublishFailure(ctx, reporter, err)
+	}
+	select {
+	case out <- cliproxyexecutor.StreamChunk{Err: err}:
+	case <-ctx.Done():
+	}
+	return true
 }
 
 func geminiResponsesFrameEvent(frame []byte) (string, bool) {

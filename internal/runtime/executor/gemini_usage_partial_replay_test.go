@@ -34,33 +34,33 @@ type geminiPartialUsageNoop struct{}
 
 func (geminiPartialUsageNoop) HandleUsage(context.Context, usage.Record) {}
 
-// The server holds the connection open until the client receives its terminal.
-// The later usage update is observable only while the client keeps reading.
-func TestGeminiStreamUsageAfterTerminal(t *testing.T) {
+// The server sends its later usage update only after the client stream closes.
+func TestGeminiStreamUsageAfterClosureIsNotObserved(t *testing.T) {
 	for _, provider := range []string{"gemini", "vertex"} {
 		for _, tc := range []struct {
 			name, firstUsage, laterUsage        string
 			firstInput, firstOutput, firstTotal int64
-			finalInput, finalOutput, reasoning  int64
-			finalTotal                          int64
+			observedInput, observedOutput       int64
+			observedReasoning, observedTotal    int64
 		}{
 			{
 				name:       "partial_usage",
 				firstUsage: `{"promptTokenCount":100}`,
 				laterUsage: `{"candidatesTokenCount":10,"thoughtsTokenCount":50,"totalTokenCount":160}`,
 				firstInput: 100, firstTotal: 0,
-				finalInput: 100, finalOutput: 10, reasoning: 50, finalTotal: 160,
+				observedInput: 100, observedTotal: 100,
 			},
 			{
 				name:       "complete_then_updated_usage",
 				firstUsage: `{"promptTokenCount":100,"candidatesTokenCount":10,"thoughtsTokenCount":5,"totalTokenCount":115}`,
 				laterUsage: `{"candidatesTokenCount":12,"thoughtsTokenCount":7,"totalTokenCount":119}`,
 				firstInput: 100, firstOutput: 15, firstTotal: 115,
-				finalInput: 100, finalOutput: 12, reasoning: 7, finalTotal: 119,
+				observedInput: 100, observedOutput: 10, observedReasoning: 5, observedTotal: 115,
 			},
 		} {
 			t.Run(provider+"/"+tc.name, func(t *testing.T) {
 				release := make(chan struct{})
+				tailAttempted := make(chan struct{})
 				var releaseOnce sync.Once
 				releaseServer := func() { releaseOnce.Do(func() { close(release) }) }
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
@@ -70,12 +70,9 @@ func TestGeminiStreamUsageAfterTerminal(t *testing.T) {
 						return
 					}
 					w.(http.Flusher).Flush()
-					select {
-					case <-release:
-					case <-request.Context().Done():
-						return
-					}
+					<-release
 					_, _ = fmt.Fprintf(w, "data: {\"usageMetadata\":%s}\n\n", tc.laterUsage)
+					close(tailAttempted)
 				}))
 				defer func() {
 					releaseServer()
@@ -125,14 +122,19 @@ func TestGeminiStreamUsageAfterTerminal(t *testing.T) {
 							}
 							terminals++
 							got := event.Get("response.usage")
-							if got.Get("input_tokens").Int() != tc.firstInput || got.Get("output_tokens").Int() != tc.firstOutput || got.Get("total_tokens").Int() != tc.firstTotal {
+							if !got.Exists() || got.Get("input_tokens").Int() != tc.firstInput || got.Get("output_tokens").Int() != tc.firstOutput || got.Get("total_tokens").Int() != tc.firstTotal {
 								t.Fatalf("terminal usage = %s; want initial snapshot", got.Raw)
 							}
-							releaseServer()
 						}
 					case <-timer.C:
 						t.Fatal("terminal or stream close blocked while the server held the connection open")
 					}
+				}
+				releaseServer()
+				select {
+				case <-tailAttempted:
+				case <-timer.C:
+					t.Fatal("upstream did not attempt its gated usage update")
 				}
 				if terminals != 1 {
 					t.Fatalf("terminal events = %d, want 1", terminals)
@@ -140,7 +142,8 @@ func TestGeminiStreamUsageAfterTerminal(t *testing.T) {
 				select {
 				case record := <-capture.records:
 					d := record.Detail
-					if record.Failed || d.InputTokens != tc.finalInput || d.OutputTokens != tc.finalOutput || d.ReasoningTokens != tc.reasoning || d.TotalTokens != tc.finalTotal {
+					// A partial record describes only observed fields, not a final total.
+					if record.Failed || d.InputTokens != tc.observedInput || d.OutputTokens != tc.observedOutput || d.ReasoningTokens != tc.observedReasoning || d.TotalTokens != tc.observedTotal {
 						t.Fatalf("reported usage = %+v, failed=%t", d, record.Failed)
 					}
 				case <-timer.C:

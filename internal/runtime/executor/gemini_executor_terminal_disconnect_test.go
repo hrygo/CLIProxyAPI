@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -50,7 +51,7 @@ func TestGeminiStream_TerminalDisconnectUsage(t *testing.T) {
 			{name: "usage_tail_cancel", finishReason: "STOP", terminalEvent: "response.completed", cancelEvent: "response.completed", splitUsage: true},
 			{name: "completed_eof", finishReason: "STOP", terminalEvent: "response.completed"},
 			{name: "before_completion_cancel", cancelEvent: "response.output_text.delta", wantFailed: true, wantStatus: 499},
-			{name: "after_completion_read_error", finishReason: "STOP", terminalEvent: "response.completed", readError: true, wantFailed: true},
+			{name: "future_read_error_after_completion", finishReason: "STOP", terminalEvent: "response.completed", readError: true},
 			{name: "before_completion_read_error", readError: true, wantFailed: true},
 		} {
 			t.Run(model+"/"+tc.name, func(t *testing.T) {
@@ -63,10 +64,9 @@ func TestGeminiStream_TerminalDisconnectUsage(t *testing.T) {
 					metadata = ""
 				}
 				sse := fmt.Sprintf("data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"OK\"}]}%s}]%s,\"traceId\":%q}\n\n", finishJSON, metadata, t.Name())
-				if tc.splitUsage {
-					sse += fmt.Sprintf("data: {%s,\"traceId\":%q}\n\n", usageJSON, t.Name())
-				}
 				releaseUpstream := make(chan struct{})
+				allowUpstream := sync.OnceFunc(func() { close(releaseUpstream) })
+				lateAttempted := make(chan struct{})
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 					w.Header().Set("Content-Type", "text/event-stream")
 					if tc.readError {
@@ -77,6 +77,15 @@ func TestGeminiStream_TerminalDisconnectUsage(t *testing.T) {
 						return
 					}
 					w.(http.Flusher).Flush()
+					if tc.splitUsage || (tc.readError && tc.finishReason != "") {
+						// Release the tail or truncated EOF only after the client stream closes.
+						<-releaseUpstream
+						if tc.splitUsage {
+							_, _ = fmt.Fprintf(w, "data: {%s,\"traceId\":%q}\n\n", usageJSON, t.Name())
+							close(lateAttempted)
+						}
+						return
+					}
 					if tc.cancelEvent != "" {
 						// Keep EOF behind the downstream event and cancellation.
 						select {
@@ -86,7 +95,7 @@ func TestGeminiStream_TerminalDisconnectUsage(t *testing.T) {
 					}
 				}))
 				defer func() {
-					close(releaseUpstream)
+					allowUpstream()
 					server.Close()
 				}()
 
@@ -117,7 +126,7 @@ func TestGeminiStream_TerminalDisconnectUsage(t *testing.T) {
 
 				timer := time.NewTimer(5 * time.Second)
 				defer timer.Stop()
-				terminalReceived := false
+				terminalCount := 0
 				canceled := false
 				var streamErr error
 			streamLoop:
@@ -130,8 +139,22 @@ func TestGeminiStream_TerminalDisconnectUsage(t *testing.T) {
 						if chunk.Err != nil {
 							streamErr = chunk.Err
 						}
-						if tc.terminalEvent != "" && strings.Contains(string(chunk.Payload), "event: "+tc.terminalEvent+"\n") {
-							terminalReceived = true
+						for _, event := range issue6258Events(chunk.Payload) {
+							kind := event.Get("type").String()
+							if kind != "response.completed" && kind != "response.incomplete" && kind != "response.failed" {
+								continue
+							}
+							terminalCount++
+							if kind != tc.terminalEvent {
+								t.Fatalf("unexpected terminal %s", event.Raw)
+							}
+							usage := event.Get("response.usage")
+							if tc.splitUsage && usage.Exists() {
+								t.Fatalf("terminal invented future usage: %s", event.Raw)
+							}
+							if !tc.splitUsage && (!usage.Exists() || usage.Get("input_tokens").Int() != 11 || usage.Get("output_tokens").Int() != 4 || usage.Get("total_tokens").Int() != 15) {
+								t.Fatalf("terminal lost observed usage: %s", event.Raw)
+							}
 						}
 						if tc.cancelEvent != "" && strings.Contains(string(chunk.Payload), "event: "+tc.cancelEvent+"\n") {
 							canceled = true
@@ -141,8 +164,20 @@ func TestGeminiStream_TerminalDisconnectUsage(t *testing.T) {
 						t.Fatal("timed out waiting for stream closure")
 					}
 				}
-				if tc.terminalEvent != "" && !terminalReceived {
-					t.Fatalf("expected %s", tc.terminalEvent)
+				allowUpstream()
+				if tc.splitUsage {
+					select {
+					case <-lateAttempted:
+					case <-timer.C:
+						t.Fatal("upstream did not attempt its gated usage tail")
+					}
+				}
+				wantTerminals := 0
+				if tc.terminalEvent != "" {
+					wantTerminals = 1
+				}
+				if terminalCount != wantTerminals {
+					t.Fatalf("terminal count = %d, want %d (%s)", terminalCount, wantTerminals, tc.terminalEvent)
 				}
 				if tc.cancelEvent != "" && !canceled {
 					t.Fatalf("expected cancellation after %s", tc.cancelEvent)
@@ -152,10 +187,14 @@ func TestGeminiStream_TerminalDisconnectUsage(t *testing.T) {
 					if record.Failed != tc.wantFailed || record.Fail.StatusCode != tc.wantStatus {
 						t.Fatalf("usage outcome = failed %v, status %d, body %q; want failed %v, status %d", record.Failed, record.Fail.StatusCode, record.Fail.Body, tc.wantFailed, tc.wantStatus)
 					}
-					if record.Detail.InputTokens != 11 || record.Detail.OutputTokens != 4 || record.Detail.TotalTokens != 15 {
+					if tc.splitUsage {
+						if record.Detail.InputTokens != 0 || record.Detail.OutputTokens != 0 || record.Detail.TotalTokens != 0 {
+							t.Fatalf("future usage was recorded: %+v", record.Detail)
+						}
+					} else if record.Detail.InputTokens != 11 || record.Detail.OutputTokens != 4 || record.Detail.TotalTokens != 15 {
 						t.Fatalf("reported usage = %+v; want input 11, output 4, total 15", record.Detail)
 					}
-					if tc.readError && (streamErr == nil || record.Fail.Body != io.ErrUnexpectedEOF.Error()) {
+					if tc.readError && tc.wantFailed && (streamErr == nil || record.Fail.Body != io.ErrUnexpectedEOF.Error()) {
 						t.Fatalf("expected unexpected EOF failure, got stream error %v, failure %q", streamErr, record.Fail.Body)
 					}
 					if !tc.wantFailed && streamErr != nil {

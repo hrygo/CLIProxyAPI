@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -154,29 +155,67 @@ func issue6258TokenResponse(w http.ResponseWriter, request *http.Request) bool {
 	return true
 }
 
-func TestIssue6258ExecutorResponsesSplitUsage(t *testing.T) {
+func TestIssue6258ExecutorResponsesUsageTiming(t *testing.T) {
 	for _, provider := range issue6258Providers {
 		for _, trace := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/trace=%t", provider, trace), func(t *testing.T) {
-				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-					if issue6258TokenResponse(w, request) {
+			for _, timing := range []string{"before_finish", "on_finish", "after_closure"} {
+				t.Run(fmt.Sprintf("%s/trace=%t/%s", provider, trace, timing), func(t *testing.T) {
+					release := make(chan struct{})
+					allowTail := sync.OnceFunc(func() { close(release) })
+					tailAttempted := make(chan struct{})
+					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+						if issue6258TokenResponse(w, request) {
+							return
+						}
+						w.Header().Set("Content-Type", "text/event-stream")
+						finish := `{"candidates":[{"finishReason":"STOP"}]}`
+						bodies := []string{issue6258ExecutorContent}
+						switch timing {
+						case "before_finish":
+							bodies = append(bodies, issue6258ExecutorUsage, finish)
+						case "on_finish":
+							bodies = append(bodies, strings.TrimSuffix(finish, "}")+","+strings.TrimPrefix(issue6258ExecutorUsage, "{"))
+						default:
+							bodies = append(bodies, finish)
+						}
+						for _, body := range bodies {
+							_, _ = io.WriteString(w, issue6258SSE(provider, body, trace))
+						}
+						if timing == "after_closure" {
+							w.(http.Flusher).Flush()
+							<-release
+							_, _ = io.WriteString(w, issue6258SSE(provider, issue6258ExecutorUsage, trace))
+							close(tailAttempted)
+						}
+					}))
+					defer func() {
+						allowTail()
+						server.Close()
+					}()
+					baseCtx, executor, auth := issue6258Executor(t, provider, server.URL)
+					ctx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
+					defer cancel()
+					response := issue6258ExecutorTerminal(t, issue6258StartStream(t, ctx, executor, auth, `{"input":"hello","stream":true}`))
+					if timing == "after_closure" {
+						allowTail()
+						select {
+						case <-tailAttempted:
+						case <-ctx.Done():
+							t.Fatal("upstream did not attempt its gated usage tail")
+						}
+						if usage := response.Get("usage"); usage.Exists() {
+							t.Fatalf("terminal invented future usage: %s", usage.Raw)
+						}
 						return
 					}
-					w.Header().Set("Content-Type", "text/event-stream")
-					for _, body := range []string{issue6258ExecutorContent, `{"candidates":[{"finishReason":"STOP"}]}`, issue6258ExecutorUsage} {
-						_, _ = io.WriteString(w, issue6258SSE(provider, body, trace))
+					for path, want := range map[string]int64{"input_tokens": 100, "output_tokens": 60, "total_tokens": 160, "output_tokens_details.reasoning_tokens": 50} {
+						got := response.Get("usage." + path)
+						if !got.Exists() || got.Int() != want {
+							t.Errorf("terminal usage.%s=%s, want %d; usage=%s", path, got.Raw, want, response.Get("usage").Raw)
+						}
 					}
-				}))
-				defer server.Close()
-				ctx, executor, auth := issue6258Executor(t, provider, server.URL)
-				response := issue6258ExecutorTerminal(t, issue6258StartStream(t, ctx, executor, auth, `{"input":"hello","stream":true}`))
-				for path, want := range map[string]int64{"input_tokens": 100, "output_tokens": 60, "total_tokens": 160, "output_tokens_details.reasoning_tokens": 50} {
-					got := response.Get("usage." + path)
-					if !got.Exists() || got.Int() != want {
-						t.Errorf("terminal usage.%s=%s, want %d; usage=%s", path, got.Raw, want, response.Get("usage").Raw)
-					}
-				}
-			})
+				})
+			}
 		}
 	}
 }

@@ -7,7 +7,10 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -90,15 +93,88 @@ func TestGeminiStreamReadErrorDoesNotSynthesizeCompletion(t *testing.T) {
 	}
 }
 
-func TestGeminiStreamPendingTerminalIsNotCompletedOnReadError(t *testing.T) {
-	frames := geminiTerminalContentFrame + "\n\n" + geminiTerminalFinishFrame + "\n\n"
-	observed := runGeminiResponsesTerminalStream(t, frames, true)
-	if len(observed.Errors) != 1 {
-		t.Fatalf("stream errors = %d (%v), want 1", len(observed.Errors), observed.Errors)
+// futureGeminiReadErrorBody returns content and finish without an error on its
+// first read. A subsequent read cannot return its error until the body closes.
+type futureGeminiReadErrorBody struct {
+	first  []byte
+	reads  atomic.Int32
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (b *futureGeminiReadErrorBody) Read(p []byte) (int, error) {
+	if b.reads.Add(1) == 1 {
+		n := copy(p, b.first)
+		if n != len(b.first) {
+			return n, io.ErrShortBuffer
+		}
+		return n, nil
 	}
-	if len(observed.Terminals) != 0 {
-		t.Fatalf("pending terminal was completed by a read error: %s", observed.Terminals[0].Raw)
+	<-b.closed
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (b *futureGeminiReadErrorBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
+}
+
+func requireGeminiTerminalBeforeFutureReadError(t *testing.T, vertex bool) {
+	t.Helper()
+	body := &futureGeminiReadErrorBody{first: []byte(geminiTerminalContentFrame + "\n\n" + geminiTerminalFinishFrame + "\n\n"), closed: make(chan struct{})}
+	t.Cleanup(func() { _ = body.Close() })
+	ctx := context.WithValue(t.Context(), "cliproxy.roundtripper", roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: body, Request: req}, nil
+	}))
+	var executor issue6258StreamExecutor = NewGeminiExecutor(&config.Config{})
+	if vertex {
+		executor = NewGeminiVertexExecutor(&config.Config{})
 	}
+	request := []byte(`{"model":"gemini-3.8-flash-high","input":"synthetic local fixture","stream":true}`)
+	result, errExecute := executor.ExecuteStream(ctx, &cliproxyauth.Auth{
+		Attributes: map[string]string{"api_key": "test-key", "base_url": "https://fixture.invalid"},
+	}, cliproxyexecutor.Request{Model: "gemini-3.8-flash-high", Payload: request}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FormatOpenAIResponse, ResponseFormat: sdktranslator.FormatOpenAIResponse,
+		OriginalRequest: request, Stream: true,
+	})
+	if errExecute != nil {
+		t.Fatal(errExecute)
+	}
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	terminals := 0
+	for {
+		select {
+		case chunk, ok := <-result.Chunks:
+			if !ok {
+				if terminals != 1 || body.reads.Load() != 1 {
+					t.Fatalf("terminals=%d reads=%d, want one terminal without another read", terminals, body.reads.Load())
+				}
+				return
+			}
+			if chunk.Err != nil {
+				t.Fatalf("future read error reported before it occurred: %v", chunk.Err)
+			}
+			for _, event := range issue6258Events(chunk.Payload) {
+				switch event.Get("type").String() {
+				case "response.completed":
+					terminals++
+					if event.Get("response.usage").Exists() || event.Get("response.output.0.content.0.text").String() != "answer" {
+						t.Fatalf("unexpected terminal: %s", event.Raw)
+					}
+				case "response.incomplete", "response.failed":
+					t.Fatalf("unexpected terminal: %s", event.Raw)
+				}
+			}
+		case <-timer.C:
+			t.Fatal("stream waited for a future read error after finish")
+		}
+	}
+}
+
+func TestGeminiStreamCompletesBeforeFutureReadError(t *testing.T) {
+	requireGeminiTerminalBeforeFutureReadError(t, false)
 }
 
 func TestGeminiStreamCleanEndOfStreamFinalizesOnce(t *testing.T) {
@@ -170,8 +246,8 @@ func TestGeminiStreamCancellationDoesNotSynthesizeCompletion(t *testing.T) {
 	}
 }
 
-func TestGeminiStreamSplitTerminalUsageIsPreserved(t *testing.T) {
-	frames := geminiTerminalContentFrame + "\n\n" + geminiTerminalFinishFrame + "\n\n" + geminiTerminalUsageFrame + "\n\n"
+func TestGeminiStreamUsageBeforeFinishIsPreserved(t *testing.T) {
+	frames := geminiTerminalContentFrame + "\n\n" + geminiTerminalUsageFrame + "\n\n" + geminiTerminalFinishFrame + "\n\n"
 	observed := runGeminiResponsesTerminalStream(t, frames, false)
 	if len(observed.Errors) != 0 {
 		t.Fatalf("unexpected stream errors: %v", observed.Errors)
@@ -186,7 +262,7 @@ func TestGeminiStreamSplitTerminalUsageIsPreserved(t *testing.T) {
 	usage := terminal.Get("response.usage")
 	if usage.Get("input_tokens").Int() != 100 || usage.Get("output_tokens").Int() != 60 ||
 		usage.Get("output_tokens_details.reasoning_tokens").Int() != 50 || usage.Get("total_tokens").Int() != 160 {
-		t.Fatalf("split terminal usage = %s", usage.Raw)
+		t.Fatalf("pre-finish terminal usage = %s", usage.Raw)
 	}
 }
 
