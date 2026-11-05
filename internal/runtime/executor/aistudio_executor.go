@@ -17,6 +17,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	internalsignature "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -348,12 +349,27 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		metadataLogged := false
 		var relayFrames helps.RelaySSEBuffer
 		processRelayFrames := func(payloads [][]byte) bool {
-			for _, payload := range payloads {
+			for payloadIndex, payload := range payloads {
 				for _, frame := range splitRelayFrames(payload) {
+					if responseFormat == sdktranslator.FormatOpenAIResponse {
+						frame = normalizeAIStudioMultilineSSE(frame)
+					}
 					reporter.ObserveResponseModel(frame)
 					streamUsage.ObserveGeminiStream(frame)
 					filtered := helps.FilterSSEUsageMetadata(frame)
-					lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translatedReq, filtered, &param, claudeInputTokens)
+					translateCtx := ctx
+					var errBuffered error
+					bufferedObserved := false
+					if responseFormat == sdktranslator.FormatOpenAIResponse && geminiStreamHasFinishSignal(helps.JSONPayload(frame)) {
+						var snapshots [][]byte
+						snapshots, errBuffered = observeAIStudioBufferedUsage(payloads[payloadIndex:], &streamUsage)
+						bufferedObserved = true
+						if stopGeminiResponsesOnBufferedFailure(ctx, e.cfg, errBuffered, reporter, &streamUsage, out) {
+							return false
+						}
+						translateCtx = translatorcommon.WithGeminiBufferedUsage(ctx, &param, snapshots)
+					}
+					lines := helps.TranslateStreamWithClaudeInputTokens(translateCtx, body.toFormat, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translatedReq, filtered, &param, claudeInputTokens)
 					events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, lines, &responsesDetector, param, reporter, &streamUsage, out)
 					if !ok {
 						return false
@@ -363,6 +379,14 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					})
 					var responsesTerminal string
 					for i := range lines {
+						if responseFormat == sdktranslator.FormatOpenAIResponse && geminiResponsesTerminalType(events[i]) && !geminiResponsesTerminalFailed(events[i]) {
+							if !bufferedObserved && !isAIStudioDoneFrame(frame) {
+								_, errBuffered = observeAIStudioBufferedUsage(payloads[payloadIndex:], &streamUsage)
+							}
+							if stopGeminiResponsesOnBufferedFailure(ctx, e.cfg, errBuffered, reporter, &streamUsage, out) {
+								return false
+							}
+						}
 						select {
 						case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(lines[i])}:
 							if responseFormat == sdktranslator.FormatOpenAIResponse {
@@ -735,6 +759,88 @@ func (e *AIStudioExecutor) buildEndpoint(model, action, alt string) string {
 		return base + "?$alt=" + url.QueryEscape(alt)
 	}
 	return base
+}
+
+// observeAIStudioBufferedUsage inspects the current raw SSE event and only
+// the complete frames returned after it by the same RelaySSEBuffer.Feed.
+// The shared scanner reads the in-memory batch, never another relay message.
+func observeAIStudioBufferedUsage(frames [][]byte, streamUsage *helps.StreamUsageBuffer) ([][]byte, error) {
+	if len(frames) == 0 || !startsWithSSEField(bytes.TrimLeft(frames[0], " \t\r\n")) {
+		return nil, nil
+	}
+	var size int
+	for _, frame := range frames {
+		size += len(frame)
+	}
+	scanner := helps.NewBufferedSSEScanner(&aiStudioBatchReader{frames: frames}, size+1)
+	scanner.Buffer(make([]byte, 0, size), size+1)
+	for _, line := range bytes.Split(frames[0], []byte("\n")) {
+		if len(bytes.TrimSuffix(line, []byte("\r"))) == 0 {
+			break
+		}
+		if !scanner.Scan() {
+			return nil, scanner.Err()
+		}
+	}
+	return observeBufferedGeminiResponsesUsage(scanner, streamUsage)
+}
+
+// aiStudioBatchReader fills each read from already received frame slices.
+type aiStudioBatchReader struct {
+	frames [][]byte
+	index  int
+	offset int
+}
+
+func (r *aiStudioBatchReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	written := 0
+	for len(p) > 0 && r.index < len(r.frames) {
+		n := copy(p, r.frames[r.index][r.offset:])
+		written += n
+		p = p[n:]
+		r.offset += n
+		if r.offset == len(r.frames[r.index]) {
+			r.index++
+			r.offset = 0
+		}
+	}
+	if written == 0 {
+		return 0, io.EOF
+	}
+	return written, nil
+}
+
+func isAIStudioDoneFrame(frame []byte) bool {
+	trimmed := bytes.TrimSpace(frame)
+	trimmed = bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+	return bytes.Equal(trimmed, []byte("[DONE]"))
+}
+
+// normalizeAIStudioMultilineSSE combines data lines within one complete SSE
+// event for Responses translators, while leaving unrecognized data untouched.
+func normalizeAIStudioMultilineSSE(frame []byte) []byte {
+	var data [][]byte
+	for _, line := range bytes.Split(frame, []byte("\n")) {
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		value := line[len("data:"):]
+		if len(value) > 0 && value[0] == ' ' {
+			value = value[1:]
+		}
+		data = append(data, value)
+	}
+	if len(data) < 2 {
+		return frame
+	}
+	payload := bytes.Join(data, []byte("\n"))
+	if !gjson.ValidBytes(payload) {
+		return frame
+	}
+	return append(append([]byte("data: "), payload...), '\n', '\n')
 }
 
 // splitRelayFrames splits one relay stream chunk into the SSE frames it holds. A chunk that starts with an SSE field (data:, event:,
