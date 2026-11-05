@@ -362,7 +362,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					bufferedObserved := false
 					if responseFormat == sdktranslator.FormatOpenAIResponse && geminiStreamHasFinishSignal(helps.JSONPayload(frame)) {
 						var snapshots [][]byte
-						snapshots, errBuffered = observeAIStudioBufferedUsage(payloads[payloadIndex:], &streamUsage)
+						snapshots, errBuffered = observeAIStudioBufferedUsage(payloads[payloadIndex:], relayFrames.Pending(), &streamUsage)
 						bufferedObserved = true
 						if stopGeminiResponsesOnBufferedFailure(ctx, e.cfg, errBuffered, reporter, &streamUsage, out) {
 							return false
@@ -381,7 +381,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					for i := range lines {
 						if responseFormat == sdktranslator.FormatOpenAIResponse && geminiResponsesTerminalType(events[i]) && !geminiResponsesTerminalFailed(events[i]) {
 							if !bufferedObserved && !isAIStudioDoneFrame(frame) {
-								_, errBuffered = observeAIStudioBufferedUsage(payloads[payloadIndex:], &streamUsage)
+								_, errBuffered = observeAIStudioBufferedUsage(payloads[payloadIndex:], relayFrames.Pending(), &streamUsage)
 							}
 							if stopGeminiResponsesOnBufferedFailure(ctx, e.cfg, errBuffered, reporter, &streamUsage, out) {
 								return false
@@ -761,18 +761,27 @@ func (e *AIStudioExecutor) buildEndpoint(model, action, alt string) string {
 	return base
 }
 
-// observeAIStudioBufferedUsage inspects the current raw SSE event and only
-// the complete frames returned after it by the same RelaySSEBuffer.Feed.
-// The shared scanner reads the in-memory batch, never another relay message.
-func observeAIStudioBufferedUsage(frames [][]byte, streamUsage *helps.StreamUsageBuffer) ([][]byte, error) {
+// observeAIStudioBufferedUsage inspects the current raw SSE event, complete
+// frames returned by the same Feed, and its unfinished tail. The shared scanner
+// reads only this in-memory batch, never another relay message.
+func observeAIStudioBufferedUsage(frames [][]byte, pending []byte, streamUsage *helps.StreamUsageBuffer) ([][]byte, error) {
 	if len(frames) == 0 || !startsWithSSEField(bytes.TrimLeft(frames[0], " \t\r\n")) {
 		return nil, nil
 	}
-	var size int
+	// A standard, complete [DONE] event ends the scanner. Retain the marker
+	// itself so earlier errors are still handled by the normal SSE parser.
+	for i, frame := range frames[1:] {
+		if bytes.Equal(frame, []byte("data: [DONE]\n\n")) || bytes.Equal(frame, []byte("data: [DONE]\r\n\r\n")) {
+			frames = frames[:i+2]
+			pending = nil
+			break
+		}
+	}
+	size := len(pending)
 	for _, frame := range frames {
 		size += len(frame)
 	}
-	scanner := helps.NewBufferedSSEScanner(&aiStudioBatchReader{frames: frames}, size+1)
+	scanner := helps.NewBufferedSSEScanner(&aiStudioBatchReader{frames: frames, pending: pending}, size+1)
 	scanner.Buffer(make([]byte, 0, size), size+1)
 	for _, line := range bytes.Split(frames[0], []byte("\n")) {
 		if len(bytes.TrimSuffix(line, []byte("\r"))) == 0 {
@@ -787,9 +796,10 @@ func observeAIStudioBufferedUsage(frames [][]byte, streamUsage *helps.StreamUsag
 
 // aiStudioBatchReader fills each read from already received frame slices.
 type aiStudioBatchReader struct {
-	frames [][]byte
-	index  int
-	offset int
+	frames  [][]byte
+	pending []byte
+	index   int
+	offset  int
 }
 
 func (r *aiStudioBatchReader) Read(p []byte) (int, error) {
@@ -797,12 +807,18 @@ func (r *aiStudioBatchReader) Read(p []byte) (int, error) {
 		return 0, nil
 	}
 	written := 0
-	for len(p) > 0 && r.index < len(r.frames) {
-		n := copy(p, r.frames[r.index][r.offset:])
+	for len(p) > 0 && r.index <= len(r.frames) {
+		var frame []byte
+		if r.index < len(r.frames) {
+			frame = r.frames[r.index]
+		} else {
+			frame = r.pending
+		}
+		n := copy(p, frame[r.offset:])
 		written += n
 		p = p[n:]
 		r.offset += n
-		if r.offset == len(r.frames[r.index]) {
+		if r.offset == len(frame) {
 			r.index++
 			r.offset = 0
 		}

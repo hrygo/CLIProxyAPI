@@ -1,12 +1,14 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -30,8 +32,9 @@ type aiStudioBufferedResult struct {
 }
 
 func TestAIStudioBufferedBatchReaderAcrossFrames(t *testing.T) {
-	frames := [][]byte{[]byte("alpha"), nil, []byte("beta"), []byte("gamma")}
-	reader := &aiStudioBatchReader{frames: frames}
+	frames := [][]byte{[]byte("alpha"), nil, []byte("beta")}
+	pending := []byte("gamma")
+	reader := &aiStudioBatchReader{frames: frames, pending: pending}
 	if n, err := reader.Read(nil); n != 0 || err != nil {
 		t.Fatalf("empty read = %d, %v", n, err)
 	}
@@ -52,8 +55,33 @@ func TestAIStudioBufferedBatchReaderAcrossFrames(t *testing.T) {
 	if n, err := reader.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
 		t.Fatalf("read after batch = %d, %v", n, err)
 	}
-	if string(frames[0]) != "alpha" || string(frames[2]) != "beta" || string(frames[3]) != "gamma" {
-		t.Fatalf("reader modified frame slices: %q", frames)
+	if string(frames[0]) != "alpha" || string(frames[2]) != "beta" || string(pending) != "gamma" {
+		t.Fatalf("reader modified frame slices: %q, %q", frames, pending)
+	}
+}
+
+func TestAIStudioBufferedDoneAvoidsAllocatingLaterLargeFrame(t *testing.T) {
+	largeFrame := bytes.Repeat([]byte("x"), 16<<20)
+	copy(largeFrame, []byte("data: {\"padding\":\""))
+	copy(largeFrame[len(largeFrame)-4:], []byte("\"}\n\n"))
+	for _, marker := range []string{"data: [DONE]\n\n", "data: [DONE]\r\n\r\n"} {
+		t.Run(fmt.Sprintf("crlf=%t", strings.Contains(marker, "\r")), func(t *testing.T) {
+			frames := [][]byte{[]byte("data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n"), []byte(marker), largeFrame}
+			pending := []byte("event: error\n")
+			var before, after runtime.MemStats
+			runtime.ReadMemStats(&before)
+			for range 3 {
+				var streamUsage helps.StreamUsageBuffer
+				snapshots, err := observeAIStudioBufferedUsage(frames, pending, &streamUsage)
+				if err != nil || len(snapshots) != 0 {
+					t.Fatalf("after [DONE]: snapshots=%q error=%v", snapshots, err)
+				}
+			}
+			runtime.ReadMemStats(&after)
+			if allocated := after.TotalAlloc - before.TotalAlloc; allocated >= 8<<20 {
+				t.Fatalf("scanning after [DONE] allocated %d bytes for a 16 MiB ignored frame", allocated)
+			}
+		})
 	}
 }
 
@@ -276,6 +304,59 @@ func TestAIStudioResponsesBufferedErrors(t *testing.T) {
 			}
 			if tc.wantUsage && (got.record.Detail.InputTokens != 100 || got.record.Detail.OutputTokens != 10 || got.record.Detail.TotalTokens != 110) {
 				t.Fatalf("usage before error lost: %+v", got.record.Detail)
+			}
+		})
+	}
+}
+
+func TestAIStudioResponsesPendingErrorWithoutWaiting(t *testing.T) {
+	const finish = "data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n"
+	const usage = "data: {\"usageMetadata\":{\"promptTokenCount\":100,\"candidatesTokenCount\":10,\"totalTokenCount\":110}}\n\n"
+	for _, tc := range []struct {
+		name, tail string
+		wantError  bool
+		wantUsage  bool
+	}{
+		{name: "error_field", tail: "event: error\n", wantError: true},
+		{name: "usage_before_error_field", tail: usage + "event: error\n", wantError: true, wantUsage: true},
+		{name: "error_overridden", tail: "event: error\nevent: message\n"},
+		{name: "last_field_error", tail: "event: message\nevent: error\n", wantError: true},
+		{name: "unfinished_error_field", tail: "event: error"},
+		{name: "unfinished_usage", tail: "data: {\"usageMetadata\":{\"promptTokenCount\":100}}\n"},
+		{name: "done_then_error_field", tail: "data: [DONE]\n\nevent: error\n"},
+		{name: "done_crlf_then_error_field", tail: "data: [DONE]\r\n\r\nevent: error\n"},
+		{name: "error_before_done", tail: "event: error\n\ndata: [DONE]\n\n", wantError: true},
+		{name: "error_overridden_before_done", tail: "event: error\nevent: message\n\ndata: [DONE]\n\n"},
+		{name: "done_error_overridden", tail: "event: error\nevent: message\ndata: [DONE]\n\nevent: error\n"},
+		{name: "done_error_final", tail: "event: message\nevent: error\ndata: [DONE]\n\n", wantError: true},
+		{name: "done_in_error_event", tail: "event: error\ndata: [DONE]\n\n", wantError: true},
+		{name: "not_done", tail: "data: [DONE]x\n\nevent: error\n", wantError: true},
+		{name: "done_with_extra_data", tail: "data: [DONE]\ndata: {\"error\":{\"code\":429}}\n\n", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sendAIStudioBuffered(t, finish+tc.tail)
+			if tc.wantError {
+				var coder interface{ StatusCode() int }
+				if !errors.As(got.err, &coder) || coder.StatusCode() != http.StatusBadGateway || !got.record.Failed {
+					t.Fatalf("error = %v, failed=%t; want bad gateway failure", got.err, got.record.Failed)
+				}
+			} else if got.err != nil || got.record.Failed {
+				t.Fatalf("error = %v, failed=%t; want successful completion", got.err, got.record.Failed)
+			}
+			if tc.wantUsage && (got.record.Detail.InputTokens != 100 || got.record.Detail.OutputTokens != 10 || got.record.Detail.TotalTokens != 110) {
+				t.Fatalf("usage before pending error lost: %+v", got.record.Detail)
+			}
+			var terminals int
+			for _, event := range got.events {
+				if event.Get("type").String() == "response.completed" {
+					terminals++
+					if event.Get("response.usage").Exists() {
+						t.Fatalf("incomplete or unavailable usage was fabricated: %s", event.Raw)
+					}
+				}
+			}
+			if tc.wantError && terminals != 0 || !tc.wantError && terminals != 1 {
+				t.Fatalf("terminal count = %d, wantError=%t", terminals, tc.wantError)
 			}
 		})
 	}
