@@ -32,6 +32,9 @@ func ConvertClaudeRequestToOpenAIWithCompat(modelName string, inputRawJSON []byt
 }
 
 func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream bool, preserveThinkingBlocks bool) ([]byte, error) {
+	// GLM rejects the non-standard name on tool results, while other
+	// compatibility routes, including Gemini-backed endpoints, retain it.
+	strictToolResults := strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelName)), "glm-")
 	// The internal commentary marker must be restored as assistant text before
 	// any thinking handling, so it is never dropped or mapped to reasoning.
 	rawJSON, _ := sigcompat.RestoreCodexCommentaryMarkers(inputRawJSON)
@@ -264,7 +267,7 @@ func convertClaudeRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 						toolUseID := part.Get("tool_use_id").String()
 						toolResultJSON := []byte(`{"role":"tool","tool_call_id":"","content":""}`)
 						toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "tool_call_id", toolUseID)
-						if toolName := toolNameByID[toolUseID]; toolName != "" {
+						if toolName := toolNameByID[toolUseID]; toolName != "" && !strictToolResults {
 							toolResultJSON, _ = sjson.SetBytes(toolResultJSON, "name", toolName)
 						}
 						toolResultContent, toolResultImages := convertClaudeToolResultContent(part.Get("content"))
