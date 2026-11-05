@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
@@ -90,6 +91,10 @@ func (e *MetaExecutor) prepareResponsesRequest(ctx context.Context, auth *clipro
 	}
 
 	body = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, e.Identifier(), from.String(), "", body, originalTranslated, requestedModel, requestPath, opts.Headers)
+	// Meta's Responses-compatible backend needs portable multi-agent items even
+	// when the source translator targets Codex or rules add items afterwards.
+	body = helps.RewriteCodexOrphanDelegationInput(ctx, opts.Headers, body, e.cfg)
+	body = multiagentv2.RewriteCodexMultiAgentV2Input(ctx, opts.Headers, body, e.cfg, true)
 	guardBody, errGuardBody := metaGuardPayload(ctx, body, injectedMuse)
 	if errGuardBody != nil {
 		return nil, errGuardBody

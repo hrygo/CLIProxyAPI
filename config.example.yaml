@@ -346,6 +346,9 @@ client:
     # into standard user messages for non-Codex upstream protocols.
     # Default false. Applies to both OAuth and API-key credentials across providers.
     # Legacy provider paths migrate here; this path wins conflicts, including explicit false.
+    # Meta compatibility also rewrites agent_message and removes author, recipient,
+    # and internal_chat_message_metadata_passthrough from input items regardless
+    # of this setting or the client user agent.
     optimize-multi-agent-v2: false
     # Cache upstream web search results per session so replayed Codex web_search_call items
     # that omit results still retain search results in later turns.
