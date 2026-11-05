@@ -13,14 +13,21 @@ commits were ported onto our `main` **and** `verify-absorb.sh` exited 0.
 
 ## Comparison baseline
 
-**Accepted comparison baseline: `v8.0.35`**
-(`ae3ee3be303fb07fb8173279923413005bf32177`). The initial 25 selective ports
-reached main through PR #32 (`6efd7088ef740214f018d993c46f5f335d32fac7`)
-and shipped in `v1.3.3-upstream8.0.35` at `5cc1929a58156977d2d9b59ee215609be0aea311`.
-Alignment identifies a reviewed release ceiling, not a wholesale upstream merge.
-The three-helper follow-up below does not advance this ceiling.
+**Accepted comparison baseline: `v8.0.51`**
+(`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`). The complete release tree was
+replayed with the fork capabilities and merged through PR #41
+(`69a96b0d10e48ed5d8227895e9ae9fe9b7db29ae`), with integration commit I
+`2c5a3b3bcda3a8731ab0c82dc3f9fafc1428ef4f` and candidate tree
+`82c21b74cf8f15e1743707e5c0fa3d1cc359e0ba`.
 
-Previous comparison baseline: `v8.0.23`
+Previous comparison baseline: `v8.0.35`
+(`ae3ee3be303fb07fb8173279923413005bf32177`), selectively absorbed through
+PR #32 (`6efd7088ef740214f018d993c46f5f335d32fac7`) and shipped in
+`v1.3.3-upstream8.0.35` at `5cc1929a58156977d2d9b59ee215609be0aea311`. Its
+reviewed ceiling and the three-helper follow-up below remain historical
+evidence, not the current tree.
+
+Earlier comparison baseline: `v8.0.23`
 (`d318bcc3afb9ea8782862f5e8cdb541afdc9dfa5`), selectively absorbed through
 PR #28 (`63aa6004400a2314f1e41877dd225edae6d2368b`). Every previously deferred
 item remains deferred unless explicitly superseded by a subsequent ledger entry.
@@ -58,7 +65,15 @@ record that decision explicitly, including any remaining skipped work.
 
 ## Assessments
 
-### v8.0.51 — replay candidate, not accepted, 2026-11-05
+### v8.0.51 — complete-tree replay, effective on main, 2026-11-05
+
+- Previous intake baseline: `v8.0.35`
+- Upstream commit (U): `7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`
+- Main before replay (M): `cd45bd7b81659d33347ff066982f02261598e60e`
+- Candidate commit (C): `03df96a13d59d983d3d9d8e367a8d15134453216`
+- Integration commit (I): `2c5a3b3bcda3a8731ab0c82dc3f9fafc1428ef4f`
+- Intake commit (J): `69a96b0d10e48ed5d8227895e9ae9fe9b7db29ae`
+- Candidate tree: `82c21b74cf8f15e1743707e5c0fa3d1cc359e0ba`
 
 The candidate replays fork changes on upstream release v8.0.51
 (`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`) from the fork-change inventory at
@@ -76,8 +91,11 @@ candidate restores the original fork's synchronization fix and its race
 regressions. The [replay spike](reviews/v8.0.51-replay-spike.md) records the
 per-capability dispositions F01–F14, the completion tradeoff, Home WebSocket
 tests, the upstream behaviors deliberately retained unchanged, and remaining
-validation limits. Acceptance remains deferred and this candidate does not
-advance the accepted comparison baseline.
+validation limits. The maintainer accepted the prompt-completion tradeoff, so the
+late-data limitation stays recorded. The integration gate passed on I
+(`gate-integration-I-2c5a3b3b.log`) and the PR #41 build check passed on the
+tested merge commit `3c3075ec`. This replay advances the accepted comparison
+baseline to v8.0.51.
 
 ### v8.0.7 — absorbed, 2026-10-01, ahead of the age gate by owner decision
 
