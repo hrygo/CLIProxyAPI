@@ -21,6 +21,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/clienterror"
 	internallogging "github.com/router-for-me/CLIProxyAPI/v8/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
+	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
@@ -984,13 +985,35 @@ func (counts *geminiStreamTokenCounts) merge(node gjson.Result) gjson.Result {
 		{"totalTokenCount", "total_token_count", &counts.total},
 		{"cachedContentTokenCount", "cached_content_token_count", &counts.cached},
 	} {
-		value := node.Get(field.camel)
-		if !value.Exists() {
-			value = node.Get(field.snake)
+		camel := node.Get(field.camel)
+		snake := node.Get(field.snake)
+		value, selected := camel, field.camel
+		if !camel.Exists() {
+			value, selected = snake, field.snake
+		} else if snake.Exists() {
+			if merged == nil {
+				merged = []byte(node.Raw)
+			}
+			merged, _ = sjson.DeleteBytes(merged, field.snake)
 		}
 		if value.Exists() {
-			field.count.value, field.count.present = value.Int(), true
-		} else if field.count.present {
+			if count, okCount := translatorcommon.ParseGeminiUsageCount(value); okCount {
+				field.count.value, field.count.present = count, true
+				if merged == nil {
+					merged = []byte(node.Raw)
+				}
+				if selected == field.snake {
+					merged, _ = sjson.DeleteBytes(merged, field.snake)
+				}
+				merged, _ = sjson.SetBytes(merged, field.camel, count)
+				continue
+			}
+			if merged == nil {
+				merged = []byte(node.Raw)
+			}
+			merged, _ = sjson.DeleteBytes(merged, selected)
+		}
+		if field.count.present {
 			if merged == nil {
 				merged = []byte(node.Raw)
 			}
@@ -1223,7 +1246,10 @@ func (b *StreamUsageBuffer) observeGeminiFamilyStream(line []byte, allowResponse
 		detail.TotalTokens = 0
 		detail.TokenBreakdown = invalidUsageTokenBreakdown(0)
 	}
-	if !allowResponseWrapper && !b.ok && !hasNonZeroTokenUsage(detail) {
+	counts := b.geminiTokenCounts
+	hasTokenFields := counts.prompt.present || counts.toolPrompt.present || counts.candidates.present ||
+		counts.thoughts.present || counts.total.present || counts.cached.present
+	if !allowResponseWrapper && !b.ok && !hasNonZeroTokenUsage(detail) && !hasTokenFields {
 		return
 	}
 	if b.ok {
@@ -1249,9 +1275,6 @@ func (b *StreamUsageBuffer) observeGeminiFamilyStream(line []byte, allowResponse
 			}
 		}
 	}
-	counts := b.geminiTokenCounts
-	hasTokenFields := counts.prompt.present || counts.toolPrompt.present || counts.candidates.present ||
-		counts.thoughts.present || counts.total.present || counts.cached.present
 	if hasTokenFields && detail.ResponseServiceTier != "" && !hasNonZeroTokenUsage(detail) && !hasStructuredUsageDetail(detail) {
 		// Observe treats a tier-only event as metadata; an explicit zero snapshot is usage.
 		b.detail = detail

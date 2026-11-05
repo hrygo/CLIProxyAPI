@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -49,6 +50,8 @@ type geminiFunctionCallEvidence struct {
 // Gemini usage frames are cumulative snapshots, not additive deltas.
 type geminiResponsesUsage struct {
 	Present    bool
+	Known      uint8
+	Invalid    uint8
 	Prompt     int64
 	Candidates int64
 	Thoughts   int64
@@ -59,27 +62,50 @@ type geminiResponsesUsage struct {
 func (usage *geminiResponsesUsage) Merge(root gjson.Result) bool {
 	metadata := root.Get("usageMetadata")
 	if !metadata.Exists() {
+		metadata = root.Get("usage_metadata")
+	}
+	if !metadata.Exists() {
 		metadata = root.Get("cpaUsageMetadata")
 	}
 	if !metadata.Exists() {
 		return false
 	}
+	// Preserve the existing immediate terminal behavior for a present but
+	// malformed usage field without treating unknown counts as measured zeros.
+	if !metadata.IsObject() {
+		return true
+	}
 	usage.Present = true
-	for _, field := range []struct {
-		name  string
-		value *int64
+	for i, field := range []struct {
+		camel, snake string
+		value        *int64
 	}{
-		{"promptTokenCount", &usage.Prompt},
-		{"candidatesTokenCount", &usage.Candidates},
-		{"thoughtsTokenCount", &usage.Thoughts},
-		{"totalTokenCount", &usage.Total},
-		{"cachedContentTokenCount", &usage.Cached},
+		{"promptTokenCount", "prompt_token_count", &usage.Prompt},
+		{"candidatesTokenCount", "candidates_token_count", &usage.Candidates},
+		{"thoughtsTokenCount", "thoughts_token_count", &usage.Thoughts},
+		{"totalTokenCount", "total_token_count", &usage.Total},
+		{"cachedContentTokenCount", "cached_content_token_count", &usage.Cached},
 	} {
-		if value := metadata.Get(field.name); value.Exists() {
-			*field.value = value.Int()
+		value := metadata.Get(field.camel)
+		if !value.Exists() {
+			value = metadata.Get(field.snake)
+		}
+		if value.Exists() {
+			flag := uint8(1 << i)
+			if count, okCount := translatorcommon.ParseGeminiUsageCount(value); okCount {
+				*field.value = count
+				usage.Known |= flag
+				usage.Invalid &^= flag
+			} else if usage.Known&flag == 0 {
+				usage.Invalid |= flag
+			}
 		}
 	}
 	return true
+}
+
+func (usage geminiResponsesUsage) CanEmit() bool {
+	return usage.Present && usage.Invalid == 0 && usage.Candidates <= math.MaxInt64-usage.Thoughts
 }
 
 func (usage geminiResponsesUsage) JSON() []byte {
@@ -221,7 +247,7 @@ func unwrapGeminiResponseRoot(root gjson.Result) gjson.Result {
 		return root
 	}
 	// Vertex-style Gemini responses wrap the actual payload in a "response" object.
-	if resp.Get("candidates").Exists() || resp.Get("responseId").Exists() || resp.Get("usageMetadata").Exists() || resp.Get("cpaUsageMetadata").Exists() {
+	if resp.Get("candidates").Exists() || resp.Get("responseId").Exists() || resp.Get("usageMetadata").Exists() || resp.Get("usage_metadata").Exists() || resp.Get("cpaUsageMetadata").Exists() {
 		return resp
 	}
 	return root
@@ -1786,7 +1812,7 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 			completed, _ = sjson.SetBytes(completed, "response.tool_usage.web_search.num_requests", 1)
 		}
 
-		if st.Usage.Present {
+		if st.Usage.CanEmit() {
 			completed, _ = sjson.SetRawBytes(completed, "response.usage", st.Usage.JSON())
 		}
 
