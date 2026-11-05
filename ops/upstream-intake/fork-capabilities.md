@@ -6,13 +6,17 @@ inventory, not proof that every fork change has been classified or that an
 upstream implementation is equivalent. The accepted baseline and decisions for
 each intake are recorded in [absorbed.md](absorbed.md).
 
-The v8.0.51 replay is an unaccepted candidate. Its [spike record](reviews/v8.0.51-replay-spike.md)
-describes the candidate and its limits; it does not establish the current `main`
-baseline. Compare the actual `origin/main` commit and all changes since the last
-accepted replay as well as the previous replay's patch series before declaring
-this inventory complete. Include production behavior, configuration and SDK
-compatibility, tests, documentation, CI, releases, and installation. Classify
-unmapped changes before integration rather than treating them as disposable.
+The accepted v8.0.35 baseline records selective intake, not a complete upstream
+replay. Compare the actual `origin/main` commit and all relevant changes against
+that baseline and its recorded decisions before declaring this inventory complete.
+Include production behavior, configuration and SDK compatibility, tests,
+documentation, CI, releases, and installation. Classify unmapped changes before
+integration rather than treating them as disposable.
+
+The unaccepted v8.0.51 replay candidate is checked against this inventory; its
+[spike record](reviews/v8.0.51-replay-spike.md) lists each capability's
+disposition, evidence and limits. The candidate does not establish the current
+`main` baseline.
 
 ## Known requirements and evidence entry points
 

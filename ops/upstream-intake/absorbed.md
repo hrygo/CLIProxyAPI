@@ -1,10 +1,7 @@
 # Absorbed upstream releases
 
-Historical rows below describe selective intakes and retain their original meanings.
-New intakes use the complete mature release tree and replay necessary fork deltas;
-record equivalence evidence, integration tree and gate results. An assessment alone
-is not a completed replay. Advance the accepted baseline only when the verified
-replay reaches `main`.
+One row per upstream release that was assessed. "Absorbed" means the listed
+commits were ported onto our `main` **and** `verify-absorb.sh` exited 0.
 
 | Upstream | Assessed | Ported | Skipped | Gate | Recorded |
 | --- | --- | --- | --- | --- | --- |
@@ -50,27 +47,36 @@ presence. Evidence:
   per-commit assessment and no replay evidence.
 - Verified against `main` at `f667aaf566ecabd5e419d11bd50a79a9b6d1637d`.
 
-The accepted comparison baseline above is a selective-intake ceiling, not evidence
-that a complete upstream release tree has been replayed. Follow the current
-[procedure](README.md) for future intake and record its evidence here.
+Do not advance this baseline on tag presence alone. An assessed release is not
+automatically a new baseline; record that decision explicitly, along with any
+work left skipped.
+
+For each assessment, record the explicit baseline, candidate and our main SHA,
+baseline/candidate gate logs, upstream-to-local commit mapping and replay coverage
+(or "not performed"). An assessed release is not automatically a new baseline;
+record that decision explicitly, including any remaining skipped work.
 
 ## Assessments
 
 ### v8.0.51 — replay candidate, not accepted, 2026-11-05
 
 The candidate replays fork changes on upstream release v8.0.51
-(`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`). The maintainer chose prompt
+(`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`) from the fork-change inventory at
+`main` `cd45bd7b81659d33347ff066982f02261598e60e`. The maintainer chose prompt
 completion even when Gemini sends usage or continuation signatures later; those
 late fields can be lost. Already-buffered usage and errors observed at
-completion are handled without waiting for further network data. The complete
-Go 1.26.10 intake gate passed after the replay-completeness repairs at code
-commit `cfc1ed7`. An earlier gate failed on an intermittent Claude credential
-race also present in upstream v8.0.51; the candidate restores the original
-fork's synchronization fix and its race regressions. The
-[replay spike](reviews/v8.0.51-replay-spike.md) records that evidence, the
-completion tradeoff, Home WebSocket tests, and remaining validation limits.
-Acceptance remains deferred and this candidate does not advance the accepted
-comparison baseline.
+completion are handled without waiting for further network data. After the
+governance and release-tooling replay, the complete Go 1.26.10 intake gate
+passed: maintenance tooling, formatting, `go vet`, responses-tools invariants,
+the full test suite, all seven race-sensitive packages and the server build
+(`gate-reconciled-rerun-20261105-223020.log`). An earlier gate failed on an
+intermittent Claude credential race also present in upstream v8.0.51; the
+candidate restores the original fork's synchronization fix and its race
+regressions. The [replay spike](reviews/v8.0.51-replay-spike.md) records the
+per-capability dispositions F01–F14, the completion tradeoff, Home WebSocket
+tests, the upstream behaviors deliberately retained unchanged, and remaining
+validation limits. Acceptance remains deferred and this candidate does not
+advance the accepted comparison baseline.
 
 ### v8.0.7 — absorbed, 2026-10-01, ahead of the age gate by owner decision
 
@@ -660,9 +666,14 @@ upstream tree.
 
 After the verified integration reaches protected `main`, record the actual
 integration and main commits, their relevant tree IDs, checks and client replay
-coverage in a separate follow-up entry. Advance the accepted baseline only when
-the verified tree and its ancestry have been confirmed. A fetched tag, an
-assessment, or an unmerged candidate is not an accepted replay.
+coverage in a follow-up ledger commit L. Update the current declaration in
+[accepted-baselines.json](accepted-baselines.json) in a later commit R that
+references L, and integrate both in the same protected PR with a merge commit
+that preserves L's SHA. Advance the accepted baseline only when both updates
+reach `main`, R still references L, and the verified tree and ancestry have been
+confirmed. A registry check does not prove the underlying review or behavioral
+tests were performed. A fetched tag, an assessment, or an unmerged candidate is
+not an accepted replay.
 
 
 ### v8.0.35 — three-helper convergence follow-up, 2026-10-23
