@@ -375,7 +375,36 @@ type StreamingConfig struct {
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
 
+	BootstrapTimeout string `yaml:"bootstrap-timeout,omitempty" json:"bootstrap-timeout,omitempty"`
+
 	// SendKeepAliveBeforeFT controls whether SSE heartbeats are sent before the first token arrives
 	// when KeepAliveSeconds > 0. Default is false.
 	SendKeepAliveBeforeFT bool `yaml:"send-keepalive-before-ft,omitempty" json:"send-keepalive-before-ft,omitempty"`
+}
+
+// DefaultStreamingBootstrapTimeout is the default bound on the wait for the first upstream
+// frame. Zero leaves the wait unbounded, so an operator must opt into cutting a silent attempt.
+const DefaultStreamingBootstrapTimeout = 0
+
+// BootstrapTimeoutDuration returns the bound on the wait for the first upstream frame.
+// Defaults to 0 (unbounded) for empty, "0", "none", "unlimited", "disabled", "off",
+// "never", or unparsable values; accepts durations ("90s", "1m30s") and whole seconds ("90").
+func (c *StreamingConfig) BootstrapTimeoutDuration() time.Duration {
+	if c == nil {
+		return DefaultStreamingBootstrapTimeout
+	}
+	raw := strings.TrimSpace(c.BootstrapTimeout)
+	if raw == "" || raw == "0" || strings.EqualFold(raw, "none") || strings.EqualFold(raw, "unlimited") || strings.EqualFold(raw, "disabled") || strings.EqualFold(raw, "off") || strings.EqualFold(raw, "never") {
+		return 0
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d >= 0 {
+		return d
+	}
+	if secs, err := strconv.Atoi(raw); err == nil && secs >= 0 && int64(secs) <= maxBootstrapTimeoutSeconds {
+		d := time.Duration(secs) * time.Second
+		if d >= 0 {
+			return d
+		}
+	}
+	return DefaultStreamingBootstrapTimeout
 }
