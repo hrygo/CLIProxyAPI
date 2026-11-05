@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
-# Regression gate for absorbing an upstream release.
+# Regression gate for upstream release replay and fork releases.
 #
-# Exits 0 only when every stage passes. Any failure means the port is not
-# absorbed. Run this from the repository root.
+# Exits 0 only when every stage passes. Any failure blocks acceptance.
+# Run this from the repository root.
 
 set -uo pipefail
 cd "$(git rev-parse --show-toplevel)" || exit 1
@@ -69,7 +69,7 @@ check_invariants() {
   go test ./internal/responsestools/... -count=1
 }
 
-stage "maintenance tooling" python3 ops/tests/test_maintenance.py
+stage "maintenance tooling" python3 -m unittest discover -s ops/tests -p 'test_*.py'
 stage "gofmt" check_gofmt
 stage "go vet" go vet ./...
 stage "responses-tools invariants" check_invariants
@@ -80,7 +80,7 @@ stage "server build" check_build
 printf '\n========================================\n'
 if [ "${#failures[@]}" -eq 0 ]; then
   printf 'REGRESSION GATE: PASS\n'
-  printf 'This port may be absorbed.\n'
+  printf 'Acceptance still requires the documented review and evidence.\n'
   exit 0
 fi
 
@@ -89,6 +89,6 @@ printf 'Failed stages:\n'
 for f in "${failures[@]}"; do
   printf '  - %s\n' "$f"
 done
-printf '\nDo NOT absorb this port. Fix the failures on our side or drop the\n'
-printf 'commit and record the reason in absorbed.md.\n'
+printf '\nDo NOT accept the replay or release. Diagnose each failure, retain fork\n'
+printf 'requirements until equivalence is demonstrated, and record the outcome.\n'
 exit 1

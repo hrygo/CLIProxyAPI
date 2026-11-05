@@ -311,7 +311,7 @@ class ReleaseNoteTests(unittest.TestCase):
         )
         self.assertNotIn("releases/generate-notes", workflow)
 
-    def test_workflow_rejects_upstream_tags(self):
+    def test_release_workflow_routes_own_tag_names_to_guard(self):
         workflow = (ROOT / ".github/workflows/release.yaml").read_text()
         self.assertIn(
             'ops/upstream-intake/guard-release-tag.sh "$RELEASE_TAG"',
@@ -319,22 +319,6 @@ class ReleaseNoteTests(unittest.TestCase):
         )
         self.assertIn("v[0-9]+.[0-9]+.[0-9]+-upstream*", workflow)
         self.assertNotIn("'v[0-9]+.[0-9]+.[0-9]+'", workflow)
-
-    def test_guard_script_accepts_the_tags_the_workflow_pushes(self):
-        # The workflow only ever pushes vX.Y.Z-upstreamA.B.C and then hands
-        # that exact string to guard-release-tag.sh. A guard that rejects the
-        # suffix fails every release at the validate job.
-        script = (ROOT / "ops/upstream-intake/guard-release-tag.sh").read_text()
-        pattern = re.search(r'\[\[ "\$tag" =~ (\^\S+) \]\]', script)
-        self.assertIsNotNone(pattern, "guard-release-tag.sh lost its tag shape check")
-        regex = re.compile(pattern.group(1))
-        for accepted in ["v1.0.0", "v1.2.3-upstream8.0.6", "v10.20.30-upstream8.0.7"]:
-            with self.subTest(tag=accepted):
-                self.assertIsNotNone(regex.fullmatch(accepted))
-        for rejected in ["v1.2.3-upstreamv8.0.6", "v1.2.3-upstream8.0",
-                         "v1.2.3-upstream8.0.6-extra", "1.2.3"]:
-            with self.subTest(tag=rejected):
-                self.assertIsNone(regex.fullmatch(rejected))
 
     def test_intake_scripts_are_executable(self):
         for name in ["guard-release-tag", "check-tag-namespace", "establish-baseline"]:
@@ -448,6 +432,9 @@ class IntakeTests(unittest.TestCase):
 
 
 class ReleaseTests(unittest.TestCase):
+    tag = "v1.2.3-upstream8.0.6"
+    release_sha = "a" * 40
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -458,7 +445,7 @@ class ReleaseTests(unittest.TestCase):
         for path in [self.dist, self.remote, self.bin]:
             path.mkdir()
         self.names = [
-            f"CLIProxyAPI_1.2.3_{target}.{extension}"
+            f"CLIProxyAPI_{self.tag[1:]}_{target}.{extension}"
             for target, extension in [
                 ("darwin_amd64", "tar.gz"), ("darwin_aarch64", "tar.gz"),
                 ("windows_amd64", "zip"), ("windows_aarch64", "zip"),
@@ -475,41 +462,149 @@ class ReleaseTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/release.yaml").read_text()
         step = workflow.split("      - name: Verify complete assets and publish release\n", 1)[1]
         self.script = textwrap.dedent(step.split("        run: |\n", 1)[1])
+        prepare = workflow.split("      - name: Create release\n", 1)[1]
+        prepare = prepare.split("\n  build-hosted:", 1)[0]
+        self.prepare_script = textwrap.dedent(prepare.split("        run: |\n", 1)[1])
+        self.build_upload_scripts = {}
+        for name in ("build-hosted", "build-linux-glibc", "build-linux-no-plugin", "build-freebsd"):
+            build = workflow.split(f"\n  {name}:\n", 1)[1]
+            build = re.split(r"\n  [a-z][a-z0-9-]*:\n", build, maxsplit=1)[0]
+            step = build.split("      - name: Upload release assets\n", 1)[1]
+            self.build_upload_scripts[name] = textwrap.dedent(step.split("        run: |\n", 1)[1])
         gh = self.bin / "gh"
         gh.write_text("""#!/bin/sh
 set -eu
 case "$1 $2" in
+  "release view")
+    printf '%s\\n' "$*" >> "$FAKE_EVENTS"
+    [ "$FAKE_EXISTING" = true ]
+    ;;
   "release download")
     while [ "$#" -gt 0 ]; do
       if [ "$1" = "--dir" ]; then shift; cp "$FAKE_REMOTE/"* "$1/"; fi
       shift
     done
     ;;
-  "release upload"|"release edit")
+  "release upload"|"release edit"|"release create")
     printf '%s\\n' "$*" >> "$FAKE_EVENTS"
     ;;
   *) exit 1 ;;
 esac
 """)
         gh.chmod(0o755)
+        git = self.bin / "git"
+        git.write_text('''#!/bin/sh
+set -eu
+[ "$1" = "ls-remote" ] || exit 2
+case "$FAKE_TAG_STATE" in
+  lightweight) printf '%s\\trefs/tags/%s\\n' "$RELEASE_SHA" "$RELEASE_TAG" ;;
+  annotated) printf '%s\\trefs/tags/%s\\n%s\\trefs/tags/%s^{}\\n' \\
+    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$RELEASE_TAG" "$RELEASE_SHA" "$RELEASE_TAG" ;;
+  moved) printf '%s\\trefs/tags/%s\\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$RELEASE_TAG" ;;
+  missing) exit 2 ;;
+  change_after_first|missing_after_first)
+    if [ -e "$FAKE_COUNTER" ]; then
+      [ "$FAKE_TAG_STATE" != missing_after_first ] || exit 2
+      printf '%s\\trefs/tags/%s\\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb "$RELEASE_TAG"
+    else
+      : > "$FAKE_COUNTER"
+      printf '%s\\trefs/tags/%s\\n' "$RELEASE_SHA" "$RELEASE_TAG"
+    fi
+    ;;
+  *) exit 2 ;;
+esac
+''')
+        git.chmod(0o755)
+        guard = self.base / "ops/upstream-intake/guard-release-tag.sh"
+        guard.parent.mkdir(parents=True)
+        guard.symlink_to(ROOT / "ops/upstream-intake/guard-release-tag.sh")
+        validator = self.base / "ops/release-notes/validate.py"
+        validator.parent.mkdir(parents=True)
+        validator.symlink_to(ROOT / "ops/release-notes/validate.py")
+        self.notes = self.base / "notes.md"
+        self.notes.write_text(ReleaseNoteTests.aligned.replace("# v1.2.3", f"# {self.tag}", 1))
         self.events = self.base / "events"
+        self.counter = self.base / "counter"
 
-    def run_finalize(self):
+    def run_script(self, script, state="lightweight", existing=False):
         return subprocess.run(
-            ["bash", "-euo", "pipefail", "-c", self.script], cwd=self.base,
+            ["bash", "-euo", "pipefail", "-c", script], cwd=self.base,
             env=dict(os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
-                     RELEASE_TAG="v1.2.3", FAKE_REMOTE=str(self.remote),
-                     FAKE_EVENTS=str(self.events)),
+                     RELEASE_TAG=self.tag, RELEASE_SHA=self.release_sha,
+                     FAKE_TAG_STATE=state, FAKE_REMOTE=str(self.remote),
+                     FAKE_EVENTS=str(self.events), FAKE_COUNTER=str(self.counter),
+                     FAKE_EXISTING=str(existing).lower(),
+                     GH_REPO="hrygo/CLIProxyAPI", RELEASE_NOTES_FILE=str(self.notes),
+                     PREVIOUS_TAG="v1.2.2-upstream8.0.5"),
             text=True, capture_output=True,
         )
 
+    def run_finalize(self, state="lightweight"):
+        return self.run_script(self.script, state)
+
+    def test_draft_creation_and_edit_check_the_remote_tag(self):
+        for state, existing in (("lightweight", False), ("annotated", True)):
+            with self.subTest(state=state, existing=existing):
+                self.events.unlink(missing_ok=True)
+                result = self.run_script(self.prepare_script, state, existing)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = self.events.read_text().splitlines()
+                self.assertEqual(len(events), 2)
+                self.assertIn(f"release view {self.tag}", events[0])
+                self.assertIn(f"release {'edit' if existing else 'create'} {self.tag}", events[1])
+
+    def test_moved_or_missing_remote_tag_cannot_mutate_draft(self):
+        for state in ("moved", "missing"):
+            for existing in (False, True):
+                with self.subTest(state=state, existing=existing):
+                    result = self.run_script(self.prepare_script, state, existing)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertFalse(self.events.exists())
+
     def test_complete_verified_release_publishes(self):
-        result = self.run_finalize()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        events = self.events.read_text().splitlines()
-        self.assertEqual(len(events), 2)
-        self.assertIn("release upload v1.2.3 checksums.txt", events[0])
-        self.assertIn("release edit v1.2.3 --draft=false --latest", events[1])
+        for state in ("lightweight", "annotated"):
+            with self.subTest(state=state):
+                self.events.unlink(missing_ok=True)
+                result = self.run_finalize(state)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                events = self.events.read_text().splitlines()
+                self.assertEqual(len(events), 2)
+                self.assertIn(f"release upload {self.tag} checksums.txt", events[0])
+                self.assertIn(f"release edit {self.tag} --draft=false --latest", events[1])
+
+    def test_moved_or_missing_remote_tag_never_publishes(self):
+        for state in ("moved", "missing"):
+            with self.subTest(state=state):
+                self.events.unlink(missing_ok=True)
+                result = self.run_finalize(state)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertFalse(self.events.exists())
+
+    def test_tag_moving_or_disappearing_after_checksum_upload_prevents_publish(self):
+        for state in ("change_after_first", "missing_after_first"):
+            with self.subTest(state=state):
+                self.events.unlink(missing_ok=True)
+                self.counter.unlink(missing_ok=True)
+                result = self.run_finalize(state)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                events = self.events.read_text().splitlines()
+                self.assertEqual(len(events), 1)
+                self.assertIn(f"release upload {self.tag} checksums.txt", events[0])
+
+    def test_asset_uploads_check_remote_tag(self):
+        for name, script in self.build_upload_scripts.items():
+            for state in ("lightweight", "annotated", "moved", "missing"):
+                with self.subTest(job=name, state=state):
+                    self.events.unlink(missing_ok=True)
+                    result = self.run_script(script, state)
+                    if state in ("lightweight", "annotated"):
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        events = self.events.read_text().splitlines()
+                        self.assertEqual(len(events), 1)
+                        self.assertIn(f"release upload {self.tag}", events[0])
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout)
+                        self.assertFalse(self.events.exists())
 
     def test_incomplete_or_corrupt_assets_never_publish(self):
         cases = [
