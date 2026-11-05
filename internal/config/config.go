@@ -216,4 +216,6 @@ type Config struct {
 
 	// Payload defines default and override rules for provider payload parameters.
 	Payload PayloadConfig `yaml:"payload" json:"payload"`
+
+	ResponsesTools ResponsesToolsConfig `yaml:"responses-tools" json:"responses-tools"`
 }

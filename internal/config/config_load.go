@@ -355,5 +355,10 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.SourceHash = ComputeSourceHash(data)
 
 	// Return the populated configuration struct.
+	cfg.NormalizeResponsesToolsConfig()
+	if errResponsesTools := cfg.ValidateResponsesToolsConfig(); errResponsesTools != nil {
+		return nil, errResponsesTools
+	}
+
 	return &cfg, nil
 }
