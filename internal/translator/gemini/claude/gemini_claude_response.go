@@ -92,7 +92,7 @@ func ConvertGeminiResponseToClaude(_ context.Context, _ string, originalRequestR
 			ResponseType:     0,
 			ResponseIndex:    0,
 			ToolNameMap:      util.UnambiguousToolNameMapFromClaudeRequest(originalRequestRawJSON),
-			SanitizedNameMap: util.SanitizedToolNameMap(originalRequestRawJSON),
+			SanitizedNameMap: util.DisambiguatedToolNameMap(originalRequestRawJSON),
 			SawToolCall:      false,
 		}
 	}
@@ -638,7 +638,7 @@ func ConvertGeminiResponseToClaudeNonStream(_ context.Context, _ string, origina
 
 	root := gjson.ParseBytes(rawJSON)
 	toolNameMap := util.UnambiguousToolNameMapFromClaudeRequest(originalRequestRawJSON)
-	sanitizedNameMap := util.SanitizedToolNameMap(originalRequestRawJSON)
+	sanitizedNameMap := util.DisambiguatedToolNameMap(originalRequestRawJSON)
 
 	out := []byte(`{"id":"","type":"message","role":"assistant","model":"","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}`)
 	out, _ = sjson.SetBytes(out, "id", root.Get("responseId").String())
