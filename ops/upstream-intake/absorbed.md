@@ -633,17 +633,27 @@ cost savings. No release/tag, tap, installation, production configuration change
 or service restart was performed. Raw evidence is retained locally under
 `.git/task-evidence/upstream-intake-v8.0.35-20261023/`.
 
-## How to fill this in
+## Recording a replay
 
-After `assess-release.sh` and `verify-absorb.sh`:
+For each release, record the accepted fork baseline, exact upstream release
+and commit, candidate commit and tree, and the fork capabilities and patch
+decisions from [fork-capabilities.md](fork-capabilities.md). Describe retained
+and adapted behavior, any replacement by a verified equivalent upstream
+implementation, the evidence and limits, and the baseline and candidate gates.
+The historical tables in this ledger describe selective intake decisions at
+their stated times; they do not define the replay procedure or prove a complete
+upstream tree.
 
-```markdown
-| v8.0.6 | 2026-10-01 | `abc1234` tool-schema fix, `def5678` reconnect backoff | `9999999` CI churn, `8888888` config rename | PASS | 2026-10-01 |
-```
-
-Keep the skipped column honest. A release where most commits are skipped is a
-normal outcome and worth recording; a release with an empty ported column
-should say why in a comment below the table.
+After the verified integration reaches protected `main`, record the actual
+integration and main commits, their relevant tree IDs, checks and client replay
+coverage in a follow-up ledger commit L. Update the current declaration in
+[accepted-baselines.json](accepted-baselines.json) in a later commit R that
+references L, and integrate both in the same protected PR with a merge commit
+that preserves L's SHA. Advance the accepted baseline only when both updates
+reach `main`, R still references L, and the verified tree and ancestry have been
+confirmed. A registry check does not prove the underlying review or behavioral
+tests were performed. A fetched tag, an assessment, or an unmerged candidate is
+not an accepted replay.
 
 
 ### v8.0.35 — three-helper convergence follow-up, 2026-10-23

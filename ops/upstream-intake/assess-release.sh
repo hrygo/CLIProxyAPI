@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Fetch an upstream release tag locally and classify the commits since the
-# last absorbed release. Read-only with respect to the working tree and to
-# `origin`; the only ref it writes is refs/upstream/tags/*.
+# Fetch an upstream release tag locally and summarize commits since the
+# accepted comparison baseline. Read-only with respect to the working tree and
+# to `origin`; the only ref it writes is refs/upstream/tags/*.
 #
 # Usage: ops/upstream-intake/assess-release.sh v8.0.6 previous-tag
 
@@ -11,7 +11,7 @@ set -euo pipefail
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 UPSTREAM_REPO="${UPSTREAM_REPO:-router-for-me/CLIProxyAPI}"
 TAG_PREFIX="refs/upstream/tags"
-# A release must have settled before we port from it, so regressions and
+# A release must have settled before we adopt its tree, so regressions and
 # hurried follow-up fixes have had time to surface upstream.
 MIN_AGE_HOURS="${MIN_AGE_HOURS:-72}"
 
@@ -25,8 +25,8 @@ usage() {
 Usage: assess-release.sh <new-tag> <previous-tag>
 
   <new-tag>       upstream release tag to assess, e.g. v8.0.6
-  <previous-tag>  explicit assessed baseline recorded in absorbed.md;
-                  fetched tags are not evidence of absorption
+  <previous-tag>  accepted comparison baseline recorded in absorbed.md;
+                  fetched tags are not evidence of an accepted baseline
 EOF
   exit 2
 }
@@ -105,15 +105,15 @@ git log --oneline --no-decorate "$prev_ref..$new_ref"
 count="$(git rev-list --count "$prev_ref..$new_ref")"
 printf '\n%d commit(s) between the two releases.\n' "$count"
 
-printf '\n== Candidate commits, grouped ==\n'
+printf '\n== Commit subjects, grouped as review aids ==\n'
 git log --format='%H' "$prev_ref..$new_ref" | while read -r sha; do
   subject="$(git log -1 --format='%s' "$sha")"
   case "$subject" in
     fix*|Fix*|hotfix*|HOTFIX*|bugfix*|BUGFIX*)
-      printf '  candidate  %s  %s\n' "${sha:0:8}" "$subject"
+      printf '  fix-like   %s  %s\n' "${sha:0:8}" "$subject"
       ;;
     *)
-      printf '  review     %s  %s\n' "${sha:0:8}" "$subject"
+      printf '  other      %s  %s\n' "${sha:0:8}" "$subject"
       ;;
   esac
 done
@@ -123,7 +123,7 @@ git diff --stat "$prev_ref..$new_ref"
 
 cat <<EOF
 
-Next: decide what to port, record it in absorbed.md, then run
-  ops/upstream-intake/verify-absorb.sh
-Do not absorb until the gate exits 0.
+Assessment only: build the replay candidate from the complete release tree,
+review fork deltas and equivalence, and follow ops/upstream-intake/README.md.
+Do not record a new accepted baseline until the verified replay reaches main.
 EOF
