@@ -343,7 +343,7 @@ func determineWebSearchStreamMode(modelName, requestModelName string, originalRe
 }
 
 // ConvertGeminiResponseToOpenAIResponses converts Gemini SSE chunks into OpenAI Responses SSE events.
-func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
+func ConvertGeminiResponseToOpenAIResponses(ctx context.Context, modelName string, originalRequestRawJSON, requestRawJSON, rawJSON []byte, param *any) [][]byte {
 	if *param == nil {
 		reqJSON := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
 		*param = &geminiToResponsesState{
@@ -447,6 +447,11 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	}
 	root = unwrapGeminiResponseRoot(root)
 	st.Usage.Merge(root)
+	if root.Get("candidates.0.finishReason").String() != "" {
+		for _, snapshot := range translatorcommon.GeminiBufferedUsage(ctx, param) {
+			st.Usage.Merge(gjson.ParseBytes(snapshot))
+		}
+	}
 	messageStatus := "completed"
 
 	var out [][]byte
