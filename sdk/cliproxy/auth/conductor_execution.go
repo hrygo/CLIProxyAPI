@@ -1312,9 +1312,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		if selection != nil {
 			if m.retainHomeWebsocketSelection(ctx, opts, routeModel, selection) {
-				return wrapHomeStream(ctx, streamResult, nil, releaseAttempt), nil
+				return wrapHomeStream(execCtx, streamResult, nil, releaseAttempt), nil
 			}
-			return wrapHomeStream(ctx, streamResult, selection, releaseAttempt), nil
+			return wrapHomeStream(execCtx, streamResult, selection, releaseAttempt), nil
 		}
 		return streamResult, nil
 	}

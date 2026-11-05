@@ -966,8 +966,9 @@ func (e *CodexWebsocketsExecutor) invalidateUpstreamConnWithNotify(sess *codexWe
 		}
 	}
 	if lifecycle != nil {
-		if owner, ok := lifecycle.(interface{ EndWebsocketTurn(context.Context, string) }); ok && cliproxyexecutor.IsUpstreamWebsocketTurnError(err) {
-			// The lost turn's attempt must survive to deliver its error to the client.
+		if owner, ok := lifecycle.(interface{ EndWebsocketTurn(context.Context, string) }); ok && (err != nil || reason == "duplex_closed") {
+			// The attempt must survive until the terminal result is delivered, including
+			// duplex shutdown after an error has already been sent on the stream.
 			owner.EndWebsocketTurn(turnContext, reason)
 		} else {
 			lifecycle.End(reason)
