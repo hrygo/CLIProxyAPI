@@ -1,0 +1,389 @@
+package auth
+
+import (
+	"strings"
+
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
+)
+
+// ClientSearchSupported reports whether every selectable route behind one
+// public model alias can complete the client search loop. The result drives
+// supports_search_tool in the model catalog. Aggregation is conservative:
+// one disabled, unknown, or uncovered route vetoes the whole alias, while
+// temporarily cooled-down candidates still count because they may recover.
+// Web search and client tool_search are different capabilities and never
+// share a boolean.
+func (m *Manager) ClientSearchSupported(modelID string) *bool {
+	if m == nil {
+		return nil
+	}
+	state := m.responsesToolsSnapshot()
+	if state == nil {
+		return nil
+	}
+	state.mu.Lock()
+	policy := state.policy
+	enabled := state.enabled
+	state.mu.Unlock()
+	if !enabled {
+		return nil
+	}
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	routes := m.clientSearchCandidateRoutes(modelID)
+	if len(routes) == 0 {
+		return nil
+	}
+	for _, route := range routes {
+		routePolicy, err := responsestools.EffectivePolicy(policy, route)
+		if err != nil {
+			no := false
+			return &no
+		}
+		profile := responsestools.CapabilityProfileForRoute(route, routePolicy)
+		// Preserve the policy-based catalog projection. Scope-bound empirical
+		// certification is independent and must not silently restore eager tools.
+		if !profile.CatalogSearchSupported() {
+			no := false
+			return &no
+		}
+	}
+	yes := true
+	return &yes
+}
+
+// clientSearchCandidateRoutes enumerates real credential and model-pool
+// candidates for one public model alias using the same resolution the
+// executor calls use. Cooled-down credentials stay in the set: they may
+// recover, and a temporarily unavailable search route must not promote the
+// alias based on whichever credential happens to be usable now.
+func (m *Manager) clientSearchCandidateRoutes(modelID string) []responsestools.Route {
+	return m.responsesToolsCandidateRoutes(modelID, "")
+}
+
+func (m *Manager) responsesToolsCandidateRoutes(modelID, authID string) []responsestools.Route {
+	if m == nil {
+		return nil
+	}
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return nil
+	}
+	m.mu.RLock()
+	auths := make([]*Auth, 0, len(m.auths))
+	for _, auth := range m.auths {
+		if auth == nil || auth.Disabled || auth.Status == StatusDisabled || (authID != "" && auth.ID != authID) {
+			continue
+		}
+		auths = append(auths, auth.Clone())
+	}
+	m.mu.RUnlock()
+	var routes []responsestools.Route
+	for _, auth := range auths {
+		// Unknown model aliases never promote: only credentials registered
+		// for this exact public model contribute candidate routes.
+		if !registry.GetGlobalRegistry().ClientSupportsModel(auth.ID, modelID) {
+			continue
+		}
+		providerKey := executorKeyFromAuth(auth)
+		if providerKey == "" {
+			continue
+		}
+		executor, ok := m.Executor(providerKey)
+		if !ok || executor == nil {
+			continue
+		}
+		executor = executorForAuth(executor, auth)
+		// Capability is stable across temporary availability changes. Resolve
+		// the same aliases and pools as execution without its cooldown filter.
+		models, pooled, _, _ := m.executionModelCandidatesWithAlias(auth, modelID)
+		if len(models) == 0 {
+			continue
+		}
+		for _, upstreamModel := range models {
+			stateModel := m.stateModelForExecution(auth, modelID, upstreamModel, pooled)
+			declaredDisabled := false
+			for model, state := range auth.ModelStates {
+				if state != nil && canonicalModelKey(model) == canonicalModelKey(stateModel) && state.Status == StatusDisabled {
+					declaredDisabled = true
+					break
+				}
+			}
+			if declaredDisabled {
+				continue
+			}
+			probeReq := cliproxyexecutor.Request{Model: upstreamModel}
+			probeOpts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatCodex}
+			toFormat := requestToFormatWithAuth(providerKey, executor, auth, probeReq, probeOpts)
+			route := responsesToolsRoute(auth, providerKey, upstreamModel, toFormat)
+			route.AuthKind = normalizeAuthKindForPolicy(route.AuthKind)
+			routes = append(routes, route)
+		}
+	}
+	return routes
+}
+
+// ResponsesToolsEnabled reports whether the core tool protocol feature has
+// any active route. Handlers use it to decide per-turn WebSocket modes
+// without parsing payloads when the feature is off.
+func (m *Manager) ResponsesToolsEnabled() bool {
+	if m == nil {
+		return false
+	}
+	state := m.responsesToolsSnapshot()
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	return state.enabled
+}
+
+// ResponsesToolsRequiresReplayForRoute evaluates actual preparation rather
+// than a tool-metadata heuristic. Partial hints use matching explicit routes,
+// or the convention when none matches. Fully resolved client/credential
+// candidates should use ResponsesToolsRequiresReplayForClientModel instead.
+func (m *Manager) ResponsesToolsRequiresReplayForRoute(payload []byte, provider, upstreamModel string) bool {
+	if m == nil {
+		return false
+	}
+	state := m.responsesToolsSnapshot()
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	policy, enabled := state.policy, state.enabled
+	state.mu.Unlock()
+	if !enabled {
+		return false
+	}
+	provider, upstreamModel = strings.TrimSpace(provider), strings.TrimSpace(upstreamModel)
+	matched := false
+	for _, rule := range policy.Routes {
+		if provider != "" && !strings.EqualFold(provider, rule.Match.Provider) {
+			continue
+		}
+		if upstreamModel != "" && upstreamModel != strings.TrimSpace(rule.Match.UpstreamModel) {
+			continue
+		}
+		matched = true
+		route := responsestools.Route{Provider: rule.Match.Provider, AuthKind: rule.Match.AuthKind, UpstreamModel: rule.Match.UpstreamModel, UpstreamFormat: rule.Match.UpstreamFormat, BaseURL: rule.Match.BaseURL}
+		effective, err := responsestools.EffectivePolicy(policy, route)
+		if err != nil || responsestools.RequiresToolReplay(payload, effective, policy.Limits) {
+			return true
+		}
+	}
+	if matched {
+		return false
+	}
+	route := responsestools.Route{Provider: provider, UpstreamModel: upstreamModel, UpstreamFormat: providerDefaultFormat(provider).String()}
+	effective, err := responsestools.EffectivePolicy(policy, route)
+	return err != nil || responsestools.RequiresToolReplay(payload, effective, policy.Limits)
+}
+
+// ResponsesToolsRequiresReplayForClientModel preserves alias, credential and
+// format resolution when deciding whether a turn requires managed replay.
+func (m *Manager) ResponsesToolsRequiresReplayForClientModel(payload []byte, modelID, provider, authID string) bool {
+	if m == nil {
+		return false
+	}
+	state := m.responsesToolsSnapshot()
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	policy, enabled := state.policy, state.enabled
+	state.mu.Unlock()
+	if !enabled {
+		return false
+	}
+	routes := m.responsesToolsCandidateRoutes(modelID, authID)
+	if len(routes) == 0 {
+		if strings.TrimSpace(authID) != "" {
+			// No candidate exists for this pinned credential. Do not infer its
+			// policy from another credential's rule; selection handles absence.
+			return false
+		}
+		return m.ResponsesToolsRequiresReplayForRoute(payload, provider, modelID)
+	}
+	for _, route := range routes {
+		if provider != "" && !strings.EqualFold(strings.TrimSpace(provider), route.Provider) {
+			continue
+		}
+		effective, err := responsestools.EffectivePolicy(policy, route)
+		if err != nil || responsestools.RequiresToolReplay(payload, effective, policy.Limits) {
+			return true
+		}
+	}
+	return false
+}
+
+// ResponsesToolsMayApplyToRoute reports whether a non-pass-through policy
+// could match the route information known to a caller. Empty hints represent
+// unknown dimensions rather than mismatches.
+func (m *Manager) ResponsesToolsMayApplyToRoute(provider, upstreamModel string) bool {
+	if m == nil {
+		return false
+	}
+	state := m.responsesToolsSnapshot()
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if !state.enabled {
+		return false
+	}
+	provider = strings.TrimSpace(provider)
+	upstreamModel = strings.TrimSpace(upstreamModel)
+	if len(state.policy.Routes) == 0 {
+		// The convention policy covers every route, but a native Responses
+		// upstream needs no rewriting and must keep its passthrough path.
+		return providerNeedsToolsBridge(provider)
+	}
+	for _, route := range state.policy.Routes {
+		if provider != "" && !strings.EqualFold(provider, strings.TrimSpace(route.Match.Provider)) {
+			continue
+		}
+		if upstreamModel != "" && !strings.EqualFold(upstreamModel, strings.TrimSpace(route.Match.UpstreamModel)) {
+			continue
+		}
+		if route.ClientSearch == responsestools.ClientSearchBridge ||
+			route.ClientSearch == responsestools.ClientSearchDisabled ||
+			route.CustomTools == responsestools.CustomToolsFunction ||
+			route.CustomTools == responsestools.CustomToolsStrip ||
+			route.CustomTools == responsestools.CustomToolsReject ||
+			route.Schema.CompletesSearchSchemas() ||
+			route.Schema.LocalRefs == responsestools.LocalRefsInline ||
+			route.Schema.LocalRefs == responsestools.LocalRefsFlatten {
+			return true
+		}
+	}
+	return false
+}
+
+// providerNeedsToolsBridge reports whether a provider's route can be served
+// without the core tool protocol. It requires both a native Responses wire
+// format and an executor that forwards the tool_search built-in unchanged, so
+// it stays consistent with responsestools.ConventionPolicy. Executor-level
+// resolvers can only widen support, so an unknown provider needs the bridge.
+func providerNeedsToolsBridge(provider string) bool {
+	if providerDefaultFormat(provider) != sdktranslator.FormatCodex {
+		return true
+	}
+	return !responsestools.ProviderForwardsToolSearch(provider)
+}
+
+// ResponsesToolsMayApplyToClientModel resolves the public model alias through
+// every eligible credential before checking the tool policy. The optional
+// provider and auth hints narrow the candidate set when a WebSocket session has
+// already selected its route.
+func (m *Manager) ResponsesToolsMayApplyToClientModel(modelID, provider, authID string) bool {
+	if m == nil {
+		return false
+	}
+	state := m.responsesToolsSnapshot()
+	if state == nil {
+		return false
+	}
+	state.mu.Lock()
+	policy := state.policy
+	enabled := state.enabled
+	state.mu.Unlock()
+	if !enabled {
+		return false
+	}
+	provider = strings.TrimSpace(provider)
+	for _, route := range m.responsesToolsCandidateRoutes(modelID, authID) {
+		if provider != "" && !strings.EqualFold(provider, route.Provider) {
+			continue
+		}
+		routePolicy, err := responsestools.EffectivePolicy(policy, route)
+		if err != nil {
+			continue
+		}
+		if routePolicy.ClientSearch == responsestools.ClientSearchBridge ||
+			routePolicy.ClientSearch == responsestools.ClientSearchDisabled ||
+			routePolicy.CustomTools == responsestools.CustomToolsFunction ||
+			routePolicy.CustomTools == responsestools.CustomToolsStrip ||
+			routePolicy.CustomTools == responsestools.CustomToolsReject ||
+			routePolicy.Schema.CompletesSearchSchemas() ||
+			routePolicy.Schema.LocalRefs == responsestools.LocalRefsInline ||
+			routePolicy.Schema.LocalRefs == responsestools.LocalRefsFlatten {
+			return true
+		}
+	}
+	// A native Responses route resolves to client-search native with no custom
+	// handling, which needs no rewriting and therefore no replay.
+	return false
+}
+
+// ResponsesToolsRequiresReplayForSession resolves a Home credential bound to
+// this session before falling back to the local candidate lookup.
+func (m *Manager) ResponsesToolsRequiresReplayForSession(payload []byte, modelID, provider, authID, sessionID string) bool {
+	if m == nil {
+		return false
+	}
+	if !m.HomeEnabled() {
+		if _, ok := m.GetByID(authID); ok {
+			return m.ResponsesToolsRequiresReplayForClientModel(payload, modelID, provider, authID)
+		}
+	}
+	sessionID, authID = strings.TrimSpace(sessionID), strings.TrimSpace(authID)
+	m.mu.RLock()
+	var auth *Auth
+	if current := m.homeRuntimeAuths[sessionID][authID]; current != nil {
+		auth = current.Clone()
+	}
+	owner := m.homeRuntimeAuthOwners[sessionID][authID]
+	m.mu.RUnlock()
+	if auth == nil {
+		if m.HomeEnabled() {
+			// Home never authorizes a local credential with the same ID. A
+			// missing session binding is not enough evidence to send raw frames.
+			return true
+		}
+		return m.ResponsesToolsRequiresReplayForClientModel(payload, modelID, provider, authID)
+	}
+	state := m.responsesToolsSnapshot()
+	state.mu.Lock()
+	policy, enabled := state.policy, state.enabled
+	state.mu.Unlock()
+	if !enabled {
+		return false
+	}
+	providerKey := executorKeyFromAuth(auth)
+	executor, _ := m.Executor(providerKey)
+	if owner != nil {
+		if owner.Provider != "" {
+			providerKey = owner.Provider
+		}
+		if owner.Executor != nil {
+			executor = owner.Executor
+		}
+	}
+	if providerKey == "" || (provider != "" && !strings.EqualFold(strings.TrimSpace(provider), providerKey)) || executor == nil {
+		return true
+	}
+	executor = executorForAuth(executor, auth)
+	models, _, _, _ := m.executionModelCandidatesWithAlias(auth, modelID)
+	if len(models) == 0 {
+		return true
+	}
+	for _, model := range models {
+		req := cliproxyexecutor.Request{Model: model}
+		opts := cliproxyexecutor.Options{SourceFormat: sdktranslator.FormatCodex}
+		route := responsesToolsRoute(auth, providerKey, model, requestToFormatWithAuth(providerKey, executor, auth, req, opts))
+		route.AuthKind = normalizeAuthKindForPolicy(route.AuthKind)
+		effective, err := responsestools.EffectivePolicy(policy, route)
+		if err != nil || responsestools.RequiresToolReplay(payload, effective, policy.Limits) {
+			return true
+		}
+	}
+	return false
+}
