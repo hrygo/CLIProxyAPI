@@ -13,14 +13,20 @@ commits were ported onto our `main` **and** `verify-absorb.sh` exited 0.
 
 ## Comparison baseline
 
-**Accepted comparison baseline: `v8.0.51`**
-(`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`). The complete release tree was
-replayed with the fork capabilities and merged through PR #41
-(`69a96b0d10e48ed5d8227895e9ae9fe9b7db29ae`), with integration commit I
+**Accepted comparison baseline: `v8.0.57`**
+(`c2f402b45643f0740d70b9010fd7d8d0aab7ef65`). The complete release tree was
+replayed with the fork capabilities and merged through PR #45
+(`a5df3da266219e75d54f4eded175c00d14758e9c`), with integration commit I
+`a261c3e1e69452513598fa95876c4f5765c9fdfe` and candidate tree
+`60b87084a91e87ab95f24fa1a6ac7f1edb04ded8`.
+
+Previous comparison baseline: `v8.0.51`
+(`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`), replayed through PR #41
+(`69a96b0d10e48ed5d8227895e9ae9fe9b7db29ae`) with integration commit I
 `2c5a3b3bcda3a8731ab0c82dc3f9fafc1428ef4f` and candidate tree
 `82c21b74cf8f15e1743707e5c0fa3d1cc359e0ba`.
 
-Previous comparison baseline: `v8.0.35`
+Earlier comparison baseline: `v8.0.35`
 (`ae3ee3be303fb07fb8173279923413005bf32177`), selectively absorbed through
 PR #32 (`6efd7088ef740214f018d993c46f5f335d32fac7`) and shipped in
 `v1.3.3-upstream8.0.35` at `5cc1929a58156977d2d9b59ee215609be0aea311`. Its
@@ -80,6 +86,51 @@ resolved commit. Earlier intakes recorded age exceptions in this ledger; that
 history is unchanged.
 
 ## Assessments
+
+### v8.0.57 — complete-tree replay, effective on main, 2026-11-06
+
+- Previous intake baseline: `v8.0.51`
+- Upstream commit (U): `c2f402b45643f0740d70b9010fd7d8d0aab7ef65`
+- Main before replay (M): `df1fd17c09463c7b5c643cc4beb272befbd16691`
+- Candidate commit (C): `555deb9fef4b25ffda2f45398a93d889182830cb`
+- Integration commit (I): `a261c3e1e69452513598fa95876c4f5765c9fdfe`
+- Intake commit (J): `a5df3da266219e75d54f4eded175c00d14758e9c`
+- Candidate tree: `60b87084a91e87ab95f24fa1a6ac7f1edb04ded8`
+
+The candidate replays the complete upstream release tree onto `main` and was
+selected as the newest stable release at assessment time, with no age gate. The
+release migrates the JSON stack to `github.com/MoeForge/moego/ojson` and
+`moego/base64`; every fork-owned file that still imported `tidwall/gjson` or
+`tidwall/sjson` was migrated in place, so the tree carries one JSON
+implementation and no fork-specific JSON dependency.
+
+F05 (Gemini family streaming repairs) and F06 (OpenAI-compatible stream
+termination) are retired by owner decision in favour of upstream's
+implementation; 37 fork-owned test files covering that behaviour were removed
+with them. The remaining capabilities were re-applied onto upstream's new
+payload flow: outbound tool-contract validation in the Claude,
+OpenAI-compatible, Gemini, Codex, xAI and Meta executors, Codex websocket
+steering repair and replay probes, transport attempt observation in the usage
+round tripper, the Antigravity catalog probe's auxiliary work scope and
+observation hook (upstream moved the probe into `sdk/auth`, which gained an
+optional client wrapper for it), and Codex multi-agent enablement through the
+historical configuration fields.
+
+Antigravity credits recovery now drops a cached exhaustion hint only after it
+has left its freshness window, under a mutex, so a refresh that just published
+availability cannot be erased by the recovery path.
+
+Upstream v8.0.57 ships with its own diagnostics, which were left unchanged and
+recorded instead of patched: `go vet ./...` fails on a pluginhost test's
+copylocks finding, and three of its tests fail. Both reproduce on a pristine
+`v8.0.57` worktree. `ops/upstream-intake/check-vet.sh` and
+`check-tests.sh` own the tolerance for those exact diagnostics and failures, and
+both the local gate and the PR workflow call them, so CI and the gate cannot
+disagree. The complete Go 1.26.10 gate passed on the candidate
+(`gate-final.log`) and the PR #45 build check passed on
+`555deb9f`. The [replay review](reviews/v8.0.57-replay.md) records the
+per-capability dispositions, the restored integration points, the retired tests
+and the remaining validation limits.
 
 ### v8.0.51 — complete-tree replay, effective on main, 2026-11-05
 
