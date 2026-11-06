@@ -21,7 +21,7 @@ and publishes independent `vX.Y.Z-upstreamA.B.C` releases.
 | Published release | [v1.3.5-upstream8.0.35](https://github.com/hrygo/CLIProxyAPI/releases/tag/v1.3.5-upstream8.0.35) |
 | Go toolchain | `1.26.10` |
 | Module path | `github.com/router-for-me/CLIProxyAPI/v8` |
-| Upstream policy | Mature upstream releases replayed as a complete tree; fork deltas are verified each intake |
+| Upstream policy | Newest stable upstream releases replayed as a complete tree; fork deltas are verified each intake |
 | Release channel | [GitHub Releases](https://github.com/hrygo/CLIProxyAPI/releases) |
 | Homebrew tap | `hrygo/cliproxyapi` |
 

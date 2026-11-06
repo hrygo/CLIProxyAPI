@@ -38,8 +38,11 @@ policy below carries the matching exception.
 - **Remotes:** `origin` is our fork (`hrygo/CLIProxyAPI`), `upstream` is
   `router-for-me/CLIProxyAPI`.
 - **Upstream intake is release-only.** Track `upstream` releases, not its `dev` or
-  `main` branches. Use each accepted mature release as the complete source
-  baseline, then preserve every fork capability in atomic commits; retire a fork
+  `main` branches. Use each accepted newest stable release as the complete
+  source baseline; selection takes the newest upstream release at assessment
+  time and applies no age threshold, so regression risk is carried by the replay
+  gate and the post-install canary with a prepared rollback formula. Preserve
+  every fork capability in atomic commits; retire a fork
   implementation only after verifying upstream equivalence. Integrate the
   reviewed replay with a protected PR merge commit preserving upstream and
   existing `main` history; see the branch governance prerequisites below. Fetch

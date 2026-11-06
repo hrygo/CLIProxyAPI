@@ -257,23 +257,15 @@ Upstream `{self.u}`, intake `{intake}`.
         self.api[endpoint] = {"body": "{invalid"}
         self.assert_blocked(self.run_guard())
 
-    def test_upstream_must_be_published_for_at_least_72_hours(self):
+    def test_release_age_is_not_a_gate(self):
+        # Selection is newest-release based; elapsed time grants no extra
+        # assurance, so a freshly published release must pass both checks.
         self.prepare()
         info = self.api[f"{API}/releases/tags/{UPSTREAM}"]["body"]
-        for age_hours, should_pass in ((71, False), (73, True)):
-            with self.subTest(age_hours=age_hours):
-                published = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=age_hours)
-                info["published_at"] = published.strftime("%Y-%m-%dT%H:%M:%SZ")
-                result = self.run_guard()
-                api_result = self.run_upstream_check()
-                if should_pass:
-                    self.assert_passes(result)
-                    self.assert_passes(api_result)
-                else:
-                    self.assert_blocked(result)
-                    self.assertIn("72 hours", result.stderr)
-                    self.assert_blocked(api_result)
-                    self.assertIn("72 hours", api_result.stderr)
+        published = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=5)
+        info["published_at"] = published.strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assert_passes(self.run_guard())
+        self.assert_passes(self.run_upstream_check())
 
     def test_upstream_tag_must_resolve_to_the_accepted_sha(self):
         self.prepare()

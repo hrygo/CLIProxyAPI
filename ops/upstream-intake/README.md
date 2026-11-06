@@ -3,16 +3,18 @@
 Monitor upstream releases and security reports daily, preferably with a
 separately authorized read-only schedule, and assess stable releases from
 `router-for-me/CLIProxyAPI` weekly. Do not assume a schedule exists without
-verifying it. A release is eligible only after **72 hours** since `publishedAt`.
-Use its complete tree as the baseline and replay every fork change still needed.
-The window lets regressions and follow-up fixes surface upstream; it cannot be
-lowered through an environment override.
+verifying it. A release is eligible when it is the **newest stable release**
+published by upstream at assessment time. Use its complete tree as the baseline
+and replay every fork change still needed. There is no age threshold: elapsed
+time does not repair a release, and a fixed wait only replays an older tree
+against a larger fork delta. Regression risk is covered by the replay gate, the
+release note's validation section, and a post-install canary backed by the
+prepared versioned rollback formula.
 
 An urgent security fix that cannot wait is a separate hotfix against the
 existing accepted baseline on `main`. Keep that baseline and its release suffix;
-do not adopt a younger upstream release or port individual changes from it to
-evade the waiting period. An actual release requires separate authorization and
-the release checks below. Record the hotfix and its tests in the inventory as
+do not port individual upstream changes as a substitute for the intake. An
+actual release requires separate authorization and the release checks below. Record the hotfix and its tests in the inventory as
 part of the hotfix commit, then reconcile that entry at the next intake.
 
 ## Procedure
@@ -34,11 +36,13 @@ part of the hotfix commit, then reconcile that entry at the next intake.
    ```
 
    The script requires `git` and `gh` read access; it rejects drafts,
-   prereleases, malformed versions, releases younger than 72 hours and a
-   non-ancestor comparison baseline. It fetches only to `refs/upstream/tags/*`
-   with `--no-tags`. Its log and diff are review aids, not a list of upstream
-   changes to select. `MIN_AGE_HOURS` may increase, but not lower, the gate.
-   Record the release, `publishedAt`, age-check time and exact peeled upstream
+   prereleases, malformed versions, releases that are not the newest stable
+   release, and a non-ancestor comparison baseline. It fetches only to
+   `refs/upstream/tags/*` with `--no-tags`. Its log and diff are review aids, not
+   a list of upstream changes to select. If a newer release is published while
+   the tree is being replayed, finish or discard the current attempt and assess
+   the newest release next; never replay a superseded tree.
+   Record the release, `publishedAt`, assessment time and exact peeled upstream
    commit as **U**. Resolve the same tag through the official upstream API,
    peeling annotated tags to a commit, and confirm it matches the fetched U;
    the script's configured Git remote and API repository are independent.

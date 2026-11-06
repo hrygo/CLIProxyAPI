@@ -167,11 +167,9 @@ def verify_upstream(tag, expected_sha):
     try:
         if not isinstance(published, str) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", published):
             raise ValueError("invalid published_at")
-        date = dt.datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=dt.timezone.utc)
+        dt.datetime.strptime(published, "%Y-%m-%dT%H:%M:%SZ")
     except ValueError:
         fail("upstream release must have a valid published time")
-    if dt.datetime.now(dt.timezone.utc) - date < dt.timedelta(hours=72):
-        fail("upstream release must be published for at least 72 hours")
     ref = api(f"{base}/git/ref/tags/{tag}")
     resolved = peel(ref.get("object") if isinstance(ref, dict) else None, tag)
     if resolved != expected_sha:
