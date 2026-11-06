@@ -27,7 +27,10 @@ the existing service manager only when authorized. For the previously configured
 macOS LaunchAgent, this is `launchctl kickstart -k gui/$(id -u)/com.hrygo.cliproxyapi`.
 Do not run `brew services` in parallel with an existing custom LaunchAgent.
 Verify the banner using `-h` (there is no `-version` flag), then verify the actual
-running service and representative client behavior separately.
+running service and representative client behavior separately. After the
+restart, watch the service logs and client-visible errors for at least 30 minutes
+of real use; on a regression, roll back with the prepared versioned formula and
+restart again.
 
 ## Update the tap after a complete release
 

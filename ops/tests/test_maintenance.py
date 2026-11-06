@@ -356,9 +356,15 @@ class IntakeTests(unittest.TestCase):
     def git(self, repo, *args):
         return subprocess.check_output(["git", "-C", str(repo), *args], text=True)
 
-    def gh(self, published):
+    def gh(self, published, latest="v8.0.6"):
         path = self.bin / "gh"
-        path.write_text(f"#!/bin/sh\nprintf '%s\\n' '{published}'\n")
+        path.write_text(
+            "#!/bin/sh\n"
+            "case \"$*\" in\n"
+            f"  *releases/latest*) printf '%s\\n' '{latest}' ;;\n"
+            f"  *) printf '%s\\n' '{published}' ;;\n"
+            "esac\n"
+        )
         path.chmod(0o755)
 
     def assess(self, *args, **overrides):
@@ -477,18 +483,31 @@ class IntakeTests(unittest.TestCase):
         self.assertNotEqual(checked.returncode, 0)
 
     def test_reject_before_fetch(self):
-        for args, env in [
-            (["v8.0.6"], {}),
-            (["v8.0.6-rc1", "v8.0.4"], {}),
-            (["v8.0.6", "../bad"], {}),
-            (["v8.0.6", "v8.0.4"], {"MIN_AGE_HOURS": "1"}),
-            (["v8.0.6", "v8.0.4"], {"MIN_AGE_HOURS": "invalid"}),
-        ]:
-            result = self.assess(*args, **env)
+        for args in (
+            ["v8.0.6"],
+            ["v8.0.6-rc1", "v8.0.4"],
+            ["v8.0.6", "../bad"],
+        ):
+            result = self.assess(*args)
             self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.git(self.local, "for-each-ref"), "")
 
-    def test_unpublished_and_recent_release_rejected(self):
+    def test_fresh_release_is_eligible(self):
+        # No age threshold: a release published minutes ago is eligible when it
+        # is the newest stable release.
+        self.gh("2026-01-01T00:00:00Z")
+        result = self.assess("v8.0.6", "v8.0.4")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("newest stable release", result.stdout)
+
+    def test_superseded_release_rejected(self):
+        self.gh("2026-01-01T00:00:00Z", latest="v8.0.8")
+        result = self.assess("v8.0.6", "v8.0.4")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not the newest stable release", result.stderr)
+        self.assertEqual(self.git(self.local, "for-each-ref"), "")
+
+    def test_unpublished_or_future_release_rejected(self):
         for published in ["", "2999-01-01T00:00:00Z"]:
             self.gh(published)
             result = self.assess("v8.0.6", "v8.0.4")
@@ -496,6 +515,9 @@ class IntakeTests(unittest.TestCase):
             self.assertEqual(self.git(self.local, "for-each-ref"), "")
 
     def test_reversed_baseline_rejected(self):
+        # Satisfy the newest-release gate so the ancestry check is the one that
+        # rejects the reversed pair.
+        self.gh("2000-01-01T00:00:00Z", latest="v8.0.4")
         result = self.assess("v8.0.4", "v8.0.6")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("not an ancestor", result.stderr)

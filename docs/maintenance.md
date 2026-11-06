@@ -132,6 +132,11 @@ Afterward verify four separate facts: public Release, tap version and checksum,
 installed binary banner, and restarted process behavior. A successful
 `brew upgrade` does not establish that a process has restarted.
 
+Adoption is evidence-based, not time-based: after the restart, watch the service
+logs and client-visible errors for at least the first 30 minutes of real use, and
+roll back with the prepared versioned formula if a regression appears. Upstream
+release age is not part of the acceptance decision.
+
 ## Research and local choices
 
 Official documents checked on **2026-10-01**:
@@ -156,7 +161,7 @@ Official documents checked on **2026-10-01**:
   [manual](https://docs.brew.sh/Manpage): use a maintained versioned formula or
   `brew extract` for an older version. `brew rollback` is not a supported command.
 
-The 72-hour settling rule and release-tree replay are fork policy, not
+Newest-release selection and release-tree replay are fork policy, not
 requirements imposed by GitHub or Homebrew.
 
 Repository-level immutable releases, tag protection and artifact attestations

@@ -63,6 +63,22 @@ baseline/candidate gate logs, upstream-to-local commit mapping and replay covera
 (or "not performed"). An assessed release is not automatically a new baseline;
 record that decision explicitly, including any remaining skipped work.
 
+## Selection policy
+
+**Changed 2026-11-06: the 72-hour age gate was removed.** The gate never
+prevented a regression, because elapsed time does not repair a release; a
+defective release stayed defective unless upstream cut a follow-up. What it did
+guarantee was replaying an older tree against a larger fork delta. Selection is
+now: the candidate must be the **newest stable release** when the assessment
+starts, enforced by `assess-release.sh` through `releases/latest`. A superseded
+release is not replayed. Regression risk moves to controls that carry evidence:
+the complete-tree replay gate (`verify-absorb.sh`), the release note's
+validation section, and a post-install canary with the versioned rollback
+formula prepared beforehand. The release guard no longer rejects a young
+upstream release; it still verifies the accepted baseline's tag, stability and
+resolved commit. Earlier intakes recorded age exceptions in this ledger; that
+history is unchanged.
+
 ## Assessments
 
 ### v8.0.51 — complete-tree replay, effective on main, 2026-11-05

@@ -5,15 +5,18 @@
 # to `origin`; the only ref it writes is refs/upstream/tags/*.
 #
 # Usage: ops/upstream-intake/assess-release.sh v8.0.6 previous-tag
+#
+# Selection policy: the candidate must be the newest stable release when the
+# assessment starts. There is no age threshold, because elapsed time does not
+# repair a release and a fixed wait only replays an older tree against a larger
+# fork delta. Regression risk is covered by the complete-tree replay gate and by
+# the post-install canary paired with a prepared versioned rollback formula.
 
 set -euo pipefail
 
 UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 UPSTREAM_REPO="${UPSTREAM_REPO:-router-for-me/CLIProxyAPI}"
 TAG_PREFIX="refs/upstream/tags"
-# A release must have settled before we adopt its tree, so regressions and
-# hurried follow-up fixes have had time to surface upstream.
-MIN_AGE_HOURS="${MIN_AGE_HOURS:-72}"
 
 die() {
   printf 'error: %s\n' "$*" >&2
@@ -38,22 +41,16 @@ for tag in "$@"; do
   [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
     die "expected a stable vX.Y.Z release tag, got '$tag'"
 done
-[[ "$MIN_AGE_HOURS" =~ ^[0-9]+$ ]] &&
-  [ "${#MIN_AGE_HOURS}" -le 6 ] &&
-  [ "$((10#$MIN_AGE_HOURS))" -ge 72 ] ||
-  die "MIN_AGE_HOURS must be an integer between 72 and 999999"
-MIN_AGE_HOURS="$((10#$MIN_AGE_HOURS))"
-
 git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository"
 git remote get-url "$UPSTREAM_REMOTE" >/dev/null 2>&1 ||
   die "remote '$UPSTREAM_REMOTE' not found; it must point at router-for-me/CLIProxyAPI"
 
-# Age gate, checked against the upstream release publish time rather than the
-# commit date: a release can be cut from commits that are days old, and what
-# matters is how long the published artifact has been in use.
-require_aged_release() {
+# Selection gate. The candidate must be the newest stable release upstream has
+# published, so a tree upstream already replaced is never replayed. Everything
+# else about the artifact (tag shape, ancestry, tree) is verified downstream.
+require_newest_release() {
   command -v gh >/dev/null 2>&1 ||
-    die "gh is required to read the upstream release date"
+    die "gh is required to read upstream release metadata"
 
   published_at="$(gh release view "$1" --repo "$UPSTREAM_REPO" \
     --json publishedAt,isDraft,isPrerelease \
@@ -67,20 +64,26 @@ require_aged_release() {
   published="$(date -u -d "$published_at" +%s 2>/dev/null)" ||
     published="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$published_at" +%s)" ||
     die "could not parse upstream publish date '$published_at'"
+  [ "$published" -le "$now" ] ||
+    die "upstream release '$1' has a publish date in the future"
 
-  age_hours=$(( (now - published) / 3600 ))
-  if [ "$age_hours" -lt "$MIN_AGE_HOURS" ]; then
-    printf 'error: upstream %s was published %dh ago; we require at least %dh\n' \
-      "$1" "$age_hours" "$MIN_AGE_HOURS" >&2
-    printf 'Re-run after it has settled to decide whether it introduced a regression.\n' >&2
+  latest="$(gh api "repos/$UPSTREAM_REPO/releases/latest" --jq .tag_name 2>/dev/null)" ||
+    die "could not read the newest upstream release from $UPSTREAM_REPO"
+  [ -n "$latest" ] && [ "$latest" != "null" ] ||
+    die "upstream $UPSTREAM_REPO has no published stable release"
+
+  if [ "$latest" != "$1" ]; then
+    printf 'error: upstream %s is not the newest stable release; %s is\n' \
+      "$1" "$latest" >&2
+    printf 'Assess %s instead: replaying a superseded tree wastes the fork delta review.\n' \
+      "$latest" >&2
     exit 3
   fi
 
-  printf 'Upstream %s published %s (%dh old, minimum %dh)\n' \
-    "$1" "$published_at" "$age_hours" "$MIN_AGE_HOURS"
+  printf 'Upstream %s is the newest stable release, published %s\n' "$1" "$published_at"
 }
 
-require_aged_release "$new_tag"
+require_newest_release "$new_tag"
 
 printf 'Fetching %s into %s/%s (local only)\n' "$new_tag" "$TAG_PREFIX" "$new_tag"
 git -c fetch.pruneTags=false fetch --quiet --no-tags "$UPSTREAM_REMOTE" \

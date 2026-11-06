@@ -15,7 +15,7 @@ The requested operation determines which procedure to load:
 
 | Request | Read | Expected result |
 | --- | --- | --- |
-| Assess or replay onto upstream releases; maintain the fork inventory | [Intake](../../../ops/upstream-intake/README.md), [inventory](../../../ops/upstream-intake/fork-capabilities.md) and [ledger](../../../ops/upstream-intake/absorbed.md) | Mature release baseline, fork capability and patch inventory, equivalence decisions and verification evidence |
+| Assess or replay onto upstream releases; maintain the fork inventory | [Intake](../../../ops/upstream-intake/README.md), [inventory](../../../ops/upstream-intake/fork-capabilities.md) and [ledger](../../../ops/upstream-intake/absorbed.md) | Newest-release baseline, fork capability and patch inventory, equivalence decisions and verification evidence |
 | Prepare or execute our release | [Maintenance](../../../docs/maintenance.md), release section | Reviewed version/commit, successful complete release |
 | Install, upgrade, roll back or update the tap | [Homebrew](../../../ops/homebrew/README.md) | Verified formula, binary and service state |
 | Audit or repair these processes | The affected procedure and script/workflow | Evidence-backed correction and isolated verification |
@@ -30,11 +30,12 @@ to apply; do not ask again for routine steps it covers.
 
 - Monitor upstream releases and security reports daily and assess stable releases
   weekly. A read-only schedule is configured separately when requested; do not
-  assume one exists. Accept published stable releases after at least 72 hours,
-  measured from `publishedAt`. The window lets regressions and hurried follow-up
-  fixes surface upstream before we adopt a release. Upstream publishes
-  frequently, so a fixed wait costs little; do not shorten it, tier it by
-  commit prefix, or lower it through an environment override.
+  assume one exists. Accept only the newest published stable release at
+  assessment time. There is no age threshold: elapsed time does not repair a
+  release, and a fixed wait only replays an older tree against a larger fork
+  delta. A release upstream has already replaced is never replayed. Regression
+  risk is carried by the replay gate and by the post-install canary with the
+  prepared versioned rollback formula, not by waiting.
 - Use the explicitly accepted comparison baseline in the human ledger and
   [accepted baseline registry](../../../ops/upstream-intake/accepted-baselines.json);
   they must agree. Record historical selective baselines as selective. After a
@@ -53,7 +54,7 @@ to apply; do not ask again for routine steps it covers.
   feature, fix, or operational and release-governance change. Record what it
   preserves, its implementation and regression evidence, and its upstream status;
   do not wait for the next intake to reconstruct the delta.
-- Use the complete mature upstream release tree as the new baseline. Review its
+- Use the complete newest upstream release tree as the new baseline. Review its
   changes and retain every fork capability, including required operational and
   release governance. Reconcile conflicts without silently dropping patches,
   upstream behavior, user data, configuration, or fork requirements. For each
@@ -99,6 +100,12 @@ and assess whether existing configuration and data are compatible with the older
 version. Verify public assets, tap metadata, installed binary and running process
 separately. Preserve existing config and credentials; do not replace a
 Homebrew-managed executable with a hand-built file.
+
+After an authorized restart, watch the service for the rest of the working
+session (at least 30 minutes or the first representative client session): check
+the service logs and client-visible errors. On a regression, roll back with the
+prepared versioned formula and restart again. Adoption rests on that evidence,
+not on how old the upstream release is.
 
 If completing the task requires an uncovered configuration migration, public
 interface change or deployment decision, explain the concrete impact and ask for
