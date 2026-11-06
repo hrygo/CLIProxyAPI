@@ -60,7 +60,9 @@ jobs:
           [[ "$release_sha" == "$(git rev-parse --verify 'HEAD^{commit}')" ]] || {
             echo "Checked-out commit differs from the release tag" >&2; exit 1;
           }
-          git fetch --no-tags origin main
+          # Write the trunk tip to a named ref: a tag checkout fetches only that
+          # tag, and the gate's hook inventory compares against the trunk.
+          git fetch --no-tags origin main:refs/remotes/origin/main
           git merge-base --is-ancestor "$release_sha" origin/main
 
           # Freeze all release inputs once; subsequent jobs check out this SHA.

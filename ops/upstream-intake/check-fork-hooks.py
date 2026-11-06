@@ -24,7 +24,11 @@ import sys
 
 DEFAULT_HOOKS = "ops/upstream-intake/fork-hooks.txt"
 DEFAULT_ALLOW = "ops/upstream-intake/fork-hooks-allow.txt"
-DEFAULT_BASELINE = "main"
+
+# Baseline candidates in order. A release build checks out a tag, so only the
+# remote-tracking ref of the trunk is guaranteed to exist there; the intake run
+# in a worktree resolves plain main.
+BASELINE_CANDIDATES = ("main", "origin/main")
 
 
 def git(*args: str) -> str:
@@ -60,6 +64,23 @@ def occurrence_counts(symbol: str, ref: str | None) -> dict[str, int]:
             path = path[len(prefix):]
         counts[path] = int(raw)
     return counts
+
+
+def resolve_baseline(explicit: str | None) -> str | None:
+    """First baseline ref that resolves, or None when this checkout has none."""
+    candidates = (explicit,) if explicit else BASELINE_CANDIDATES
+    for candidate in candidates:
+        try:
+            subprocess.run(
+                ["git", "rev-parse", "--verify", "--quiet", f"{candidate}^{{commit}}"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return candidate
+        except subprocess.CalledProcessError:
+            continue
+    return None
 
 
 def read_hooks(path: str) -> list[str]:
@@ -117,7 +138,7 @@ def lost_occurrences(
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--baseline", default=DEFAULT_BASELINE)
+    parser.add_argument("--baseline", default=None)
     parser.add_argument("--hooks", default=DEFAULT_HOOKS)
     parser.add_argument("--allow", default=DEFAULT_ALLOW)
     args = parser.parse_args(argv)
@@ -131,9 +152,19 @@ def main(argv: list[str]) -> int:
         print(f"hook list is empty: {args.hooks}", file=sys.stderr)
         return 2
 
+    baseline = resolve_baseline(args.baseline)
+    if baseline is None:
+        print(
+            "no baseline ref resolves in this checkout (looked for: "
+            + ", ".join((args.baseline,) if args.baseline else BASELINE_CANDIDATES)
+            + "); pass --baseline, or run the inventory during intake",
+            file=sys.stderr,
+        )
+        return 2
+
     allowed = read_allow(args.allow)
     try:
-        lost, allowed_losses, totals = lost_occurrences(hooks, args.baseline, allowed)
+        lost, allowed_losses, totals = lost_occurrences(hooks, baseline, allowed)
     except subprocess.CalledProcessError as err:
         print(f"git failed: {err.stderr.strip()}", file=sys.stderr)
         return 2
@@ -158,7 +189,7 @@ def main(argv: list[str]) -> int:
         return 1
 
     print("")
-    print(f"fork hooks intact against {args.baseline}")
+    print(f"fork hooks intact against {baseline}")
     return 0
 
 

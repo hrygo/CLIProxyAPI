@@ -38,19 +38,14 @@ class ForkHookInventoryTest(unittest.TestCase):
         self.git("commit", "-q", "-m", message)
 
     def run_check(
-        self, baseline: str, allow: Path | None = None
+        self, baseline: str | None = "HEAD", allow: Path | None = None
     ) -> subprocess.CompletedProcess:
+        args = ["python3", str(SCRIPT), "--hooks", str(self.hooks)]
+        if baseline is not None:
+            args.extend(["--baseline", baseline])
+        args.extend(["--allow", str(allow or (self.repo / "allow.txt"))])
         return subprocess.run(
-            [
-                "python3",
-                str(SCRIPT),
-                "--baseline",
-                baseline,
-                "--hooks",
-                str(self.hooks),
-                "--allow",
-                str(allow or (self.repo / "allow.txt")),
-            ],
+            args,
             cwd=self.repo,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -88,6 +83,18 @@ class ForkHookInventoryTest(unittest.TestCase):
         allow.write_text("HookSymbol\n", encoding="utf-8")
         result = self.run_check("HEAD", allow)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_falls_back_to_remote_tracking_trunk(self) -> None:
+        # A release build checks out a tag and fetches the trunk into
+        # refs/remotes/origin/main; the default baseline must find it.
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")
+        result = self.run_check(None)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("origin/main", result.stdout)
+
+    def test_no_baseline_ref_is_an_error(self) -> None:
+        result = self.run_check(None)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
     def test_missing_hook_list_is_an_error(self) -> None:
         result = subprocess.run(
