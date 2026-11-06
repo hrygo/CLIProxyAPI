@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
@@ -21,7 +22,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executionregistry"
-	"github.com/tidwall/gjson"
 )
 
 func homeToolsTransportClient(t *testing.T, upstreamURL, mode string) (*websocket.Conn, *homeToolsReplayDispatcher, *revocableWebsocketAccessProvider) {

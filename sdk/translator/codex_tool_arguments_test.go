@@ -5,7 +5,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	gjson "github.com/MoeForge/moego/ojson"
 )
 
 // Measure both unchanged and rewritten documents for the Codex policy.

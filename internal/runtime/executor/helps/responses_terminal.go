@@ -3,7 +3,7 @@ package helps
 import (
 	"bytes"
 
-	"github.com/tidwall/gjson"
+	gjson "github.com/MoeForge/moego/ojson"
 )
 
 // HasResponsesTerminalEvent checks complete translated SSE records, not words

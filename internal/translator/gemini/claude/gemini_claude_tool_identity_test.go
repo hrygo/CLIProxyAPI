@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	gjson "github.com/MoeForge/moego/ojson"
 )
 
 func TestClaudeGeminiCollidingToolIdentitiesRoundTrip(t *testing.T) {

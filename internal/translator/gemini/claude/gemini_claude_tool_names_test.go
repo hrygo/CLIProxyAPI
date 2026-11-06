@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tidwall/gjson"
+	gjson "github.com/MoeForge/moego/ojson"
 )
 
 func TestClaudeGeminiCollidingToolNamesStayConsistent(t *testing.T) {

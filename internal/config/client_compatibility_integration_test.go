@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"testing"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestHistoricalMultiAgentConfigurationAffectsRequests(t *testing.T) {
@@ -28,6 +28,11 @@ func TestHistoricalMultiAgentConfigurationAffectsRequests(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			headers := http.Header{"User-Agent": {tc.agent}}
+			// Configuration loading folds the historical fields into the canonical
+			// client layout; mirror that here for programmatic construction.
+			if tc.cfg != nil {
+				tc.cfg.Client.Codex.OptimizeMultiAgentV2 = tc.cfg.CodexMultiAgentV2Enabled()
+			}
 			got := multiagentv2.RewriteCodexMultiAgentV2Input(context.Background(), headers, message, tc.cfg)
 			if tc.want {
 				if gjson.GetBytes(got, "input.0.type").String() != "message" || gjson.GetBytes(got, "input.0.role").String() != "user" {

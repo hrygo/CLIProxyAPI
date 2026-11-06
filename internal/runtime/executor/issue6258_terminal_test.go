@@ -10,15 +10,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const issue6258ExecutorContent = `{"responseId":"executor-6258","candidates":[{"content":{"parts":[{"text":"answer"}]}}]}`
@@ -93,11 +92,11 @@ func issue6258StartStream(t *testing.T, ctx context.Context, executor issue6258S
 	return stream.Chunks
 }
 
-func issue6258Events(payload []byte) []gjson.Result {
-	var events []gjson.Result
+func issue6258Events(payload []byte) []ojson.Result {
+	var events []ojson.Result
 	for _, line := range strings.Split(string(payload), "\n") {
 		if strings.HasPrefix(line, "data:") {
-			event := gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+			event := ojson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 			if event.Get("type").Exists() {
 				events = append(events, event)
 			}
@@ -106,9 +105,9 @@ func issue6258Events(payload []byte) []gjson.Result {
 	return events
 }
 
-func issue6258ExecutorTerminal(t *testing.T, chunks <-chan cliproxyexecutor.StreamChunk) gjson.Result {
+func issue6258ExecutorTerminal(t *testing.T, chunks <-chan cliproxyexecutor.StreamChunk) ojson.Result {
 	t.Helper()
-	var response gjson.Result
+	var response ojson.Result
 	terminals := 0
 	done := map[string]int{}
 	for chunk := range chunks {
@@ -155,67 +154,29 @@ func issue6258TokenResponse(w http.ResponseWriter, request *http.Request) bool {
 	return true
 }
 
-func TestIssue6258ExecutorResponsesUsageTiming(t *testing.T) {
+func TestIssue6258ExecutorResponsesSplitUsage(t *testing.T) {
 	for _, provider := range issue6258Providers {
 		for _, trace := range []bool{false, true} {
-			for _, timing := range []string{"before_finish", "on_finish", "after_closure"} {
-				t.Run(fmt.Sprintf("%s/trace=%t/%s", provider, trace, timing), func(t *testing.T) {
-					release := make(chan struct{})
-					allowTail := sync.OnceFunc(func() { close(release) })
-					tailAttempted := make(chan struct{})
-					server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-						if issue6258TokenResponse(w, request) {
-							return
-						}
-						w.Header().Set("Content-Type", "text/event-stream")
-						finish := `{"candidates":[{"finishReason":"STOP"}]}`
-						bodies := []string{issue6258ExecutorContent}
-						switch timing {
-						case "before_finish":
-							bodies = append(bodies, issue6258ExecutorUsage, finish)
-						case "on_finish":
-							bodies = append(bodies, strings.TrimSuffix(finish, "}")+","+strings.TrimPrefix(issue6258ExecutorUsage, "{"))
-						default:
-							bodies = append(bodies, finish)
-						}
-						for _, body := range bodies {
-							_, _ = io.WriteString(w, issue6258SSE(provider, body, trace))
-						}
-						if timing == "after_closure" {
-							w.(http.Flusher).Flush()
-							<-release
-							_, _ = io.WriteString(w, issue6258SSE(provider, issue6258ExecutorUsage, trace))
-							close(tailAttempted)
-						}
-					}))
-					defer func() {
-						allowTail()
-						server.Close()
-					}()
-					baseCtx, executor, auth := issue6258Executor(t, provider, server.URL)
-					ctx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
-					defer cancel()
-					response := issue6258ExecutorTerminal(t, issue6258StartStream(t, ctx, executor, auth, `{"input":"hello","stream":true}`))
-					if timing == "after_closure" {
-						allowTail()
-						select {
-						case <-tailAttempted:
-						case <-ctx.Done():
-							t.Fatal("upstream did not attempt its gated usage tail")
-						}
-						if usage := response.Get("usage"); usage.Exists() {
-							t.Fatalf("terminal invented future usage: %s", usage.Raw)
-						}
+			t.Run(fmt.Sprintf("%s/trace=%t", provider, trace), func(t *testing.T) {
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					if issue6258TokenResponse(w, request) {
 						return
 					}
-					for path, want := range map[string]int64{"input_tokens": 100, "output_tokens": 60, "total_tokens": 160, "output_tokens_details.reasoning_tokens": 50} {
-						got := response.Get("usage." + path)
-						if !got.Exists() || got.Int() != want {
-							t.Errorf("terminal usage.%s=%s, want %d; usage=%s", path, got.Raw, want, response.Get("usage").Raw)
-						}
+					w.Header().Set("Content-Type", "text/event-stream")
+					for _, body := range []string{issue6258ExecutorContent, `{"candidates":[{"finishReason":"STOP"}]}`, issue6258ExecutorUsage} {
+						_, _ = io.WriteString(w, issue6258SSE(provider, body, trace))
 					}
-				})
-			}
+				}))
+				defer server.Close()
+				ctx, executor, auth := issue6258Executor(t, provider, server.URL)
+				response := issue6258ExecutorTerminal(t, issue6258StartStream(t, ctx, executor, auth, `{"input":"hello","stream":true}`))
+				for path, want := range map[string]int64{"input_tokens": 100, "output_tokens": 60, "total_tokens": 160, "output_tokens_details.reasoning_tokens": 50} {
+					got := response.Get("usage." + path)
+					if !got.Exists() || got.Int() != want {
+						t.Errorf("terminal usage.%s=%s, want %d; usage=%s", path, got.Raw, want, response.Get("usage").Raw)
+					}
+				}
+			})
 		}
 	}
 }

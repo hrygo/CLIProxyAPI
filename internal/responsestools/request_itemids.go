@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tidwall/sjson"
+	sjson "github.com/MoeForge/moego/ojson"
 )
 
 // inputIDChange is one planned id migration inside the top-level input array.

@@ -6,11 +6,11 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	multiagentv2 "github.com/router-for-me/CLIProxyAPI/v8/internal/client/codex/optimize-multi-agent-v2"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/api/handlers"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
-	"github.com/tidwall/gjson"
 )
 
 func TestResponsesPreparesMultiAgentToolsForHistoricalSDKConfig(t *testing.T) {

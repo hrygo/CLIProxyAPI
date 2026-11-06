@@ -76,9 +76,13 @@ jobs:
             exit 1
           fi
       - name: Vet
-        run: go vet ./...
+        # Tolerates only the upstream defects recorded in
+        # ops/upstream-intake/known-upstream-defects.txt.
+        run: ops/upstream-intake/check-vet.sh
       - name: Test
-        run: go test ./... -count=1
+        # Tolerates only the upstream failures recorded in
+        # ops/upstream-intake/known-upstream-test-failures.txt.
+        run: ops/upstream-intake/check-tests.sh
       - name: Build
         run: |
           go build -o test-output ./cmd/server
