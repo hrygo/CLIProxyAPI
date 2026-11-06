@@ -275,5 +275,15 @@ directories. Run the gate in an isolated worktree without such extra source,
 preserving all existing files. Formatter failures propagate; the gate does not
 format files. It records all failed stages and returns nonzero if any stage fails.
 
+A release can ship with its own vet or test failures. Those are upstream defects:
+leave the source alone, reproduce the failure on a pristine checkout of that
+release, and record the exact diagnostic in
+`ops/upstream-intake/known-upstream-defects.txt` or the exact test name in
+`known-upstream-test-failures.txt`. The vet and test stages run through
+`check-vet.sh` and `check-tests.sh`, which tolerate only recorded entries and
+fail on anything else, including any build or panic failure. The PR workflow
+calls the same two scripts, so CI cannot drift from the gate; a new failure must
+be diagnosed rather than added to a list.
+
 Passing means no regression detected by those checks. For release-sensitive
 behavior, keep the additional acceptance evidence and its limits in the ledger.
