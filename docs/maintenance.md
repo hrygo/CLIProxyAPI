@@ -40,7 +40,13 @@ operations; a request to review them does not authorize publishing or deployment
 
    Commit the curated note before tagging. Generated commit summaries do not
    explain compatibility and are not a substitute for this file.
-4. Run `ops/upstream-intake/verify-absorb.sh` on the candidate. For protocol
+4. Run `ops/upstream-intake/verify-absorb.sh` on the candidate, then once more
+   with `GOMODCACHE="$(mktemp -d)"`: the PR check starts with an empty module
+   cache, and only that run shows download chatter, fetch failures and
+   cache-dependent ordering. A replay must also report no unrecorded loss in the
+   fork hook inventory stage; that stage compares the integration points in
+   `ops/upstream-intake/fork-hooks.txt` against `main` and catches a capability
+   that stopped being invoked while its file still exists. For protocol
    changes, include the relevant client replay evidence and its coverage limits.
 5. For a release based on a replay, compare the aligned upstream release's exact
    SHA with the accepted baseline and confirm that commit is an ancestor of the

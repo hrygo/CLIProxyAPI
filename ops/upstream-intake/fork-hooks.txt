@@ -1,0 +1,40 @@
+# Fork integration points that a replay must keep wired.
+#
+# A complete-tree replay replaces shared files wholesale. When a conflict is
+# resolved by taking upstream's version, fork behaviour that lived inside that
+# file disappears silently: tests keep passing because the wiring is gone, not
+# because it is equivalent. ops/upstream-intake/check-fork-hooks.py fails when a
+# file that still exists loses every occurrence of one of these symbols.
+#
+# One symbol per line. Keep the list short and behaviour-oriented: symbols whose
+# disappearance means a fork capability stopped being invoked anywhere.
+# Removing an entry is an intake decision and belongs in the replay review.
+
+# Outbound tool contract: validated after payload rules, before dispatch.
+ValidateOutboundToolContract
+
+# Transport attempt observation: journal, admission budget and identity contracts.
+observeHTTPAttempt
+BeginHTTPAuxiliaryWork
+CopyHTTPAttemptObserver
+CopyHTTPAuxiliaryWorkScope
+WithAntigravityHTTPClientTrace
+
+# Codex payload repair and steering.
+RepairResponsesToolItemIDs
+FinalizePayloadDoc
+WithPayloadFinalizer
+
+# Codex multi-agent optimisation, including the historical configuration path.
+RewriteCodexMultiAgentV2Input
+CodexMultiAgentV2Enabled
+
+# Responses-tools pipeline.
+PrepareClaudeDeferredTools
+ResponsesToolsReplayCheckerFromContext
+
+# Tool-name identity mapping used by the fork's translators.
+MapSanitizedFunctionName
+
+# Antigravity credits recovery must not erase a fresh hint.
+ClearAntigravityCreditsHintIfStale

@@ -63,7 +63,11 @@ part of the hotfix commit, then reconcile that entry at the next intake.
 5. In an isolated worktree, start at U and replay the inventoried changes on the
    **complete** upstream tree. Keep the upstream history as an ancestor. Apply
    changes in independently reviewable, feature-atomic commits with their tests,
-   configuration and documentation; record original-to-replay commit mappings.
+   configuration and documentation, and record original-to-replay commit
+   mappings. Review happens on the tree, so the frozen candidate may be one
+   squashed commit when the replay replaces shared files wholesale; squash only
+   after the review, and re-run the gate on the squashed commit because every
+   SHA changes.
    For each capability compare required behavior and test coverage with upstream.
    Retire its fork implementation only when both behavior and tests are verified
    equivalent, recording the evidence and limits. Otherwise retain or adapt the
@@ -93,6 +97,29 @@ part of the hotfix commit, then reconcile that entry at the next intake.
    coverage and limitations. U being an ancestor of C does not by itself prove
    that C retained all required upstream content or fork capabilities; review
    and test each disposition.
+
+   Run the gate twice before pushing: once normally, and once with a cold module
+   cache, because the PR check always starts cold and only then surfaces download
+   chatter, cache-dependent ordering and toolchain fetch failures:
+
+   ```bash
+   GOMODCACHE="$(mktemp -d)" ops/upstream-intake/verify-absorb.sh
+   ```
+
+   The gate's fork hook inventory stage compares per-file occurrence counts of
+   the recorded integration points
+   (`ops/upstream-intake/fork-hooks.txt`) against `main`, and fails when a file
+   that still exists lost every occurrence. That is the failure mode of a
+   complete-tree replay: taking upstream's version of a shared file compiles and
+   leaves the remaining tests green while the fork capability stops being
+   invoked. Deleted files are retirements, not losses. A hook that legitimately
+   moved to a narrower layer is recorded once in
+   `ops/upstream-intake/fork-hooks-allow.txt` with the reason, and the replay
+   review carries the evidence that the remaining call site is reached on the
+   same requests.
+
+   Push the candidate branch once. Every push reruns the full PR check, so
+   iterate locally and publish the frozen tree, not a sequence of attempts.
 7. Integrate only when the protected `main` rules explicitly permit PR **merge
    commits** while retaining the required build check, protected branch and
    no-force-push safeguards, and require the branch to be up to date before
