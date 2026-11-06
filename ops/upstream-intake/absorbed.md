@@ -132,6 +132,17 @@ disagree. The complete Go 1.26.10 gate passed on the candidate
 per-capability dispositions, the restored integration points, the retired tests
 and the remaining validation limits.
 
+Release `v1.5.2-upstream8.0.57` was published from `8fcf05db` on 2026-11-06,
+installed through the tap and restarted. A 42-minute post-install canary on the
+release binary served 684 requests: 652 `200`, one upstream `429` for a model
+whose free tier was exhausted, and 31 unauthenticated probe hits. No `5xx`, no
+error-level log line and no process restart occurred, and the process held a
+stable PID with no file-descriptor growth. Traffic covered the
+OpenAI-compatible, Codex and Antigravity credentials, including the
+Gemini-family streaming paths whose fork repairs F05 retired. Gemini Vertex,
+AI Studio, Claude messages and the Codex websocket carried no real traffic and
+remain unverified in production.
+
 ### v8.0.51 — complete-tree replay, effective on main, 2026-11-05
 
 - Previous intake baseline: `v8.0.35`
