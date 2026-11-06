@@ -83,7 +83,12 @@ part of the hotfix commit, then reconcile that entry at the next intake.
 
    Every replay review carries a replacement audit: one row per fork delta, the
    upstream file or commit that now covers it, and the decision (retired, or
-   kept as a delta) with its evidence. Do not automatically skip an empty or
+   kept as a delta) with its evidence. Resolve ownership mechanically before
+   writing a row: `git grep <symbol> <U> -- '*.go'` proves a symbol exists in
+   upstream, and `git diff --name-status <U> <candidate> -- <file>` says whether
+   the file is upstream's or the fork's. A row that claims upstream coverage
+   must name a symbol that resolves in U; a helper that already exists upstream
+   is upstream code, not a fork delta to retire. Do not automatically skip an empty or
    conflicting patch, silently drop a test, or infer equivalence from similar
    code or commit messages. Resolve each decision explicitly and account for all
    M changes before freezing the candidate.
