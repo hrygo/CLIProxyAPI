@@ -17,12 +17,22 @@ This fork exists only to fix problems upstream has not solved: the
 response-side integral-float canonicalization for strict Codex clients
 (`sdk/translator/codex_tool_arguments.go`, tracked upstream as
 `router-for-me/CLIProxyAPI#6255`), the `local-refs: "flatten"` mode for
-recursive tool schemas (`docs/responses-tools.md`), the responses-tools
-pipeline (`internal/responsestools/`), and the Gemini/Vertex/AI Studio
-streaming repairs shipped in `v1.1.0-upstream8.0.7`. If upstream resolves one
-of these problems with an equivalent fix, retire our implementation in favor
-of upstream's rather than maintaining both; the fork is not kept for its own
-sake and is retired once nothing it fixes remains unfixed upstream.
+recursive tool schemas (`docs/responses-tools.md`), and the responses-tools
+pipeline (`internal/responsestools/`). The Gemini/Vertex/AI Studio streaming
+repairs shipped in `v1.1.0-upstream8.0.7` were retired when upstream's
+streaming path replaced them.
+
+Upstream wins every overlap. At each intake, look for an upstream replacement
+before deciding to keep a fork behavior. When upstream implements the same
+behavior, delete the fork implementation and its fork-only tests and take
+upstream's; record the upstream file or commit and the evidence that the
+behavior survives. Keep a fork implementation only where upstream has no
+replacement or its replacement is not equivalent for a behavior we depend on,
+then as the smallest delta on top of upstream's path, re-checked every intake.
+A parallel implementation is never maintained "until we are sure", and a fork
+patch upstream replaced is never re-applied: removal is convergence, not a
+regression to repair later. The fork is retired once nothing it fixes remains
+unfixed upstream.
 
 The opt-in bootstrap timeout is a fork divergence. Upstream closed
 `router-for-me/CLIProxyAPI#6930` as not planned because its design policy allows
@@ -42,8 +52,9 @@ policy below carries the matching exception.
   source baseline; selection takes the newest upstream release at assessment
   time and applies no age threshold, so regression risk is carried by the replay
   gate and the post-install canary with a prepared rollback formula. Preserve
-  every fork capability in atomic commits; retire a fork
-  implementation only after verifying upstream equivalence. Integrate the
+  every fork capability in atomic commits, and take upstream's replacement
+  instead of the fork's implementation whenever upstream provides one.
+  Integrate the
   reviewed replay with a protected PR merge commit preserving upstream and
   existing `main` history; see the branch governance prerequisites below. Fetch
   upstream tags into the local-only `refs/upstream/tags/*` namespace and never

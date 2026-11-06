@@ -68,10 +68,22 @@ part of the hotfix commit, then reconcile that entry at the next intake.
    squashed commit when the replay replaces shared files wholesale; squash only
    after the review, and re-run the gate on the squashed commit because every
    SHA changes.
-   For each capability compare required behavior and test coverage with upstream.
-   Retire its fork implementation only when both behavior and tests are verified
-   equivalent, recording the evidence and limits. Otherwise retain or adapt the
-   implementation and its tests. Do not automatically skip an empty or
+   Upstream wins every overlap. For each capability, first check whether
+   upstream now implements the same behavior, including through a different
+   design, file layout or API. When a replacement exists, delete the fork
+   implementation and its fork-only tests and take upstream's, recording the
+   upstream file or commit and the evidence that the behavior survives the
+   swap. Keep a fork implementation only when upstream has no replacement, or
+   when upstream's replacement is demonstrably not equivalent for a behavior we
+   depend on; in that case keep the smallest delta on top of upstream's path,
+   with the reason and the failing evidence recorded, and re-check it next
+   intake. Never keep a parallel implementation "until we are sure", and never
+   re-apply a fork patch that upstream replaced: removal is the intended
+   convergence.
+
+   Every replay review carries a replacement audit: one row per fork delta, the
+   upstream file or commit that now covers it, and the decision (retired, or
+   kept as a delta) with its evidence. Do not automatically skip an empty or
    conflicting patch, silently drop a test, or infer equivalence from similar
    code or commit messages. Resolve each decision explicitly and account for all
    M changes before freezing the candidate.
