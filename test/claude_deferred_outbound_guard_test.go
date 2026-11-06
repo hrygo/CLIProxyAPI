@@ -10,13 +10,13 @@ import (
 	"sync/atomic"
 	"testing"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	runtimeexecutor "github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor"
 	auth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	executor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	translator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
 )
 
 const claudeDeferredGuardRequest = `{"model":"review-model","max_tokens":128,"tools":[{"name":"ToolSearch","input_schema":{"type":"object","properties":{}}},{"name":"DeferredToolPlaceholder","defer_loading":true,"input_schema":{"type":"object"}},{"name":"lookup","defer_loading":true,"input_schema":{"type":"object","properties":{}}},{"name":"unloaded","defer_loading":true,"input_schema":{"type":"object"}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","name":"ToolSearch","id":"search_1","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"search_1","content":[{"type":"tool_reference","tool_name":"lookup"}]}]}]}`

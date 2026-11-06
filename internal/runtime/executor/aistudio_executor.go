@@ -13,18 +13,16 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	internalsignature "github.com/router-for-me/CLIProxyAPI/v8/internal/signature"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
-	translatorcommon "github.com/router-for-me/CLIProxyAPI/v8/internal/translator/common"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/util"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/wsrelay"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 // AIStudioExecutor routes AI Studio requests through a websocket-backed transport.
@@ -319,96 +317,47 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 		}
 		return nil, statusErr{code: firstEvent.Status, msg: body.String()}
 	}
-	responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 	out := make(chan cliproxyexecutor.StreamChunk, 1)
-	stopDeliverySupport := supportGeminiResponsesDelivery(ctx, responseFormat)
 	go func(first wsrelay.StreamEvent) {
-		var streamUsage helps.StreamUsageBuffer
-		streamUsage.SetRequestPayload(body.payload)
-		var terminalDelivered bool
-		if responseFormat == sdktranslator.FormatOpenAIResponse {
-			defer finishGeminiResponsesStream(ctx, out, reporter, &streamUsage, &terminalDelivered, stopDeliverySupport)
-		} else {
-			defer close(out)
-			defer reporter.EnsurePublished(ctx)
-			defer streamUsage.Publish(ctx, reporter)
-		}
+		defer close(out)
 		defer cancelStream()
+		defer reporter.EnsurePublished(ctx)
+		responseFormat := cliproxyexecutor.ResponseFormatOrSource(opts)
 		originalRequest := opts.OriginalRequest
 		if len(originalRequest) == 0 {
 			originalRequest = req.Payload
 		}
 		claudeInputTokens := helps.NewClaudeInputTokenState(opts.SourceFormat, body.toFormat, responseFormat, originalRequest)
+		var streamUsage helps.StreamUsageBuffer
+		streamUsage.SetRequestPayload(body.payload)
+		defer streamUsage.Publish(ctx, reporter)
 		var streamErr error
 		defer func() {
 			_ = helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out)
 		}()
 		var param any
-		var responsesDetector geminiResponsesStreamClassifier
 		helps.InitializeApplyPatchStream(ctx, body.toFormat, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translatedReq, &param)
 		metadataLogged := false
 		var relayFrames helps.RelaySSEBuffer
 		processRelayFrames := func(payloads [][]byte) bool {
-			for payloadIndex, payload := range payloads {
+			for _, payload := range payloads {
 				for _, frame := range splitRelayFrames(payload) {
-					if responseFormat == sdktranslator.FormatOpenAIResponse {
-						frame = normalizeAIStudioMultilineSSE(frame)
-					}
 					reporter.ObserveResponseModel(frame)
 					streamUsage.ObserveGeminiStream(frame)
 					filtered := helps.FilterSSEUsageMetadata(frame)
-					translateCtx := ctx
-					var errBuffered error
-					bufferedObserved := false
-					if responseFormat == sdktranslator.FormatOpenAIResponse && geminiStreamHasFinishSignal(helps.JSONPayload(frame)) {
-						var snapshots [][]byte
-						snapshots, errBuffered = observeAIStudioBufferedUsage(payloads[payloadIndex:], relayFrames.Pending(), &streamUsage)
-						bufferedObserved = true
-						if stopGeminiResponsesOnBufferedFailure(ctx, e.cfg, errBuffered, reporter, &streamUsage, out) {
-							return false
-						}
-						translateCtx = translatorcommon.WithGeminiBufferedUsage(ctx, &param, snapshots)
-					}
-					lines := helps.TranslateStreamWithClaudeInputTokens(translateCtx, body.toFormat, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translatedReq, filtered, &param, claudeInputTokens)
-					events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, lines, &responsesDetector, param, reporter, &streamUsage, out)
-					if !ok {
-						return false
-					}
+					lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translatedReq, filtered, &param, claudeInputTokens)
+					helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 					helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 						return statusErr{code: http.StatusBadGateway, msg: msg}
 					})
-					var responsesTerminal string
 					for i := range lines {
-						if responseFormat == sdktranslator.FormatOpenAIResponse && geminiResponsesTerminalType(events[i]) && !geminiResponsesTerminalFailed(events[i]) {
-							if !bufferedObserved && !isAIStudioDoneFrame(frame) {
-								_, errBuffered = observeAIStudioBufferedUsage(payloads[payloadIndex:], relayFrames.Pending(), &streamUsage)
-							}
-							if stopGeminiResponsesOnBufferedFailure(ctx, e.cfg, errBuffered, reporter, &streamUsage, out) {
-								return false
-							}
-						}
 						select {
 						case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(lines[i])}:
-							if responseFormat == sdktranslator.FormatOpenAIResponse {
-								responsesTerminal = events[i]
-								if responsesTerminal != "" {
-									terminalDelivered = true
-								}
-							}
 						case <-ctx.Done():
 							return false
 						}
-						if responsesTerminal != "" {
-							break
-						}
-					}
-					if geminiResponsesTerminalFailed(responsesTerminal) && !geminiPatchStreamError(param) {
-						return false
 					}
 					if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
-						return false
-					}
-					if responsesTerminal != "" {
 						return false
 					}
 				}
@@ -419,7 +368,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 			if !processRelayFrames(relayFrames.Finish()) {
 				return
 			}
-			if endGeminiToolStream(ctx, responseFormat, &responsesDetector, param, reporter, &streamUsage, out, &terminalDelivered) {
+			if helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
 				return
 			}
 			if helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out) {
@@ -429,32 +378,16 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				return
 			}
 			lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translatedReq, []byte("[DONE]"), &param, claudeInputTokens)
-			events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, lines, &responsesDetector, param, reporter, &streamUsage, out)
-			if !ok {
-				return
-			}
+			helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 			helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 				return statusErr{code: http.StatusBadGateway, msg: msg}
 			})
-			var responsesTerminal string
-			for i, line := range lines {
+			for _, line := range lines {
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(line)}:
-					if responseFormat == sdktranslator.FormatOpenAIResponse {
-						responsesTerminal = events[i]
-						if responsesTerminal != "" {
-							terminalDelivered = true
-						}
-					}
 				case <-ctx.Done():
 					return
 				}
-				if responsesTerminal != "" {
-					break
-				}
-			}
-			if geminiResponsesTerminalFailed(responsesTerminal) && !geminiPatchStreamError(param) {
-				return
 			}
 			_ = helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 			_ = helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out)
@@ -465,13 +398,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					return false
 				}
 				helps.RecordAPIResponseError(ctx, e.cfg, event.Err)
-				if !deferGeminiDeliveryCancellation(ctx, responseFormat, event.Err) {
-					if responseFormat == sdktranslator.FormatOpenAIResponse {
-						streamUsage.PublishFailure(ctx, reporter, event.Err)
-					} else {
-						reporter.PublishFailure(ctx, event.Err)
-					}
-				}
+				reporter.PublishFailure(ctx, event.Err)
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("wsrelay: %v", event.Err)}:
 				case <-ctx.Done():
@@ -520,37 +447,18 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				reporter.ObserveResponseModel(event.Payload)
 				streamUsage.Observe(helps.ParseGeminiUsage(event.Payload), true)
 				lines := helps.TranslateStreamWithClaudeInputTokens(ctx, body.toFormat, responseFormat, req.Model, helps.ApplyPatchOriginalRequest(req, opts), translatedReq, event.Payload, &param, claudeInputTokens)
-				events, ok := classifyGeminiStreamTranslation(ctx, responseFormat, lines, &responsesDetector, param, reporter, &streamUsage, out)
-				if !ok {
-					return false
-				}
+				helps.RecordApplyPatchStreamFailure(ctx, param, reporter, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 				helps.CaptureTranslatedClaudeStreamError(responseFormat, lines, &streamErr, func(msg string) error {
 					return statusErr{code: http.StatusBadGateway, msg: msg}
 				})
-				var responsesTerminal string
 				for i := range lines {
 					select {
 					case out <- cliproxyexecutor.StreamChunk{Payload: ensureColonSpacedJSON(lines[i])}:
-						if responseFormat == sdktranslator.FormatOpenAIResponse {
-							responsesTerminal = events[i]
-							if responsesTerminal != "" {
-								terminalDelivered = true
-							}
-						}
 					case <-ctx.Done():
 						return false
 					}
-					if responsesTerminal != "" {
-						break
-					}
-				}
-				if geminiResponsesTerminalFailed(responsesTerminal) && !geminiPatchStreamError(param) {
-					return false
 				}
 				if helps.StopApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage}) {
-					return false
-				}
-				if responsesTerminal != "" {
 					return false
 				}
 				finishStream()
@@ -560,13 +468,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 					return false
 				}
 				helps.RecordAPIResponseError(ctx, e.cfg, event.Err)
-				if !deferGeminiDeliveryCancellation(ctx, responseFormat, event.Err) {
-					if responseFormat == sdktranslator.FormatOpenAIResponse {
-						streamUsage.PublishFailure(ctx, reporter, event.Err)
-					} else {
-						reporter.PublishFailure(ctx, event.Err)
-					}
-				}
+				reporter.PublishFailure(ctx, event.Err)
 				select {
 				case out <- cliproxyexecutor.StreamChunk{Err: fmt.Errorf("wsrelay: %v", event.Err)}:
 				case <-ctx.Done():
@@ -583,7 +485,7 @@ func (e *AIStudioExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth
 				return
 			}
 		}
-		_ = endGeminiToolStream(ctx, responseFormat, &responsesDetector, param, reporter, &streamUsage, out, &terminalDelivered)
+		_ = helps.EndApplyPatchStream(ctx, param, reporter, out, statusErr{code: http.StatusBadGateway, msg: helps.ApplyPatchUpstreamErrorMessage})
 		_ = helps.StopTranslatedClaudeStream(ctx, &streamErr, reporter, &streamUsage, out)
 	}(firstEvent)
 	return &cliproxyexecutor.StreamResult{Headers: firstEvent.Headers.Clone(), Chunks: out}, nil
@@ -641,7 +543,7 @@ func (e *AIStudioExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.A
 	if resp.Status < 200 || resp.Status >= 300 {
 		return cliproxyexecutor.Response{}, statusErr{code: resp.Status, msg: string(resp.Body)}
 	}
-	totalTokens := gjson.GetBytes(resp.Body, "totalTokens").Int()
+	totalTokens := ojson.GetBytesNoCopy(resp.Body, "totalTokens").Int()
 	if totalTokens <= 0 {
 		return cliproxyexecutor.Response{}, fmt.Errorf("wsrelay: totalTokens missing in response")
 	}
@@ -679,16 +581,16 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 	if err != nil {
 		return nil, translatedPayload{}, err
 	}
-	payload, err = helps.ApplyThinkingWithSourcePayload(payload, req.Payload, originalPayloadSource, req.Model, from.String(), to.String(), e.Identifier())
-	if err != nil {
+	doc := ojson.NewDoc(payload)
+	if err = helps.ApplyThinkingWithSourcePayloadDoc(doc, req.Payload, originalPayloadSource, req.Model, from.String(), to.String(), e.Identifier()); err != nil {
 		return nil, translatedPayload{}, err
 	}
-	payload = fixGeminiImageAspectRatio(baseModel, payload)
+	fixGeminiImageAspectRatioDoc(baseModel, doc)
 	requestedModel := helps.PayloadRequestedModel(opts, req.Model)
 	requestPath := helps.PayloadRequestPath(opts)
-	payload, _ = sjson.DeleteBytes(payload, "generationConfig.maxOutputTokens")
-	payload, _ = sjson.DeleteBytes(payload, "generationConfig.responseMimeType")
-	payload, _ = sjson.DeleteBytes(payload, "generationConfig.responseJsonSchema")
+	_ = doc.Delete("generationConfig.maxOutputTokens")
+	_ = doc.Delete("generationConfig.responseMimeType")
+	_ = doc.Delete("generationConfig.responseJsonSchema")
 	metadataAction := "generateContent"
 	if req.Metadata != nil {
 		if action, _ := req.Metadata["action"].(string); action == "countTokens" {
@@ -699,24 +601,20 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 	if stream && action != "countTokens" {
 		action = "streamGenerateContent"
 	}
-	payload, _ = sjson.DeleteBytes(payload, "session_id")
-	payload = helps.EnsureGeminiLeadingUserContent(payload, "contents")
+	_ = doc.Delete("session_id")
+	helps.EnsureGeminiLeadingUserContentDoc(doc, "contents")
 	if action != "countTokens" {
-		payload = helps.EnsureGeminiTrailingUserContent(payload, "contents")
+		helps.EnsureGeminiTrailingUserContentDoc(doc, "contents")
 	}
-	payload = normalizeAIStudioThinkingLevel(payload)
-	payload = internalsignature.SanitizeNonVertexGeminiRequestThoughtSignatures(payload, "contents")
+	normalizeAIStudioThinkingLevelDoc(doc)
+	internalsignature.SanitizeNonVertexGeminiRequestThoughtSignaturesDoc(doc, "contents")
 	if action == "countTokens" {
-		payload, _ = sjson.DeleteBytes(payload, "generationConfig")
-		payload, _ = sjson.DeleteBytes(payload, "tools")
-		payload, _ = sjson.DeleteBytes(payload, "safetySettings")
+		_ = doc.Delete("generationConfig")
+		_ = doc.Delete("tools")
+		_ = doc.Delete("safetySettings")
 	}
-	payload = helps.ApplyPayloadConfigWithRequest(e.cfg, baseModel, to.String(), from.String(), "", payload, originalTranslated, requestedModel, requestPath, opts.Headers)
-	if action != "countTokens" {
-		if errGuard := helps.ValidateOutboundToolContract(ctx, payload, helps.WireContractByteLimit(ctx)); errGuard != nil {
-			return nil, translatedPayload{}, errGuard
-		}
-	}
+	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
+	payload = doc.Bytes()
 	return payload, translatedPayload{payload: payload, action: action, toFormat: to}, nil
 }
 
@@ -724,27 +622,34 @@ func (e *AIStudioExecutor) translateRequest(ctx context.Context, req cliproxyexe
 // The AI Studio upstream validates generationConfig.thinkingConfig.thinkingLevel case-sensitively
 // and rejects lowercase values with a 400 invalid argument error.
 func normalizeAIStudioThinkingLevel(payload []byte) []byte {
-	const path = "generationConfig.thinkingConfig.thinkingLevel"
-	level := gjson.GetBytes(payload, path)
-	if level.Type != gjson.String {
+	doc := ojson.NewDoc(payload)
+	if !normalizeAIStudioThinkingLevelDoc(doc) {
 		return payload
+	}
+	return doc.Bytes()
+}
+
+func normalizeAIStudioThinkingLevelDoc(doc *ojson.Doc) bool {
+	if doc == nil {
+		return false
+	}
+	const path = "generationConfig.thinkingConfig.thinkingLevel"
+	level := doc.Get(path)
+	if level.Type != ojson.String {
+		return false
 	}
 
 	normalized := strings.ToUpper(level.String())
 	switch normalized {
 	case "MINIMAL", "LOW", "MEDIUM", "HIGH":
 	default:
-		return payload
+		return false
 	}
 	if normalized == level.String() {
-		return payload
+		return false
 	}
 
-	result, err := sjson.SetBytes(payload, path, normalized)
-	if err != nil {
-		return payload
-	}
-	return result
+	return doc.Set(path, normalized) == nil
 }
 
 func (e *AIStudioExecutor) buildEndpoint(model, action, alt string) string {
@@ -759,104 +664,6 @@ func (e *AIStudioExecutor) buildEndpoint(model, action, alt string) string {
 		return base + "?$alt=" + url.QueryEscape(alt)
 	}
 	return base
-}
-
-// observeAIStudioBufferedUsage inspects the current raw SSE event, complete
-// frames returned by the same Feed, and its unfinished tail. The shared scanner
-// reads only this in-memory batch, never another relay message.
-func observeAIStudioBufferedUsage(frames [][]byte, pending []byte, streamUsage *helps.StreamUsageBuffer) ([][]byte, error) {
-	if len(frames) == 0 || !startsWithSSEField(bytes.TrimLeft(frames[0], " \t\r\n")) {
-		return nil, nil
-	}
-	// A standard, complete [DONE] event ends the scanner. Retain the marker
-	// itself so earlier errors are still handled by the normal SSE parser.
-	for i, frame := range frames[1:] {
-		if bytes.Equal(frame, []byte("data: [DONE]\n\n")) || bytes.Equal(frame, []byte("data: [DONE]\r\n\r\n")) {
-			frames = frames[:i+2]
-			pending = nil
-			break
-		}
-	}
-	size := len(pending)
-	for _, frame := range frames {
-		size += len(frame)
-	}
-	scanner := helps.NewBufferedSSEScanner(&aiStudioBatchReader{frames: frames, pending: pending}, size+1)
-	scanner.Buffer(make([]byte, 0, size), size+1)
-	for _, line := range bytes.Split(frames[0], []byte("\n")) {
-		if len(bytes.TrimSuffix(line, []byte("\r"))) == 0 {
-			break
-		}
-		if !scanner.Scan() {
-			return nil, scanner.Err()
-		}
-	}
-	return observeBufferedGeminiResponsesUsage(scanner, streamUsage)
-}
-
-// aiStudioBatchReader fills each read from already received frame slices.
-type aiStudioBatchReader struct {
-	frames  [][]byte
-	pending []byte
-	index   int
-	offset  int
-}
-
-func (r *aiStudioBatchReader) Read(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	written := 0
-	for len(p) > 0 && r.index <= len(r.frames) {
-		var frame []byte
-		if r.index < len(r.frames) {
-			frame = r.frames[r.index]
-		} else {
-			frame = r.pending
-		}
-		n := copy(p, frame[r.offset:])
-		written += n
-		p = p[n:]
-		r.offset += n
-		if r.offset == len(frame) {
-			r.index++
-			r.offset = 0
-		}
-	}
-	if written == 0 {
-		return 0, io.EOF
-	}
-	return written, nil
-}
-
-func isAIStudioDoneFrame(frame []byte) bool {
-	trimmed := bytes.TrimSpace(frame)
-	trimmed = bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
-	return bytes.Equal(trimmed, []byte("[DONE]"))
-}
-
-// normalizeAIStudioMultilineSSE combines data lines within one complete SSE
-// event for Responses translators, while leaving unrecognized data untouched.
-func normalizeAIStudioMultilineSSE(frame []byte) []byte {
-	var data [][]byte
-	for _, line := range bytes.Split(frame, []byte("\n")) {
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
-		}
-		value := line[len("data:"):]
-		if len(value) > 0 && value[0] == ' ' {
-			value = value[1:]
-		}
-		data = append(data, value)
-	}
-	if len(data) < 2 {
-		return frame
-	}
-	payload := bytes.Join(data, []byte("\n"))
-	if !gjson.ValidBytes(payload) {
-		return frame
-	}
-	return append(append([]byte("data: "), payload...), '\n', '\n')
 }
 
 // splitRelayFrames splits one relay stream chunk into the SSE frames it holds. A chunk that starts with an SSE field (data:, event:,

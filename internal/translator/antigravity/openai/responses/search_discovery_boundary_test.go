@@ -3,8 +3,8 @@ package responses
 import (
 	"testing"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
-	"github.com/tidwall/gjson"
 )
 
 func TestSearchDiscoveryBoundaryPreservesClientSelection(t *testing.T) {

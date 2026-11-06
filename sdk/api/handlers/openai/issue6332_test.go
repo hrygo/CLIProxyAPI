@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moego/ojson"
 	"github.com/gin-gonic/gin"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/api/middleware"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/cache"
@@ -25,8 +26,6 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginapi"
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
 )
 
 type issue6332Capture struct {
@@ -352,12 +351,12 @@ func TestIssue6332ReasoningReplayTwoTurns(t *testing.T) {
 			if !ok || len(items) == 0 {
 				t.Error("complete upstream output did not commit reasoning replay")
 			}
-			var functionCall gjson.Result
+			var functionCall ojson.Result
 			for _, line := range strings.Split(downstream, "\n") {
 				if !strings.HasPrefix(line, "data:") {
 					continue
 				}
-				event := gjson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+				event := ojson.Parse(strings.TrimSpace(strings.TrimPrefix(line, "data:")))
 				if event.Get("type").String() == "response.completed" {
 					for _, item := range event.Get("response.output").Array() {
 						if item.Get("type").String() == "function_call" {
@@ -370,12 +369,14 @@ func TestIssue6332ReasoningReplayTwoTurns(t *testing.T) {
 				t.Fatalf("no completed tool call: %s", downstream)
 			}
 			// Deliberately omit encrypted reasoning: restoration must come from the session ledger.
-			second, _ := sjson.Set(first, "input.-1", map[string]any{"type": "function_call", "call_id": functionCall.Get("call_id").String(), "name": "lookup", "arguments": `{"key":"value"}`})
-			second, _ = sjson.Set(second, "input.-1", map[string]any{"type": "function_call_output", "call_id": functionCall.Get("call_id").String(), "output": "found"})
+			secondDoc := ojson.NewDocString(first)
+			_ = secondDoc.Set("input.-1", map[string]any{"type": "function_call", "call_id": functionCall.Get("call_id").String(), "name": "lookup", "arguments": `{"key":"value"}`})
+			_ = secondDoc.Set("input.-1", map[string]any{"type": "function_call_output", "call_id": functionCall.Get("call_id").String(), "output": "found"})
+			second := secondDoc.String()
 			call(second)
 			upstream := <-requests
 			restored := false
-			for _, content := range gjson.GetBytes(upstream, "request.contents").Array() {
+			for _, content := range ojson.GetBytesNoCopy(upstream, "request.contents").Array() {
 				for _, part := range content.Get("parts").Array() {
 					if part.Get("functionCall.name").String() == "lookup" && part.Get("thoughtSignature").String() == signature {
 						restored = true
@@ -423,11 +424,8 @@ func TestIssue6332NativeGeminiCompletedWithoutEOF(t *testing.T) {
 		}
 	}}
 	done := make(chan struct{})
-	requestCtx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	go func() {
-		request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.7-flash","input":"hello","stream":true}`)).WithContext(requestCtx)
-		router.ServeHTTP(writer, request)
+		router.ServeHTTP(writer, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gemini-3.7-flash","input":"hello","stream":true}`)))
 		close(done)
 	}()
 	select {
@@ -435,12 +433,14 @@ func TestIssue6332NativeGeminiCompletedWithoutEOF(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("completion not delivered")
 	}
-	// The server is released only during cleanup; handler completion may cancel the upstream request.
+	// The unsupported executor must retain its EOF lifecycle, not be cancelled by completion.
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("native Gemini handler did not finish after terminal delivery while upstream remained open")
+		t.Error("native Gemini cancelled before EOF without client cancellation")
+	case <-time.After(100 * time.Millisecond):
 	}
+	release <- struct{}{}
+	<-done
 	select {
 	case record := <-capture.records:
 		if record.Failed || record.Detail.InputTokens != 11 || record.Detail.OutputTokens != 22 || record.Detail.TotalTokens != 33 {

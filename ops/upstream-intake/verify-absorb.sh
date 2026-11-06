@@ -71,9 +71,9 @@ check_invariants() {
 
 stage "maintenance tooling" python3 -m unittest discover -s ops/tests -p 'test_*.py'
 stage "gofmt" check_gofmt
-stage "go vet" go vet ./...
+stage "go vet" ops/upstream-intake/check-vet.sh
 stage "responses-tools invariants" check_invariants
-stage "full test suite" go test ./... -count=1
+stage "full test suite" ops/upstream-intake/check-tests.sh
 stage "race-sensitive packages" go test -race -count=1 "${RACE_PACKAGES[@]}"
 stage "server build" check_build
 

@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
+	gjson "github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
-	"github.com/tidwall/gjson"
 )
 
 func TestResponsesWebsocketHomeAppendBeforeCreateIsLocalError(t *testing.T) {

@@ -4,8 +4,7 @@ import (
 	"bytes"
 	"strconv"
 
-	"github.com/tidwall/gjson"
-	"github.com/tidwall/sjson"
+	gjson "github.com/MoeForge/moego/ojson"
 )
 
 // isResponsesClientFormat reports whether the client-facing response dialect
@@ -114,7 +113,7 @@ func canonicalizeCodexStreamEvent(event []byte) []byte {
 		if bytes.Equal(updated, []byte(response.Raw)) {
 			return event
 		}
-		if out, errSet := sjson.SetRawBytes(event, "response", updated); errSet == nil {
+		if out, errSet := gjson.SetRawBytes(event, "response", updated); errSet == nil {
 			return out
 		}
 	}
@@ -148,7 +147,7 @@ func canonicalizeCodexResponseBody(body []byte) []byte {
 		if updated == nil {
 			continue
 		}
-		next, errSet := sjson.SetRawBytes(out, "output."+strconv.Itoa(index), updated)
+		next, errSet := gjson.SetRawBytes(out, "output."+strconv.Itoa(index), updated)
 		if errSet != nil {
 			continue
 		}
@@ -176,7 +175,7 @@ func canonicalizeCodexArguments(document []byte, argumentsPath string) []byte {
 		if bytes.Equal(canonicalized, []byte(value)) {
 			return nil
 		}
-		out, errSet := sjson.SetBytes(document, argumentsPath, string(canonicalized))
+		out, errSet := gjson.SetBytes(document, argumentsPath, string(canonicalized))
 		if errSet != nil {
 			return nil
 		}
@@ -189,7 +188,7 @@ func canonicalizeCodexArguments(document []byte, argumentsPath string) []byte {
 		if bytes.Equal(canonicalized, []byte(raw.Raw)) {
 			return nil
 		}
-		out, errSet := sjson.SetRawBytes(document, argumentsPath, canonicalized)
+		out, errSet := gjson.SetRawBytes(document, argumentsPath, canonicalized)
 		if errSet != nil {
 			return nil
 		}
