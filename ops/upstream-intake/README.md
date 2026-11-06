@@ -125,8 +125,10 @@ part of the hotfix commit, then reconcile that entry at the next intake.
 
    The gate's fork hook inventory stage compares per-file occurrence counts of
    the recorded integration points
-   (`ops/upstream-intake/fork-hooks.txt`) against `main`, and fails when a file
-   that still exists lost every occurrence. That is the failure mode of a
+   (`ops/upstream-intake/fork-hooks.txt`) against the trunk — plain `main` in a
+   worktree, `origin/main` in a release checkout, which fetches the trunk into
+   that ref before the gate runs. It fails when a file that still exists lost
+   every occurrence. That is the failure mode of a
    complete-tree replay: taking upstream's version of a shared file compiles and
    leaves the remaining tests green while the fork capability stops being
    invoked. Deleted files are retirements, not losses. A hook that legitimately
