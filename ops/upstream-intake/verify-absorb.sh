@@ -70,7 +70,7 @@ check_invariants() {
 }
 
 stage "maintenance tooling" python3 -m unittest discover -s ops/tests -p 'test_*.py'
-stage "fork hook inventory" python3 ops/upstream-intake/check-fork-hooks.py --baseline main
+stage "fork hook inventory" python3 ops/upstream-intake/check-fork-hooks.py
 stage "gofmt" check_gofmt
 stage "go vet" ops/upstream-intake/check-vet.sh
 stage "responses-tools invariants" check_invariants

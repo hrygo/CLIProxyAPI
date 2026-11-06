@@ -26,9 +26,10 @@ DEFAULT_HOOKS = "ops/upstream-intake/fork-hooks.txt"
 DEFAULT_ALLOW = "ops/upstream-intake/fork-hooks-allow.txt"
 
 # Baseline candidates in order. A release build checks out a tag, so only the
-# remote-tracking ref of the trunk is guaranteed to exist there; the intake run
-# in a worktree resolves plain main.
-BASELINE_CANDIDATES = ("main", "origin/main")
+# trunk ref the workflow fetches is available there (origin/main, or FETCH_HEAD
+# when the explicit refspec did not create it); the intake run in a worktree
+# resolves plain main.
+BASELINE_CANDIDATES = ("main", "origin/main", "FETCH_HEAD")
 
 
 def git(*args: str) -> str:
