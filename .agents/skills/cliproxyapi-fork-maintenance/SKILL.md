@@ -64,11 +64,19 @@ to apply; do not ask again for routine steps it covers.
   preserves, its implementation and regression evidence, and its upstream status;
   do not wait for the next intake to reconstruct the delta.
 - Use the complete newest upstream release tree as the new baseline. Review its
-  changes and retain every fork capability, including required operational and
-  release governance. Reconcile conflicts without silently dropping patches,
-  upstream behavior, user data, configuration, or fork requirements. For each
-  capability, retire the fork implementation only after verifying that upstream
-  is equivalent; record the evidence and limits, not just commit similarity.
+  changes and account for every fork capability, including required operational
+  and release governance. Reconcile conflicts without silently dropping
+  upstream behavior, user data, configuration, or fork requirements.
+- **Upstream wins every overlap.** Check whether upstream now implements each
+  fork behavior before deciding to keep the fork's version. When a replacement
+  exists, delete the fork implementation and its fork-only tests and take
+  upstream's, recording the upstream file or commit and the evidence that the
+  behavior survives. Keep a fork implementation only where upstream has no
+  replacement or its replacement is demonstrably not equivalent for a behavior
+  we depend on; then keep the smallest delta on top of upstream's path and
+  re-check it at every intake. Never maintain a parallel implementation "until
+  we are sure", and never re-apply a fork patch upstream replaced. Removal is
+  the intended convergence, not a regression to repair later.
 - When committing fork-specific work or replaying it, organize atomic,
   reviewable commits by capability, including their tests and supporting changes.
   Prepare and verify the candidate in an isolated worktree, with the full upstream

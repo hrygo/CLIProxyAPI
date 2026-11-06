@@ -3,7 +3,15 @@
 This index identifies known behaviors and operational boundaries that must be
 accounted for when replaying the fork onto an upstream release. It is a starting
 inventory, not proof that every fork change has been classified or that an
-upstream implementation is equivalent. The accepted baseline and decisions for
+upstream implementation is equivalent.
+
+**Upstream wins every overlap.** When upstream implements a listed behavior, the
+fork implementation and its fork-only tests are deleted and upstream's code is
+taken; the entry then records the retired fork implementation and the upstream
+replacement. A fork implementation survives only where upstream has no
+replacement or its replacement is not equivalent for a behavior we depend on,
+and then only as the smallest delta on top of upstream's path. Every intake
+records the replacement audit described in [README.md](README.md). The accepted baseline and decisions for
 each intake are recorded in [absorbed.md](absorbed.md).
 
 The accepted v8.0.35 baseline records selective intake, not a complete upstream
