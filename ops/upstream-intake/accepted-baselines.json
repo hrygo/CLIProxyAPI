@@ -2,15 +2,15 @@
   "schema_version": 1,
   "accepted": {
     "kind": "replay",
-    "upstream": "v8.0.51",
-    "upstream_sha": "7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc",
-    "previous_baseline": "v8.0.35",
-    "main_before": "cd45bd7b81659d33347ff066982f02261598e60e",
-    "candidate_commit": "03df96a13d59d983d3d9d8e367a8d15134453216",
-    "integration_commit": "2c5a3b3bcda3a8731ab0c82dc3f9fafc1428ef4f",
-    "candidate_tree": "82c21b74cf8f15e1743707e5c0fa3d1cc359e0ba",
-    "intake_commit": "69a96b0d10e48ed5d8227895e9ae9fe9b7db29ae",
-    "ledger_commit": "bf310311e632f4067fc642571191cab4efd94cf6",
-    "assessment_heading": "v8.0.51 — complete-tree replay, effective on main, 2026-11-05"
+    "upstream": "v8.0.57",
+    "upstream_sha": "c2f402b45643f0740d70b9010fd7d8d0aab7ef65",
+    "previous_baseline": "v8.0.51",
+    "main_before": "df1fd17c09463c7b5c643cc4beb272befbd16691",
+    "candidate_commit": "555deb9fef4b25ffda2f45398a93d889182830cb",
+    "integration_commit": "a261c3e1e69452513598fa95876c4f5765c9fdfe",
+    "candidate_tree": "60b87084a91e87ab95f24fa1a6ac7f1edb04ded8",
+    "intake_commit": "a5df3da266219e75d54f4eded175c00d14758e9c",
+    "ledger_commit": "1fae13d0d42d11c0aa6d4d29a5745a12503230d7",
+    "assessment_heading": "v8.0.57 — complete-tree replay, effective on main, 2026-11-06"
   }
 }
