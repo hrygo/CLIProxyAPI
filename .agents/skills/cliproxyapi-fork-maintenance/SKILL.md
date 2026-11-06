@@ -36,6 +36,15 @@ to apply; do not ask again for routine steps it covers.
   delta. A release upstream has already replaced is never replayed. Regression
   risk is carried by the replay gate and by the post-install canary with the
   prepared versioned rollback formula, not by waiting.
+- Execute a replay in this order, so a mistake costs one local run instead of
+  repeated red CI: inventory and disposition first; replay on the complete
+  upstream tree; freeze one candidate commit; run the gate, then run it again
+  with `GOMODCACHE="$(mktemp -d)"` because the PR check starts cold; confirm the
+  fork hook inventory stage reports no unrecorded loss; push once; merge with a
+  merge commit; commit the ledger as L; then update the registry in R after L
+  lands, rebasing R onto the new `main`. Never iterate by pushing candidate
+  versions: each push reruns the whole check and each rewrite invalidates the
+  recorded candidate SHA.
 - Use the explicitly accepted comparison baseline in the human ledger and
   [accepted baseline registry](../../../ops/upstream-intake/accepted-baselines.json);
   they must agree. Record historical selective baselines as selective. After a
