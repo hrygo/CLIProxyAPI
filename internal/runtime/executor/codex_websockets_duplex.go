@@ -13,6 +13,7 @@ import (
 
 	"github.com/MoeForge/moego/ojson"
 	"github.com/gorilla/websocket"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/responsestools"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
@@ -29,6 +30,33 @@ type codexDuplexConnectionError struct{ cause error }
 func (e *codexDuplexConnectionError) Error() string         { return e.cause.Error() }
 func (e *codexDuplexConnectionError) Unwrap() error         { return e.cause }
 func (e *codexDuplexConnectionError) IsRequestScoped() bool { return true }
+
+// codexRejectedEventID returns an unambiguous client-supplied string ID only.
+// Repeated keys or non-string values cannot safely identify one request.
+func codexRejectedEventID(payload []byte) string {
+	if !json.Valid(payload) {
+		return ""
+	}
+	root := ojson.ParseBytes(payload)
+	if !root.IsObject() {
+		return ""
+	}
+	var id string
+	count := 0
+	root.ForEach(func(key, value ojson.Result) bool {
+		if key.String() == "event_id" {
+			count++
+			if value.Type == ojson.String {
+				id = value.Str
+			}
+		}
+		return count < 2
+	})
+	if count != 1 {
+		return ""
+	}
+	return id
+}
 
 // streamCodexDuplex owns the already authenticated socket until downstream
 // disconnect. A response terminal event is not a connection terminal event:
@@ -135,10 +163,14 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			}
 			cancel()
 		}
-		reject := func(message string) bool {
+		rejectWithStatus := func(status int, message, eventID string) bool {
+			detail := map[string]string{"type": "invalid_request_error", "message": message}
+			if eventID != "" {
+				detail["event_id"] = eventID
+			}
 			payload, _ := json.Marshal(map[string]any{
-				"type": "error", "status": http.StatusBadRequest,
-				"error": map[string]string{"type": "invalid_request_error", "message": message},
+				"type": "error", "status": status,
+				"error": detail,
 			})
 			// Reader cleanup joins this writer before closing out. Cancellation must
 			// also release a local error blocked behind a disconnected downstream.
@@ -149,6 +181,16 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			case <-streamCtx.Done():
 				return false
 			}
+		}
+		reject := func(message string) bool {
+			return rejectWithStatus(http.StatusBadRequest, message, "")
+		}
+		rejectItemIDRepair := func(err error) bool {
+			var compat *responsestools.ToolCompatibilityError
+			if !errors.As(err, &compat) || compat == nil {
+				return false
+			}
+			return rejectWithStatus(compat.StatusCode(), compat.Error(), codexRejectedEventID(consumedPayload))
 		}
 		initialModel := ""
 		if initial != nil {
@@ -329,6 +371,11 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 			if !allowed {
 				return keepOpen
 			}
+			model = strings.TrimSpace(ojson.GetBytes(payload, "model").String())
+			if model != "" && model != req.Model && model != boundModel {
+				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+				return false
+			}
 			if model == "" {
 				model = req.Model
 				if model == "" {
@@ -363,12 +410,30 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 			}
 			payload = createDoc.Bytes()
+			if helps.IsResponsesFamilyFormat(opts.SourceFormat) {
+				var errRepair error
+				payload, errRepair = helps.RepairResponsesToolItemIDs(e.cfg, payload)
+				if errRepair != nil {
+					if rejectItemIDRepair(errRepair) {
+						return true
+					}
+					fail(errRepair)
+					return false
+				}
+			}
+			if checker := cliproxyexecutor.ResponsesToolsReplayCheckerFromContext(streamCtx); checker != nil && checker(payload, boundModel, auth.Provider, auth.ID) {
+				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+				return false
+			}
 			nextReq, nextOpts := req, opts
 			nextReq.Payload = payload
 			nextOpts.OriginalRequest = payload
 			nextOpts.Headers = turnHeaders
 			prepared, errPrepare := e.prepareCodexWebsocketStream(streamCtx, auth, nextReq, nextOpts)
 			if errPrepare != nil {
+				if rejectItemIDRepair(errPrepare) {
+					return true
+				}
 				fail(errPrepare)
 				return false
 			}
@@ -377,6 +442,10 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				return false
 			}
 			payload = frameCodexWebsocketRequestBody(prepared.clientBody)
+			if checker := cliproxyexecutor.ResponsesToolsReplayCheckerFromContext(streamCtx); checker != nil && checker(payload, boundModel, auth.Provider, auth.ID) {
+				fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+				return false
+			}
 			metadataMu.Lock()
 			if len(pending) >= 16 {
 				metadataMu.Unlock()
@@ -481,16 +550,47 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 						fail(statusErr{code: http.StatusBadRequest, msg: errExpand.Error()})
 						return
 					}
-					steerDoc := ojson.NewDoc(steerReq.Payload)
+					payload = steerReq.Payload
+					var errRepair error
+					payload, errRepair = helps.RepairResponsesToolItemIDs(e.cfg, payload)
+					if errRepair != nil {
+						if rejectItemIDRepair(errRepair) {
+							continue
+						}
+						fail(errRepair)
+						return
+					}
+					steerReq.Payload = payload
+					// A finalizer can remove declarations whose response still needs
+					// managed restoration. Probe before and after applying its rules.
+					if checker := cliproxyexecutor.ResponsesToolsReplayCheckerFromContext(streamCtx); checker != nil && checker(payload, boundModel, auth.Provider, auth.ID) {
+						fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+						return
+					}
+					steerDoc := ojson.NewDoc(payload)
 					if codexUseSIWCForRequest(ctx, auth, steerHeaders) {
 						thinking.StripConfigurationUpdatesDoc(steerDoc)
 					}
-					steerCtx := helps.WithPayloadFinalizer(streamCtx, helps.NewPayloadFinalizer(e.cfg, "codex-websockets", thinking.ParseSuffix(req.Model).ModelName, "codex", "", steerReq.Payload, steerReq, steerOpts))
+					steerCtx := helps.WithPayloadFinalizer(streamCtx, helps.NewPayloadFinalizer(e.cfg, "codex-websockets", thinking.ParseSuffix(req.Model).ModelName, "codex", "", payload, steerReq, steerOpts))
 					helps.FinalizePayloadDoc(steerCtx, steerDoc)
 					_ = steerDoc.Set("type", "response.steer")
 					parent := strings.Clone(steerDoc.Get("previous_response_id").String())
 					steerEventID := strings.Clone(steerDoc.Get("event_id").String())
 					payload = steerDoc.Bytes()
+					// A finalizer can remove declarations whose response still needs
+					// managed restoration, so repair and probe the final bytes.
+					payload, errRepair = helps.RepairResponsesToolItemIDs(e.cfg, payload)
+					if errRepair != nil {
+						if rejectItemIDRepair(errRepair) {
+							continue
+						}
+						fail(errRepair)
+						return
+					}
+					if checker := cliproxyexecutor.ResponsesToolsReplayCheckerFromContext(streamCtx); checker != nil && checker(payload, boundModel, auth.Provider, auth.ID) {
+						fail(cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+						return
+					}
 					metadataMu.Lock()
 					settings := responseSettings[parent]
 					metadataMu.Unlock()
@@ -888,7 +988,7 @@ func (e *CodexWebsocketsExecutor) streamCodexDuplex(
 				}
 				publishCodexImageToolUsageWithOutputItems(ctx, reporter, current.clientBody, payload, outputItems, outputFallback)
 			}
-			if !send(cliproxyexecutor.StreamChunk{Payload: helps.EnsureResponsesUsageDetails(payload), Incomplete: eventType == "response.incomplete"}) {
+			if !send(cliproxyexecutor.StreamChunk{Payload: sdktranslator.NormalizeCodexToolArgumentsForClient(ctx, helps.EnsureResponsesUsageDetails(payload), true), Incomplete: eventType == "response.incomplete"}) {
 				return
 			}
 			if establishing {

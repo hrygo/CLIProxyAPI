@@ -273,6 +273,7 @@ requests:
   # streaming:
   #   keepalive-seconds: 15         # Default: 0 (disabled). <= 0 disables keep-alives.
   #   bootstrap-retries: 1          # Default: 0 (disabled). Retries before first byte is sent.
+  #   bootstrap-timeout: 90s        # Default: 0 (unbounded); first upstream frame only.
   #   send-keepalive-before-ft: false # Default: false. When true and keepalive-seconds > 0, send SSE heartbeats before the first token.
 
   # Optional payload configuration
@@ -352,6 +353,9 @@ client:
     # into standard user messages for non-Codex upstream protocols.
     # Default false. Applies to both OAuth and API-key credentials across providers.
     # Legacy provider paths migrate here; this path wins conflicts, including explicit false.
+    # Meta compatibility also rewrites agent_message and removes author, recipient,
+    # and internal_chat_message_metadata_passthrough from input items regardless
+    # of this setting or the client user agent.
     optimize-multi-agent-v2: false
     # Cache upstream web search results per session so replayed Codex web_search_call items
     # that omit results still retain search results in later turns.
@@ -1202,6 +1206,39 @@ oauth:
     #   sensitive-words:             # optional: words to obfuscate with zero-width characters in system instructions and prompts
     #     - "API"
     #     - "proxy"
+
+  # Core Responses client tool protocol handling (tool_search discovery and custom
+  # tools). Convention over configuration: with no block at all the core derives a
+  # correct policy per route — native passthrough for upstreams that speak the
+  # Responses protocol, the client search bridge everywhere else. The bridge stays
+  # inert until a client actually declares tool_search, so requests without it are
+  # untouched. Lossy strategies (custom-tools strip/function, custom-grammar
+  # describe, schema inline, complete-search-required) stay opt-in below. Each
+  # route binds strategies to one exact upstream route (no wildcards).
+  # responses-tools:
+  #   enabled: true # emergency gate; set false to turn the feature off entirely
+  #   limits:
+  #     max-active-tool-bytes: 262144
+  #     max-active-attempts: 512
+  #     max-state-bytes: 33554432
+  #     max-attempt-bytes: 1048576
+  #     max-schema-expansion-bytes: 65536
+  #     max-schema-expansion-nodes: 10000
+  #     max-depth: 64
+  #   routes:
+  #     - match:
+  #         provider: "codex"
+  #         auth-kind: "oauth"
+  #         upstream-model: "gpt-5.6"
+  #         upstream-format: "codex"
+  #       client-search: "bridge" # inherit | native | bridge | disabled
+  #       custom-tools: "function" # inherit | native | function | strip | reject
+  #       custom-output-replay: "single" # single | multiple (explicit native Responses route only)
+  #       custom-grammar: "reject" # reject | describe (function mode only)
+  #       schema:
+  #         complete-search-required: false
+  #         local-refs: "preserve" # preserve | inline | flatten
+
 
 # Image and video behavior.
 multimedia:

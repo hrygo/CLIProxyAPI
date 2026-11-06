@@ -1,0 +1,13 @@
+# Upstream defects retained unchanged during a replay.
+#
+# One exact diagnostic line per entry, copied verbatim from the failing stage.
+# A gate stage tolerates a diagnostic only when it matches an entry here; any
+# other failure still blocks acceptance. Keep this list empty unless leaving
+# the defect in place was an explicit intake decision, and record that decision
+# in absorbed.md or the intake review for the release that first hit it.
+#
+# Upstream v8.0.57 fails "go vet ./..." on a test-only copylocks finding that
+# predates the replay. Fixing it would modify upstream behaviour we do not own,
+# so it is recorded rather than patched: see
+# reviews/v8.0.57-replay.md. Remove the entry once upstream fixes it.
+internal/pluginhost/host_test.go:1637:8: assignment copies lock value to _: sync.Once contains sync.noCopy

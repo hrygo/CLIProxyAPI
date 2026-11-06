@@ -88,8 +88,8 @@ func TestAntigravityStream_ClientDisconnectAfterTerminalChunkDoesNotReportFailur
 		}
 		if ojson.GetBytes(chunk.Payload, "type").String() == "response.completed" {
 			terminalReceived = true
-			// Client received completed response and terminates connection
-			finishDelivery(context.Canceled)
+			// Client acknowledged the completed response before terminating the connection.
+			finishDelivery(nil)
 			cancel()
 			break
 		}

@@ -733,7 +733,7 @@ func (s *Server) handleHomeCodexClientModels(c *gin.Context, clientVersion strin
 	if cfg != nil && cfg.Client.Codex.EnableApplyPatch {
 		applyPatchCapabilityForModel = homeApplyPatchCapabilityForModel(entries, manager)
 	}
-	optimizeMultiAgentV2 := cfg != nil && cfg.Client.Codex.OptimizeMultiAgentV2
+	optimizeMultiAgentV2 := cfg.CodexMultiAgentV2Enabled()
 	var payload map[string]any
 	if responsesclaude.ClientToolSearchEnabled() {
 		payload = codexmodels.BuildResponseForClientWithSearchToolRoutes(models, nil, homeProvidersForModel(entries), webSearchCapabilityForModel, applyPatchCapabilityForModel, homeToolSearchCapabilityForModel(entries), optimizeMultiAgentV2, clientVersion)

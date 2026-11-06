@@ -77,3 +77,50 @@ func UpstreamAttempted(ctx context.Context) bool {
 	tracker, ok := ctx.Value(upstreamAttemptTrackerContextKey{}).(*upstreamAttemptTracker)
 	return ok && tracker != nil && tracker.attempted.Load()
 }
+
+type responsesToolsReplayCheckerContextKey struct{}
+
+// WithResponsesToolsReplayChecker supplies route-aware replay detection for later duplex turns.
+func WithResponsesToolsReplayChecker(ctx context.Context, checker func([]byte, string, string, string) bool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if checker == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, responsesToolsReplayCheckerContextKey{}, checker)
+}
+
+// ResponsesToolsReplayCheckerFromContext retrieves the per-session replay detector, if any.
+func ResponsesToolsReplayCheckerFromContext(ctx context.Context) func([]byte, string, string, string) bool {
+	if ctx == nil {
+		return nil
+	}
+	checker, _ := ctx.Value(responsesToolsReplayCheckerContextKey{}).(func([]byte, string, string, string) bool)
+	return checker
+}
+
+type responsesToolsPreparationObserverContextKey struct{}
+
+// WithResponsesToolsPreparationObserver enables per-attempt replay mode
+// selection after the credential and its actual tool policy are known.
+func WithResponsesToolsPreparationObserver(ctx context.Context, observer func(bool)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, responsesToolsPreparationObserverContextKey{}, observer)
+}
+
+// ReportResponsesToolsPreparation reports whether this selected attempt needs
+// managed replay and returns whether a handler requested per-attempt selection.
+func ReportResponsesToolsPreparation(ctx context.Context, replay bool) bool {
+	if ctx == nil {
+		return false
+	}
+	observer, _ := ctx.Value(responsesToolsPreparationObserverContextKey{}).(func(bool))
+	if observer == nil {
+		return false
+	}
+	observer(replay)
+	return true
+}

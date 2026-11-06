@@ -263,6 +263,9 @@ func (e *ClaudeExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	if errMidSystem := validateClaudeMidSystemMessageModel(bodyForUpstream, confirmedClaudeCode, isAnthropicUpstreamBase(baseURL)); errMidSystem != nil {
 		return nil, errMidSystem
 	}
+	if errGuard := helps.ValidateOutboundToolContract(ctx, bodyForUpstream, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return nil, errGuard
+	}
 	reporter.SetTranslatedReasoningEffort(bodyForUpstream, to.String())
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(bodyForUpstream))
 	if err != nil {

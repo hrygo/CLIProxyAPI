@@ -111,6 +111,9 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	body = upstreamBody
+	if err = helps.ValidateOutboundToolContract(ctx, upstreamBody, helps.WireContractByteLimit(ctx)); err != nil {
+		return resp, err
+	}
 	reporter.SetTranslatedReasoningEffort(upstreamBody, to.String())
 	prepareHeaders := func(request *http.Request) {
 		applyCodexHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)
@@ -304,6 +307,9 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	body = upstreamBody
+	if err = helps.ValidateOutboundToolContract(ctx, upstreamBody, helps.WireContractByteLimit(ctx)); err != nil {
+		return resp, err
+	}
 	reporter.SetTranslatedReasoningEffort(upstreamBody, to.String())
 	prepareHeaders := func(request *http.Request) {
 		applyCodexHeaders(request, auth, apiKey, false, e.cfg, opts.Headers)

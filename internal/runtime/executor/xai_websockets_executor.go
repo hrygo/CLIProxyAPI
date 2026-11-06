@@ -542,6 +542,10 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	wsHeaders := applyXAIWebsocketHeaders(ctx, http.Header{}, auth, token, prepared.sessionID, opts.Headers)
 	wsReqBody := buildXAIWebsocketRequestBodyDoc(ctx, doc, prepared.finalizePayload)
 	prepared.body = wsReqBody
+	if errGuard := helps.ValidateOutboundToolContract(ctx, wsReqBody, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		unlockStreamSession()
+		return nil, errGuard
+	}
 	reporter.SetTranslatedReasoningEffort(wsReqBody, e.Identifier())
 	requestType := strings.TrimSpace(ojson.GetBytesNoCopy(req.Payload, "type").String())
 	transcriptReset := strings.TrimSpace(ojson.GetBytesNoCopy(wsReqBody, "previous_response_id").String()) == "" &&

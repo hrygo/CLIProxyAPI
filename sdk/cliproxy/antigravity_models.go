@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"math/rand/v2"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/registry"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	sdkauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
@@ -360,12 +362,21 @@ func (s *Service) probeAntigravityModelCapabilityHints(ctx context.Context, auth
 	if auth != nil && auth.Metadata != nil {
 		project, _ = auth.Metadata["project_id"].(string)
 	}
+	workCtx, releaseWork, errWork := helps.BeginHTTPAuxiliaryWork(ctx)
+	if errWork != nil {
+		return antigravityModelCapabilityHints{}, antigravityProbeStatusTransientError
+	}
+	defer releaseWork()
+	ctx = workCtx
 	hints, status := sdkauth.FetchAntigravityAvailableModels(ctx, sdkauth.AntigravityModelProbeRequest{
 		BaseURLs:    baseURLs,
 		ProxyURL:    proxyURL,
 		AccessToken: accessToken,
 		ProjectID:   project,
 		UserAgent:   userAgent,
+		WrapClient: func(client *http.Client) *http.Client {
+			return helps.WithAntigravityHTTPClientTrace(client, auth, "model_discovery")
+		},
 	})
 	return antigravityModelCapabilityHints{
 		ModelIDs:          hints.ModelIDs,

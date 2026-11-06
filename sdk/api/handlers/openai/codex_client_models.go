@@ -15,7 +15,7 @@ func (h *OpenAIAPIHandler) codexClientModelsResponse(clientVersion ...string) ma
 	var applyPatchCapabilityForModel codexmodels.ApplyPatchCapabilityForModelFunc
 	if h != nil {
 		if cfg := h.CurrentConfig(); cfg != nil {
-			optimizeMultiAgentV2 = cfg.Client.Codex.OptimizeMultiAgentV2
+			optimizeMultiAgentV2 = cfg.CodexMultiAgentV2Enabled()
 			if cfg.Client.Codex.EnableApplyPatch {
 				applyPatchCapabilityForModel = h.SupportsApplyPatchModel
 			}

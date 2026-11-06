@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+#
+# Regression gate for upstream release replay and fork releases.
+#
+# Exits 0 only when every stage passes. Any failure blocks acceptance.
+# Run this from the repository root.
+
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)" || exit 1
+
+# Packages whose concurrency behaviour matters for this fork: the responses
+# tools pipeline, the auth conductor and its scheduling, the executors
+# (including the Codex websocket path) and the cross-module integration tests.
+RACE_PACKAGES=(
+  ./internal/responsestools
+  ./internal/runtime/executor
+  ./internal/runtime/executor/helps
+  ./sdk/cliproxy/auth
+  ./internal/cache
+  ./internal/wsrelay
+  ./test
+)
+
+failures=()
+
+stage() {
+  name="$1"
+  shift
+  printf '\n=== %s ===\n' "$name"
+  if "$@"; then
+    printf 'PASS: %s\n' "$name"
+  else
+    printf 'FAIL: %s\n' "$name"
+    failures+=("$name")
+  fi
+}
+
+check_gofmt() {
+  # Use the formatter shipped with the active Go toolchain. A separately
+  # installed gofmt on PATH may be a different version and disagree on source
+  # that CI will reject. Inspect tracked source only and propagate failures.
+  local gofmt_bin
+  gofmt_bin="$(go env GOROOT)/bin/gofmt"
+  [ -x "$gofmt_bin" ] || {
+    printf 'gofmt not found in active Go toolchain: %s\n' "$gofmt_bin"
+    return 1
+  }
+  unformatted="$(git ls-files -z '*.go' | xargs -0 "$gofmt_bin" -l)" || return 1
+  if [ -n "$unformatted" ]; then
+    printf 'these files need gofmt:\n%s\n' "$unformatted"
+    return 1
+  fi
+  return 0
+}
+
+check_build() {
+  local build_dir
+  build_dir="$(mktemp -d)" || return 1
+  (
+    trap 'rm -rf "$build_dir"' EXIT
+    go build -o "$build_dir/cli-proxy-api" ./cmd/server
+  )
+}
+
+check_invariants() {
+  # Focused run over the namespaces this fork exists to maintain. A general
+  # failure is already covered by the full suite; this fails fast and names
+  # the subsystem so the log is readable.
+  go test ./internal/responsestools/... -count=1
+}
+
+stage "maintenance tooling" python3 -m unittest discover -s ops/tests -p 'test_*.py'
+stage "gofmt" check_gofmt
+stage "go vet" ops/upstream-intake/check-vet.sh
+stage "responses-tools invariants" check_invariants
+stage "full test suite" ops/upstream-intake/check-tests.sh
+stage "race-sensitive packages" go test -race -count=1 "${RACE_PACKAGES[@]}"
+stage "server build" check_build
+
+printf '\n========================================\n'
+if [ "${#failures[@]}" -eq 0 ]; then
+  printf 'REGRESSION GATE: PASS\n'
+  printf 'Acceptance still requires the documented review and evidence.\n'
+  exit 0
+fi
+
+printf 'REGRESSION GATE: FAIL\n'
+printf 'Failed stages:\n'
+for f in "${failures[@]}"; do
+  printf '  - %s\n' "$f"
+done
+printf '\nDo NOT accept the replay or release. Diagnose each failure, retain fork\n'
+printf 'requirements until equivalence is demonstrated, and record the outcome.\n'
+exit 1

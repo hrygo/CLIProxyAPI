@@ -58,6 +58,9 @@ type AntigravityModelProbeRequest struct {
 	AccessToken string
 	ProjectID   string
 	UserAgent   string
+	// WrapClient lets a caller instrument the probe transport, for example to
+	// attach attempt observation. Nil leaves the transport untouched.
+	WrapClient func(*http.Client) *http.Client
 }
 
 // FetchAntigravityAvailableModels performs a single-shot POST /v1internal:fetchAvailableModels request
@@ -93,6 +96,9 @@ func FetchAntigravityAvailableModels(ctx context.Context, req AntigravityModelPr
 	if transport != nil {
 		client.Transport = transport
 		defer transport.CloseIdleConnections()
+	}
+	if req.WrapClient != nil {
+		client = req.WrapClient(client)
 	}
 
 	doc := ojson.NewDoc([]byte("{}"))

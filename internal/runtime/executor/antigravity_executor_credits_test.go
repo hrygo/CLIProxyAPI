@@ -937,9 +937,19 @@ func TestAntigravityManagerExecuteAndStream_ToppedUpCreditsRecoverDuringQuotaCoo
 			if loadCodeAssistCalls.Load() <= callsBeforeTopUp {
 				t.Fatalf("loadCodeAssist calls after top-up = %d, want > %d", loadCodeAssistCalls.Load(), callsBeforeTopUp)
 			}
-			hint, ok = cliproxyauth.GetAntigravityCreditsHint(authID)
-			if !ok || !hint.Known || !hint.Available || hint.CreditAmount != 2516 {
-				t.Fatalf("hint after recovery = %#v (ok=%v), want Known=true Available=true CreditAmount=2516", hint, ok)
+			// The recovery refresh publishes its result asynchronously; a single
+			// wait can observe the state before that write. Poll instead of
+			// asserting one instant.
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				hint, ok = cliproxyauth.GetAntigravityCreditsHint(authID)
+				if ok && hint.Known && hint.Available && hint.CreditAmount == 2516 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("hint after recovery = %#v (ok=%v), want Known=true Available=true CreditAmount=2516", hint, ok)
+				}
+				time.Sleep(2 * time.Millisecond)
 			}
 			if _, failed := antigravityCreditsFailureByAuth.Load(authID); failed {
 				t.Fatal("expected permanently disabled credits state to be cleared after recovery")

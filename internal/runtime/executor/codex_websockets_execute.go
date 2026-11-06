@@ -154,6 +154,9 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 	}
 
 	wsReqBody := frameCodexWebsocketRequestBody(body)
+	if errGuard := helps.ValidateOutboundToolContract(ctx, wsReqBody, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return resp, errGuard
+	}
 	wsReqLog := helps.UpstreamRequestLog{
 		URL:       wsURL,
 		Method:    "WEBSOCKET",

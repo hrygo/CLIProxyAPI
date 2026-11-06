@@ -296,12 +296,10 @@ func clearAntigravityCreditsFailureState(auth *cliproxyauth.Auth) {
 		return
 	}
 	authID := strings.TrimSpace(auth.ID)
-	_, hadFailure := antigravityCreditsFailureByAuth.LoadAndDelete(authID)
-	if hint, ok := cliproxyauth.GetAntigravityCreditsHint(authID); ok && hint.Known && !hint.Available {
-		if hadFailure || !cliproxyauth.IsAntigravityCreditsHintFresh(hint, time.Now()) {
-			cliproxyauth.SetAntigravityCreditsHint(authID, cliproxyauth.AntigravityCreditsHint{})
-		}
-	}
+	antigravityCreditsFailureByAuth.Delete(authID)
+	// Only a hint that has left its freshness window is dropped, and the drop is
+	// a compare-and-clear: a refresh that just published availability wins.
+	cliproxyauth.ClearAntigravityCreditsHintIfStale(authID, time.Now())
 }
 func markAntigravityCreditsPermanentlyDisabled(auth *cliproxyauth.Auth) {
 	if auth == nil || strings.TrimSpace(auth.ID) == "" || antigravityCoolingDisabled(auth, nil) {
@@ -404,9 +402,17 @@ func (e *AntigravityExecutor) maybeRefreshAntigravityCreditsHint(ctx context.Con
 				refreshCtx = context.WithValue(refreshCtx, "cliproxy.roundtripper", rt)
 			}
 		}
+		refreshCtx = helps.CopyHTTPAttemptObserver(refreshCtx, ctx)
+		refreshCtx = helps.CopyHTTPAuxiliaryWorkScope(refreshCtx, ctx)
 		refreshCtx, cancel := context.WithTimeout(refreshCtx, antigravityCreditsHintRefreshTimeout)
+		refreshCtx, releaseWork, errWork := helps.BeginHTTPAuxiliaryWork(refreshCtx)
+		if errWork != nil {
+			cancel()
+			return
+		}
 		authCopy := auth.Clone()
 		go func(auth *cliproxyauth.Auth, token string) {
+			defer releaseWork()
 			defer cancel()
 			e.updateAntigravityCreditsBalance(refreshCtx, auth, token)
 		}(authCopy, accessToken)
@@ -475,6 +481,18 @@ func (e *AntigravityExecutor) queueAntigravityCreditsRefresh(ctx context.Context
 		if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
 			lifecycle = context.WithValue(lifecycle, "cliproxy.roundtripper", rt)
 		}
+		lifecycle = helps.CopyHTTPAttemptObserver(lifecycle, ctx)
+	}
+	lifecycle = helps.CopyHTTPAuxiliaryWorkScope(lifecycle, ctx)
+	lifecycle, releaseWork, errWork := helps.BeginHTTPAuxiliaryWork(lifecycle)
+	if errWork != nil {
+		state.mu.Unlock()
+		if oldTask != nil {
+			oldTask.cancel()
+		}
+		return
+	}
+	if timeout > 0 {
 		refreshCtx, cancelRefresh = context.WithTimeout(lifecycle, timeout)
 	} else {
 		// Optional post-refresh work follows its lifecycle without adding a timer.
@@ -496,6 +514,7 @@ func (e *AntigravityExecutor) queueAntigravityCreditsRefresh(ctx context.Context
 	authCopy := auth.Clone()
 
 	go func() {
+		defer releaseWork()
 		defer close(task.done)
 		defer task.cancel()
 		defer func() {

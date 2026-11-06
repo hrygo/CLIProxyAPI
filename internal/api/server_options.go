@@ -45,6 +45,7 @@ func effectiveSDKConfig(cfg *config.Config) *config.SDKConfig {
 		return nil
 	}
 	sdkCfg := cfg.SDKConfig
+	sdkCfg.Client.Codex.OptimizeMultiAgentV2 = cfg.CodexMultiAgentV2Enabled()
 	sdkCfg.CodexOrphanDelegationCompatibility = cfg.Codex.OrphanDelegationCompatibility
 	sdkCfg.CodexResponseSteering = cfg.Codex.ResponseSteering
 	if cfg.CommercialMode {

@@ -1,0 +1,113 @@
+---
+name: cliproxyapi-fork-maintenance
+description: >
+  维护 hrygo/CLIProxyAPI 自有 fork 的上游 release 评估与完整树重放、fork 差异登记、
+  自有版本发布及 Homebrew 安装、升级和回退，并校验或修复这些流程。非 fork 特有的普通
+  API 功能开发、一般运行故障排查和其他仓库同步不触发。
+---
+
+# CLIProxyAPI fork maintenance
+
+Maintain the `hrygo/CLIProxyAPI` fork with `main` as trunk and independent
+`vX.Y.Z-upstreamA.B.C` releases. Keep `module github.com/router-for-me/CLIProxyAPI/v8`
+unchanged.
+The requested operation determines which procedure to load:
+
+| Request | Read | Expected result |
+| --- | --- | --- |
+| Assess or replay onto upstream releases; maintain the fork inventory | [Intake](../../../ops/upstream-intake/README.md), [inventory](../../../ops/upstream-intake/fork-capabilities.md) and [ledger](../../../ops/upstream-intake/absorbed.md) | Newest-release baseline, fork capability and patch inventory, equivalence decisions and verification evidence |
+| Prepare or execute our release | [Maintenance](../../../docs/maintenance.md), release section | Reviewed version/commit, successful complete release |
+| Install, upgrade, roll back or update the tap | [Homebrew](../../../ops/homebrew/README.md) | Verified formula, binary and service state |
+| Audit or repair these processes | The affected procedure and script/workflow | Evidence-backed correction and isolated verification |
+
+Read only the branch needed for the task. The documents and this skill describe
+operations; they do not authorize remote branch or protection changes, pushes,
+PR merges, publication, installation, or service restarts. These actions require
+explicit user authorization for their targets. Existing authorization continues
+to apply; do not ask again for routine steps it covers.
+
+## Upstream and fork decisions
+
+- Monitor upstream releases and security reports daily and assess stable releases
+  weekly. A read-only schedule is configured separately when requested; do not
+  assume one exists. Accept only the newest published stable release at
+  assessment time. There is no age threshold: elapsed time does not repair a
+  release, and a fixed wait only replays an older tree against a larger fork
+  delta. A release upstream has already replaced is never replayed. Regression
+  risk is carried by the replay gate and by the post-install canary with the
+  prepared versioned rollback formula, not by waiting.
+- Use the explicitly accepted comparison baseline in the human ledger and
+  [accepted baseline registry](../../../ops/upstream-intake/accepted-baselines.json);
+  they must agree. Record historical selective baselines as selective. After a
+  verified replay, commit the ledger as L, then update the registry in R to
+  reference L; integrate both in a protected follow-up PR with a merge commit
+  that preserves L's SHA. A registry check cannot establish that human review or
+  behavioral tests occurred. A fetched tag or assessment does not establish a
+  completed replay. Ancestry can identify inherited history, but cannot establish
+  the contents of a later replayed tree.
+- Fetch only into `refs/upstream/tags/*` with `--no-tags`. Never push those refs.
+- Use `check-tag-namespace.sh` as a diagnostic when upstream tags may have leaked
+  into `refs/tags/*`. It can suppress failed remote lookups, so independently
+  verify both remotes and tag ownership before acting on its output. Never delete
+  or move a tag based on an incomplete comparison.
+- Keep the capability and patch inventory current as part of each fork-specific
+  feature, fix, or operational and release-governance change. Record what it
+  preserves, its implementation and regression evidence, and its upstream status;
+  do not wait for the next intake to reconstruct the delta.
+- Use the complete newest upstream release tree as the new baseline. Review its
+  changes and retain every fork capability, including required operational and
+  release governance. Reconcile conflicts without silently dropping patches,
+  upstream behavior, user data, configuration, or fork requirements. For each
+  capability, retire the fork implementation only after verifying that upstream
+  is equivalent; record the evidence and limits, not just commit similarity.
+- When committing fork-specific work or replaying it, organize atomic,
+  reviewable commits by capability, including their tests and supporting changes.
+  Prepare and verify the candidate in an isolated worktree, with the full upstream
+  history and fork commits traceable.
+- After the candidate is fully verified, the intended integration is a protected
+  `main` PR merge commit that preserves both upstream ancestry and the fork patch
+  history; verify the merged tree and ancestry. Check the actual branch protection
+  before integration. If it forbids merge commits, stop until the necessary
+  remote rule change is explicitly authorized and applied; do not bypass it.
+- Verify the current baseline and the replay candidate. A baseline failure blocks
+  intake; diagnose it without silently expanding scope or granting a waiver.
+- Ancestry and tree checks verify commit relationships and that the integrated
+  tree matches the candidate; they do not prove candidate completeness or rule
+  out regressions in later commits. Review and test each capability and change.
+- Record release and trunk SHAs, fork delta and equivalence decisions,
+  baseline/candidate gate results and client replay coverage. An assessment or
+  fetched tag is not a completed replay or a new baseline.
+
+## Release and installation decisions
+
+Release only reviewed commits on the `origin/main` first-parent chain. Tag releases
+`vX.Y.Z-upstreamA.B.C`, where the suffix names the upstream release the tag is
+aligned to and must match the note's upstream alignment. A release that ports no
+new upstream work keeps the previous release's suffix, because it is still
+built on that baseline; record that in `Ported` rather than declaring the
+alignment absent. Push a single own tag, assemble complete assets as a draft,
+and publish after final checksum validation. Do not move published tags or
+overwrite published assets; fix forward with a new version. Every release
+requires a curated `docs/releases/<tag>.md` that explains
+user-visible changes, validation limits and the exact aligned upstream release.
+Before creating or pushing a release tag, verify that the release guard and CI
+satisfy the [release-guard contract](../../../ops/upstream-intake/README.md#procedure)
+with isolated behavioral tests; failures or missing evidence block release.
+Update the separate tap only after the public release is complete.
+
+Upgrade through Homebrew. Before an upgrade, prepare a versioned rollback formula
+and assess whether existing configuration and data are compatible with the older
+version. Verify public assets, tap metadata, installed binary and running process
+separately. Preserve existing config and credentials; do not replace a
+Homebrew-managed executable with a hand-built file.
+
+After an authorized restart, watch the service for the rest of the working
+session (at least 30 minutes or the first representative client session): check
+the service logs and client-visible errors. On a regression, roll back with the
+prepared versioned formula and restart again. Adoption rests on that evidence,
+not on how old the upstream release is.
+
+If completing the task requires an uncovered configuration migration, public
+interface change or deployment decision, explain the concrete impact and ask for
+that decision while continuing independent work. Report failed and unverified
+checks, rather than converting them into completion claims.

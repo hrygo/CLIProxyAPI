@@ -123,6 +123,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	body = upstreamBody
+	if err = helps.ValidateOutboundToolContract(ctx, upstreamBody, helps.WireContractByteLimit(ctx)); err != nil {
+		return nil, err
+	}
 	reporter.SetTranslatedReasoningEffort(upstreamBody, to.String())
 	prepareHeaders := func(request *http.Request) {
 		applyCodexHeaders(request, auth, apiKey, true, e.cfg, opts.Headers)

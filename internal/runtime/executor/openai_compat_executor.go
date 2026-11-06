@@ -184,6 +184,9 @@ func (e *OpenAICompatExecutor) executeWithCredentials(ctx context.Context, auth 
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
+	if errGuard := helps.ValidateOutboundToolContract(ctx, translated, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return resp, errGuard
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
 		return resp, err
@@ -426,6 +429,9 @@ func (e *OpenAICompatExecutor) executeStreamWithCredentials(ctx context.Context,
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
 	translated = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(translated, to.String())
+	if errGuard := helps.ValidateOutboundToolContract(ctx, translated, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return nil, errGuard
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(translated))
 	if err != nil {
 		return nil, err

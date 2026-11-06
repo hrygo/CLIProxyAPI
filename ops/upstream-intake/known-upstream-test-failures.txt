@@ -1,0 +1,14 @@
+# Upstream test failures retained unchanged during a replay.
+#
+# One top-level test name per entry. The full-suite stage fails on any name not
+# listed here, and on any build or panic failure regardless of this list. Add an
+# entry only after reproducing the failure on a pristine upstream checkout of the
+# release being replayed, and record that evidence in the intake review. Remove
+# entries once upstream fixes them.
+#
+# Upstream v8.0.57 fails three of its own tests: a forgotten sync.Once in a
+# pluginhost test, a websocket reauthorization assertion, and a heartbeat
+# failover test. All three reproduce on a pristine v8.0.57 worktree.
+TestInPlaceByteWritesAreReviewed
+TestServerResponsesWebsocketReauthorizesEachTurn
+TestServiceHeartbeatFailoverDoesNotDrainBlockingScope

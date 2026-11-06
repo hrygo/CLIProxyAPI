@@ -57,3 +57,26 @@ func TestRelaySSEBufferFinalFrameAndBareJSON(t *testing.T) {
 		}
 	}
 }
+
+func TestRelaySSEBufferBorrowPending(t *testing.T) {
+	var buffer RelaySSEBuffer
+	frames := buffer.Feed([]byte("data: {}\n\nevent: error\n"))
+	if len(frames) != 1 || string(frames[0]) != "data: {}\n\n" {
+		t.Fatalf("complete frames = %q", frames)
+	}
+	if got := string(buffer.Pending()); got != "event: error\n" {
+		t.Fatalf("pending = %q", got)
+	}
+	if frames = buffer.Feed([]byte("event: message\n")); len(frames) != 0 {
+		t.Fatalf("unfinished event emitted: %q", frames)
+	}
+	if got := string(buffer.Pending()); got != "event: error\nevent: message\n" {
+		t.Fatalf("pending after feed = %q", got)
+	}
+	if tail := buffer.Finish(); len(tail) != 1 || string(tail[0]) != "event: error\nevent: message\n" {
+		t.Fatalf("final tail = %q", tail)
+	}
+	if len(buffer.Pending()) != 0 {
+		t.Fatalf("pending remains after finish: %q", buffer.Pending())
+	}
+}

@@ -44,6 +44,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 	// The internal commentary marker must be restored as assistant text before
 	// any thinking handling, so it is never dropped or mapped to thought.
 	rawJSON, _ := sigcompat.RestoreCodexCommentaryMarkers(inputRawJSON)
+	nameMap := util.SanitizedFunctionNameMap(rawJSON)
 	var drops translatorcommon.UserTurnDrops
 	// Build output Gemini request JSON
 	outDoc := ojson.NewDocString(`{"contents":[]}`)
@@ -144,7 +145,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 						if toolUseID != "" && functionName != "" {
 							toolNameByID[toolUseID] = functionName
 						}
-						functionName = util.SanitizeFunctionName(functionName)
+						functionName = util.MapSanitizedFunctionName(nameMap, functionName)
 						functionArgs := contentResult.Get("input").String()
 						argsResult := ojson.Parse(functionArgs)
 						if argsResult.IsObject() && ojson.Valid(functionArgs) {
@@ -173,7 +174,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 						if funcName == "" {
 							funcName = toolCallID
 						}
-						funcName = util.SanitizeFunctionName(funcName)
+						funcName = util.MapSanitizedFunctionName(nameMap, funcName)
 						toolResult := util.ConvertClaudeToolResult(contentResult)
 						partDoc := ojson.NewDocString(`{"functionResponse":{"name":"","response":{}}}`)
 						_ = partDoc.Set("functionResponse.id", toolCallID)
@@ -271,7 +272,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 				}
 				nameResult := toolResult.Get("name")
 				originalName := nameResult.String()
-				sanitizedName := util.SanitizeFunctionName(originalName)
+				sanitizedName := util.MapSanitizedFunctionName(nameMap, originalName)
 				if nameResult.Type != ojson.String || sanitizedName != originalName {
 					_ = toolDoc.Set("name", sanitizedName)
 				}
@@ -315,7 +316,7 @@ func convertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool,
 		case "tool":
 			_ = outDoc.Set("toolConfig.functionCallingConfig.mode", "ANY")
 			if toolChoiceName != "" {
-				_ = outDoc.Set("toolConfig.functionCallingConfig.allowedFunctionNames", []string{util.SanitizeFunctionName(toolChoiceName)})
+				_ = outDoc.Set("toolConfig.functionCallingConfig.allowedFunctionNames", []string{util.MapSanitizedFunctionName(nameMap, toolChoiceName)})
 			}
 		}
 	} else if hasStrictTool && len(toolItems) > 0 {

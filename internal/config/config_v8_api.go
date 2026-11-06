@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -43,6 +44,18 @@ func NormalizeV8ConfigAliases(root *yaml.Node) error {
 		return err
 	}
 	*root = *expandConfigAliases(root)
+	// Validate parent containers before alias projection.
+	for _, alias := range v8Aliases {
+		for _, path := range []string{alias.old, alias.current} {
+			parts := strings.Split(path, ".")
+			for i := 1; i < len(parts); i++ {
+				parent := yamlPath(root, strings.Join(parts[:i], "."))
+				if parent != nil && parent.Tag != "!!null" && parent.Kind != yaml.MappingNode {
+					return fmt.Errorf("%s must be a mapping", strings.Join(parts[:i], "."))
+				}
+			}
+		}
+	}
 	// A null historical container resets its fields. Represent the reset as
 	// null leaves so merging a root PATCH cannot turn it into an empty-map no-op.
 	for _, container := range v8SharedStructPaths {

@@ -197,7 +197,7 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 				execOpts.Metadata = meta
 			}
 			var errIntercept error
-			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, selection.Executor, selection.Provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, selection.Executor, selection.Provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel), preparedAuth)
 			if errIntercept != nil {
 				releaseAttempt()
 				selection.End("request_intercepted")
@@ -240,9 +240,13 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			executor := executorForAuth(selection.Executor, preparedAuth)
 			execute := func() (cliproxyexecutor.Response, error) {
 				if countTokens {
-					return executor.CountTokens(executorCtx, preparedAuth, execReq, execOpts)
+					return m.responsesToolsCountCall(executorCtx, preparedAuth, selection.Provider, executor, execReq, execOpts, func(callCtx context.Context, callReq cliproxyexecutor.Request, callOpts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+						return executor.CountTokens(callCtx, preparedAuth, callReq, callOpts)
+					})
 				}
-				return executor.Execute(execCtx, preparedAuth, execReq, execOpts)
+				return m.responsesToolsCallWithExecutor(execCtx, preparedAuth, selection.Provider, executor, execReq, execOpts, func(callCtx context.Context, callReq cliproxyexecutor.Request, callOpts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+					return executor.Execute(callCtx, preparedAuth, callReq, callOpts)
+				})
 			}
 			startHomeExec := time.Now()
 			response, errExecute = execute()
@@ -274,6 +278,12 @@ func (m *Manager) executeHomeOnce(ctx context.Context, providers []string, req c
 			result.RetryAfter = retryAfterFromError(errExecute)
 			if isCredentialScopedError(errExecute) {
 				result.CredentialScope = true
+			}
+			if isResponsesToolsError(errExecute) {
+				m.reportHomeResult(execCtx, result, preparedAuth)
+				releaseAttempt()
+				selection.End("request_stopped")
+				return cliproxyexecutor.Response{}, wrapRequestStopError(errExecute)
 			}
 			action, okAction := matchRequestScopedErrorAction(preparedAuth, errExecute, m.runtimeConfigSnapshot())
 			applyRequestScopedActionToResult(action, okAction, &result)

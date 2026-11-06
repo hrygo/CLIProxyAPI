@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "accepted": {
+    "kind": "replay",
+    "upstream": "v8.0.51",
+    "upstream_sha": "7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc",
+    "previous_baseline": "v8.0.35",
+    "main_before": "cd45bd7b81659d33347ff066982f02261598e60e",
+    "candidate_commit": "03df96a13d59d983d3d9d8e367a8d15134453216",
+    "integration_commit": "2c5a3b3bcda3a8731ab0c82dc3f9fafc1428ef4f",
+    "candidate_tree": "82c21b74cf8f15e1743707e5c0fa3d1cc359e0ba",
+    "intake_commit": "69a96b0d10e48ed5d8227895e9ae9fe9b7db29ae",
+    "ledger_commit": "bf310311e632f4067fc642571191cab4efd94cf6",
+    "assessment_heading": "v8.0.51 — complete-tree replay, effective on main, 2026-11-05"
+  }
+}
