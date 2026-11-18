@@ -1,0 +1,12 @@
+# Upstream test failures retained unchanged during a replay.
+#
+# One top-level test name per entry. The full-suite stage fails on any name not
+# listed here, and on any build or panic failure regardless of this list. Add an
+# entry only after reproducing the failure on a pristine upstream checkout of the
+# release being replayed, and record that evidence in the intake review. Remove
+# entries once upstream fixes them.
+#
+# Pristine upstream v8.0.77 reproduces this test failure: the embedded
+# release catalog's gpt-5.5 service_tiers is empty while the assertion expects
+# one priority tier. See reviews/v8.0.77-replay.md.
+TestModelsWithClientVersionReturnsCodexCatalog

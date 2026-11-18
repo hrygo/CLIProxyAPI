@@ -1,0 +1,9 @@
+# Recorded relocations of a fork hook.
+#
+# A symbol may legitimately leave a file when the integration point moved to a
+# narrower layer. Each entry states the reason, and the replay review carries the
+# evidence that the call site that remains is reached on the same requests.
+#
+# Format: <symbol> <path> [# reason]
+
+CodexMultiAgentV2Enabled internal/client/codex/optimize-multi-agent-v2/optimize_multi_agent_v2.go  # legacy config folds into sdk config before the optimizer runs; see sdk/api/handlers/openai/codex_client_models.go
