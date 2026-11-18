@@ -13,14 +13,21 @@ commits were ported onto our `main` **and** `verify-absorb.sh` exited 0.
 
 ## Comparison baseline
 
-**Accepted comparison baseline: `v8.0.57`**
+**Accepted comparison baseline: `v8.0.77`**
+(`a5e8f69e56309e1ef6d6872e667da81fdfbce2ce`). The complete release tree was
+replayed with the fork capabilities and merged through PR #55
+(`3b885dc7490199db63072eb47bc5c522c6e870ca`), with integration commit I
+`998a09d54b820f495978801192b72c3fdeae8a4b` and candidate tree
+`94649d8db7cdfcf2f78eb55c53b90759f5164256`.
+
+Previous comparison baseline: `v8.0.57`
 (`c2f402b45643f0740d70b9010fd7d8d0aab7ef65`). The complete release tree was
 replayed with the fork capabilities and merged through PR #45
 (`a5df3da266219e75d54f4eded175c00d14758e9c`), with integration commit I
 `a261c3e1e69452513598fa95876c4f5765c9fdfe` and candidate tree
 `60b87084a91e87ab95f24fa1a6ac7f1edb04ded8`.
 
-Previous comparison baseline: `v8.0.51`
+Earlier comparison baseline: `v8.0.51`
 (`7cad1cb7df48c6c5ffb7ff0b34ef8198806115bc`), replayed through PR #41
 (`69a96b0d10e48ed5d8227895e9ae9fe9b7db29ae`) with integration commit I
 `2c5a3b3bcda3a8731ab0c82dc3f9fafc1428ef4f` and candidate tree
@@ -86,6 +93,34 @@ resolved commit. Earlier intakes recorded age exceptions in this ledger; that
 history is unchanged.
 
 ## Assessments
+
+### v8.0.77 — complete-tree replay, effective on main, 2026-11-18
+
+- Previous intake baseline: `v8.0.57`
+- Upstream commit (U): `a5e8f69e56309e1ef6d6872e667da81fdfbce2ce`
+- Main before replay (M): `69b5e99067d6670b6d992ef22fc5f8bf62f8107b`
+- Candidate commit (C): `330f8e5dcb43948a7e1c412bf774136badde4c3e`
+- Integration commit (I): `998a09d54b820f495978801192b72c3fdeae8a4b`
+- Intake commit (J): `3b885dc7490199db63072eb47bc5c522c6e870ca`
+- Candidate tree: `94649d8db7cdfcf2f78eb55c53b90759f5164256`
+
+The [replacement audit](reviews/v8.0.77-replay.md) records the fork capabilities
+retained and the overlaps resolved. The replay preserves fork Responses tool
+discovery, strict Codex arguments, and silent first-frame cancellation while
+taking upstream's compatible Responses compaction, Codex routing and catalog
+changes. It also fixes the race in deferred Antigravity logging when a request
+has no logging sink.
+
+Go 1.26.10 passed the full local gates on M, C and I and the cold-module gate on C
+using the official Go module proxy. The [protected PR build](https://github.com/hrygo/CLIProxyAPI/actions/runs/44314680221)
+passed on the GitHub test merge `969522efece8ae7c955835acc17711da05fde436`, which had
+the same parents as the intake commit and the same tree as the candidate.
+The raw upstream GPT-5.5 catalog assertion and
+test-only pluginhost copied-lock diagnostic are recorded gate exceptions.
+The paired binary replay passed Chat Completions, Messages, Codex and Meta
+Responses, and OpenAI-compatible deferred tool discovery using loopback fixtures.
+The focused test selection passed 634 tests and subtests, and the logging race
+regression passed 20 repetitions. The replay did not exercise live providers.
 
 ### v8.0.57 — complete-tree replay, effective on main, 2026-11-06
 
