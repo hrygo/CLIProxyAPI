@@ -62,9 +62,7 @@ func TestDevinOutboundToolContractOnBothExecutionPaths(t *testing.T) {
 					if err != nil {
 						return nil, err
 					}
-					frame := appendDevinFieldBytes(nil, 2, []byte("ok"))
-					response := helps.WrapConnectEnvelope(frame)
-					response = append(response, helps.WrapConnectEnvelopeWithFlag(helps.ConnectFlagEndStream, []byte(`{}`))...)
+					response := buildIssue7442DevinTextStream("ok", 3, 1)
 					return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/connect+proto"}}, Body: io.NopCloser(bytes.NewReader(response)), Request: r}, nil
 				})
 				ctx := context.WithValue(context.Background(), "cliproxy.roundtripper", transport)
