@@ -11,6 +11,12 @@ type RelaySSEBuffer struct {
 	lineStart int
 }
 
+// Pending borrows the unfinished frame for read-only inspection. The returned
+// slice is valid only until the next Feed or Finish call.
+func (b *RelaySSEBuffer) Pending() []byte {
+	return b.pending
+}
+
 // Feed returns complete frames and retains an unfinished SSE frame for the next chunk.
 func (b *RelaySSEBuffer) Feed(chunk []byte) [][]byte {
 	b.pending = append(b.pending, chunk...)

@@ -140,6 +140,10 @@ func (e *AntigravityExecutor) Execute(ctx context.Context, auth *cliproxyauth.Au
 	translated = requestPayload
 	reporter.SetTranslatedRequestMetadata(requestPayload, to.String())
 
+	if errGuard := helps.ValidateOutboundToolContractRequest(ctx, httpReq, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return resp, errGuard
+	}
+
 	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate").Do(httpReq)
 	if errDo != nil {
 		helps.RecordAPIResponseError(ctx, e.cfg, errDo)
@@ -381,6 +385,10 @@ func (e *AntigravityExecutor) executeClaudeNonStream(ctx context.Context, auth *
 	}
 	translated = requestPayload
 	reporter.SetTranslatedRequestMetadata(requestPayload, to.String())
+
+	if errGuard := helps.ValidateOutboundToolContractRequest(ctx, httpReq, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return resp, errGuard
+	}
 
 	httpResp, errDo := helps.WithAntigravityHTTPClientTrace(httpClient, auth, "generate").Do(httpReq)
 	if errDo != nil {

@@ -22,8 +22,46 @@ type executionResources struct {
 type homeAttemptContextKey struct{}
 
 type attemptCancel struct {
-	cancel context.CancelFunc
-	once   sync.Once
+	cancel      context.CancelFunc
+	once        sync.Once
+	mu          sync.Mutex
+	released    bool
+	releaseHold func()
+}
+
+func (a *attemptCancel) trackDrain(scope *executionregistry.Scope) bool {
+	if a == nil || scope == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.released {
+		return false
+	}
+	if a.releaseHold != nil {
+		return true
+	}
+	release, err := scope.TrackDrain(a.Cancel)
+	if err != nil {
+		return false
+	}
+	a.releaseHold = release
+	return true
+}
+
+func (a *attemptCancel) release() {
+	if a == nil {
+		return
+	}
+	a.Cancel()
+	a.mu.Lock()
+	a.released = true
+	releaseHold := a.releaseHold
+	a.releaseHold = nil
+	a.mu.Unlock()
+	if releaseHold != nil {
+		releaseHold()
+	}
 }
 
 func (a *attemptCancel) Cancel() {
@@ -69,7 +107,7 @@ func (a *attemptCancels) addAttempt(attempt *attemptCancel) (func(), error) {
 			a.mu.Lock()
 			delete(a.cancels, token)
 			a.mu.Unlock()
-			attempt.Cancel()
+			attempt.release()
 		})
 	}, nil
 }
@@ -252,15 +290,15 @@ func (s *HomeDispatchSelection) End(reason string) {
 	_ = s.EndWithRelease(reason)
 }
 
-// EndWebsocketTurn releases a selection whose websocket was lost while the attempt of ctx
-// still has to deliver the turn error: that attempt is not cancelled. Its own release
-// (or the request context) ends it.
+// EndWebsocketTurn releases a selection while its attempt delivers a terminal
+// result. The attempt remains cancelable by its caller or registry shutdown and
+// stays tracked until its own release.
 func (s *HomeDispatchSelection) EndWebsocketTurn(ctx context.Context, reason string) {
 	if s == nil {
 		return
 	}
 	if ctx != nil {
-		if attempt, ok := ctx.Value(homeAttemptContextKey{}).(*attemptCancel); ok {
+		if attempt, ok := ctx.Value(homeAttemptContextKey{}).(*attemptCancel); ok && attempt.trackDrain(s.scope) {
 			s.preservedAttempt.Store(attempt)
 		}
 	}

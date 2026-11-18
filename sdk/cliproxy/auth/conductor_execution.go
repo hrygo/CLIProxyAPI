@@ -724,11 +724,15 @@ func isRequestTerminatedError(err error) bool {
 	return (errors.As(err, &terminated) && terminated != nil) || cliproxyexecutor.IsUpstreamWebsocketTurnError(err)
 }
 
-func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
+func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExecutor, provider string, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, requestedModel string, selectedAuth ...*Auth) (cliproxyexecutor.Request, cliproxyexecutor.Options, error) {
 	if opts.RequestAfterAuthInterceptor == nil {
 		return req, opts, nil
 	}
-	toFormat := requestToFormat(provider, executor, req, opts)
+	var auth *Auth
+	if len(selectedAuth) > 0 {
+		auth = selectedAuth[0]
+	}
+	toFormat := requestToFormatWithAuth(provider, executor, auth, req, opts)
 	resp := opts.RequestAfterAuthInterceptor(ctx, cliproxyexecutor.RequestAfterAuthInterceptRequest{
 		SourceFormat:   opts.SourceFormat,
 		ToFormat:       toFormat,
@@ -792,6 +796,19 @@ func applyRequestAfterAuthInterceptor(ctx context.Context, executor ProviderExec
 		}
 	}
 	return req, opts, nil
+}
+
+type requestToFormatAuthResolver interface {
+	RequestToFormatWithAuth(*Auth, cliproxyexecutor.Request, cliproxyexecutor.Options) sdktranslator.Format
+}
+
+func requestToFormatWithAuth(provider string, executor ProviderExecutor, auth *Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) sdktranslator.Format {
+	if resolver, ok := executor.(requestToFormatAuthResolver); ok && resolver != nil {
+		if format := resolver.RequestToFormatWithAuth(auth, req, opts); format != "" {
+			return format
+		}
+	}
+	return requestToFormat(provider, executor, req, opts)
 }
 
 func requestToFormat(provider string, executor ProviderExecutor, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) sdktranslator.Format {
@@ -1009,7 +1026,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			}
 			execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 			var errIntercept error
-			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel), auth)
 			if errIntercept != nil {
 				return cliproxyexecutor.Response{}, errIntercept
 			}
@@ -1017,7 +1034,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 			execCtx = withUpstreamAttemptProvider(syncMetadataSessionToContext(execCtx, execOpts.Metadata), provider)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			resp, errExec := m.responsesToolsCallWithExecutor(execCtx, auth, provider, executor, execReq, execOpts, func(callCtx context.Context, callReq cliproxyexecutor.Request, callOpts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+				return executor.Execute(callCtx, auth, callReq, callOpts)
+			})
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -1035,7 +1054,9 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
-					resp, errExec = executor.Execute(execCtx, auth, execReq, execOpts)
+					resp, errExec = m.responsesToolsCallWithExecutor(execCtx, auth, provider, executor, execReq, execOpts, func(callCtx context.Context, callReq cliproxyexecutor.Request, callOpts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+						return executor.Execute(callCtx, auth, callReq, callOpts)
+					})
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1062,6 +1083,10 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				}
 				if isCredentialScopedError(errExec) {
 					result.CredentialScope = true
+				}
+				if isResponsesToolsError(errExec) {
+					m.markResponsesToolsNeutral(execCtx, result)
+					return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
 				}
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.requestScopedErrorConfig(execCtx))
 				applyRequestScopedActionToResult(action, okAction, &result)
@@ -1230,7 +1255,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			}
 			execOpts.Metadata = ensureCanonicalSessionMetadata(execOpts.Metadata, execOpts.Headers, payload)
 			var errIntercept error
-			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel))
+			execReq, execOpts, errIntercept = applyRequestAfterAuthInterceptor(execCtx, executor, provider, execReq, execOpts, requestedModelAliasFromOptions(execOpts, routeModel), auth)
 			if errIntercept != nil {
 				return cliproxyexecutor.Response{}, errIntercept
 			}
@@ -1238,7 +1263,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 			executionSeq := m.nextExecutionSeq()
 			startExec := time.Now()
-			resp, errExec := executor.CountTokens(execCtx, auth, execReq, execOpts)
+			resp, errExec := m.responsesToolsCountCall(execCtx, auth, provider, executor, execReq, execOpts, func(callCtx context.Context, callReq cliproxyexecutor.Request, callOpts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+				return executor.CountTokens(callCtx, auth, callReq, callOpts)
+			})
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -1256,7 +1283,9 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 					execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
 					executionSeq = m.nextExecutionSeq()
 					startRetry := time.Now()
-					resp, errExec = executor.CountTokens(execCtx, auth, execReq, execOpts)
+					resp, errExec = m.responsesToolsCountCall(execCtx, auth, provider, executor, execReq, execOpts, func(callCtx context.Context, callReq cliproxyexecutor.Request, callOpts cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
+						return executor.CountTokens(callCtx, auth, callReq, callOpts)
+					})
 					errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 					durationRetry := time.Since(startRetry)
 					if errExec != nil {
@@ -1280,6 +1309,10 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				result.Error = resultErrorFromError(errExec)
 				if ra := retryAfterFromError(errExec); ra != nil {
 					result.RetryAfter = ra
+				}
+				if isResponsesToolsError(errExec) {
+					m.markResponsesToolsNeutral(execCtx, result)
+					return cliproxyexecutor.Response{}, wrapRequestStopError(errExec)
 				}
 				action, okAction := matchRequestScopedErrorAction(auth, errExec, m.requestScopedErrorConfig(execCtx))
 				applyRequestScopedActionToResult(action, okAction, &result)
@@ -1637,15 +1670,15 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 				upstreamErr = errStream
 			}
 			action, okAction := matchRequestScopedErrorAction(auth, errStream, m.requestScopedErrorConfig(execCtx))
-			stoppedByRule := isRequestStopError(errStream) || isRequestScopedStop(action, okAction)
-			if stoppedByRule || (!okAction && (isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream))) {
+			stopRequest := isRequestStopError(errStream) || isResponsesToolsError(errStream) || isRequestScopedStop(action, okAction)
+			if stopRequest || (!okAction && (isRequestInvalidError(errStream) || cliproxyexecutor.IsUpstreamWebsocketTurnError(errStream))) {
 				// Only redispatch needs a release acknowledgement. Preserve the final
 				// response even when Home cannot acknowledge the released admission.
 				if selection != nil {
 					releaseAttempt()
 					selection.End("request_stopped")
 				}
-				if stoppedByRule {
+				if stopRequest {
 					return nil, wrapRequestStopError(errStream)
 				}
 				return nil, errStream
@@ -1691,9 +1724,9 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 		}
 		if selection != nil {
 			if m.retainHomeWebsocketSelection(ctx, opts, routeModel, selection) {
-				return wrapHomeStream(ctx, streamResult, nil, releaseAttempt), nil
+				return wrapHomeStream(execCtx, streamResult, nil, releaseAttempt), nil
 			}
-			return wrapHomeStream(ctx, streamResult, selection, releaseAttempt), nil
+			return wrapHomeStream(execCtx, streamResult, selection, releaseAttempt), nil
 		}
 		return streamResult, nil
 	}

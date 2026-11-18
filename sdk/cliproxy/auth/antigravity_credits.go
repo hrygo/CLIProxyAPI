@@ -48,6 +48,10 @@ func IsAntigravityCreditsHintFresh(hint AntigravityCreditsHint, now time.Time) b
 
 var antigravityCreditsHintByAuth sync.Map
 
+// antigravityCreditsHintMu serializes read-modify-write of the in-memory hint so
+// a recovery path cannot erase a hint a refresh just published.
+var antigravityCreditsHintMu sync.Mutex
+
 // SetAntigravityCreditsHint updates the latest known AI credits state for an auth.
 func SetAntigravityCreditsHint(authID string, hint AntigravityCreditsHint) {
 	authID = strings.TrimSpace(authID)
@@ -61,7 +65,43 @@ func SetAntigravityCreditsHint(authID string, hint AntigravityCreditsHint) {
 		homekv.KVSetJSONBestEffort(context.Background(), antigravityCreditsHintKey(authID), hint, 30*time.Minute)
 		return
 	}
+	antigravityCreditsHintMu.Lock()
+	defer antigravityCreditsHintMu.Unlock()
 	antigravityCreditsHintByAuth.Store(authID, hint)
+}
+
+// ClearAntigravityCreditsHintIfStale drops a cached unavailable hint only once it
+// has left its freshness window. A hint published by a concurrent refresh is left
+// in place, so observing recovery cannot erase the state that proves it.
+func ClearAntigravityCreditsHintIfStale(authID string, now time.Time) bool {
+	authID = strings.TrimSpace(authID)
+	if authID == "" {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now()
+	}
+	if _, homeMode, _ := homekv.CurrentKVClient(); homeMode {
+		var homeHint AntigravityCreditsHint
+		_, found, errGet := homekv.KVGetJSONRequired(context.Background(), antigravityCreditsHintKey(authID), &homeHint)
+		if errGet != nil || !found || !homeHint.Known || homeHint.Available || IsAntigravityCreditsHintFresh(homeHint, now) {
+			return false
+		}
+		homekv.KVSetJSONBestEffort(context.Background(), antigravityCreditsHintKey(authID), AntigravityCreditsHint{UpdatedAt: now}, 30*time.Minute)
+		return true
+	}
+	antigravityCreditsHintMu.Lock()
+	defer antigravityCreditsHintMu.Unlock()
+	value, ok := antigravityCreditsHintByAuth.Load(authID)
+	if !ok {
+		return false
+	}
+	hint, ok := value.(AntigravityCreditsHint)
+	if !ok || !hint.Known || hint.Available || IsAntigravityCreditsHintFresh(hint, now) {
+		return false
+	}
+	antigravityCreditsHintByAuth.Store(authID, AntigravityCreditsHint{UpdatedAt: now})
+	return true
 }
 
 // GetAntigravityCreditsHint returns the latest known AI credits state for an auth.
@@ -84,6 +124,8 @@ func GetAntigravityCreditsHintRequired(ctx context.Context, authID string) (Anti
 	if homeMode {
 		return homeHint, found, errGet
 	}
+	antigravityCreditsHintMu.Lock()
+	defer antigravityCreditsHintMu.Unlock()
 	value, ok := antigravityCreditsHintByAuth.Load(authID)
 	if !ok {
 		return AntigravityCreditsHint{}, false, nil

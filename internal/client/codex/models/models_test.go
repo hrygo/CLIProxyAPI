@@ -457,6 +457,15 @@ func TestLoadCodexClientModelTemplatesRefreshesOnRevision(t *testing.T) {
 	if got := stringModelValue(defaultTemplate, "display_name"); got != "Fallback First" {
 		t.Fatalf("fallback default display_name = %q, want Fallback First", got)
 	}
+
+	withPreferredLast := []byte(`{"models":[{"slug":"gpt-6.1-sol","display_name":"Fallback"},{"slug":"gpt-5.5","display_name":"Preferred"}]}`)
+	_, defaultTemplate, err = loadCodexClientModelTemplatesSnapshot(withPreferredLast, 103)
+	if err != nil {
+		t.Fatalf("load snapshot with preferred template last: %v", err)
+	}
+	if got := stringModelValue(defaultTemplate, "slug"); got != "gpt-5.5" {
+		t.Fatalf("preferred default slug = %q, want gpt-5.5", got)
+	}
 }
 
 func TestApplyCodexClientModelMetadataPreservesMultiAgentVersionWhenDisabled(t *testing.T) {

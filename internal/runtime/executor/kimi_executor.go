@@ -169,6 +169,9 @@ func (e *KimiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
+	if errGuard := helps.ValidateOutboundToolContract(ctx, body, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return resp, errGuard
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return resp, err
@@ -312,6 +315,9 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, to.String(), from.String(), "", doc, originalTranslated, requestedModel, requestPath, opts.Headers)
 	body = doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
+	if errGuard := helps.ValidateOutboundToolContract(ctx, body, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return nil, errGuard
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -470,6 +476,9 @@ func (e *KimiExecutor) executeResponses(ctx context.Context, auth *cliproxyauth.
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, "openai-response", opts.SourceFormat.String(), "", doc, req.Payload, requestedModel, requestPath, opts.Headers)
 	body := doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
+	if errGuard := helps.ValidateOutboundToolContract(ctx, body, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return resp, errGuard
+	}
 	httpReq, errNewRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errNewRequest != nil {
 		return resp, errNewRequest
@@ -604,6 +613,9 @@ func (e *KimiExecutor) executeResponsesStream(ctx context.Context, auth *cliprox
 	helps.ApplyPayloadConfigWithRequestDoc(e.cfg, baseModel, "openai-response", opts.SourceFormat.String(), "", doc, req.Payload, requestedModel, requestPath, opts.Headers)
 	body := doc.Bytes()
 	reporter.SetTranslatedReasoningEffort(body, e.Identifier())
+	if errGuard := helps.ValidateOutboundToolContract(ctx, body, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		return nil, errGuard
+	}
 	httpReq, errNewRequest := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if errNewRequest != nil {
 		return nil, errNewRequest

@@ -29,6 +29,12 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return nil, statusErr{code: http.StatusBadRequest, msg: "streaming not supported for /responses/compact"}
 	}
 
+	if cliproxyexecutor.WebsocketInputFromContext(ctx) != nil && e.cfg != nil &&
+		(e.cfg.Codex.ResponseSteering || e.cfg.CodexResponseSteering) &&
+		cliproxyexecutor.WireContractFromContext(ctx) != nil {
+		return nil, fmt.Errorf("%w: %w", helps.ResponsesToolsDuplexSteeringError(), cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError())
+	}
+
 	baseModel := thinking.ParseSuffix(req.Model).ModelName
 	isCompat, errExpand := e.expandCodexResponsesCompaction(auth, &req, &opts, baseModel)
 	if errExpand != nil {
@@ -112,6 +118,14 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 	}
 
 	wsReqBody := frameCodexWebsocketRequestBody(clientBody)
+	if checker := cliproxyexecutor.ResponsesToolsReplayCheckerFromContext(ctx); checker != nil && checker(wsReqBody, helps.PayloadRequestedModel(opts, req.Model), auth.Provider, auth.ID) {
+		unlockStreamSession()
+		return nil, cliproxyexecutor.NewUpstreamWebsocketReplayRequiredError()
+	}
+	if errGuard := helps.ValidateOutboundToolContract(ctx, wsReqBody, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		unlockStreamSession()
+		return nil, errGuard
+	}
 	wsReqLog := helps.UpstreamRequestLog{
 		URL:       wsURL,
 		Method:    "WEBSOCKET",
@@ -554,7 +568,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 					payload = completedPayload
 				}
-				downstreamPayload := helps.EnsureResponsesUsageDetails(payload)
+				downstreamPayload := sdktranslator.NormalizeCodexToolArgumentsForClient(ctx, helps.EnsureResponsesUsageDetails(payload), true)
 				currentChunks = [][]byte{downstreamPayload}
 			} else {
 				payload = normalizeCodexWebsocketCompletion(payload)
@@ -816,7 +830,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 				if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 					payload = completedPayload
 				}
-				downstreamPayload := helps.EnsureResponsesUsageDetails(payload)
+				downstreamPayload := sdktranslator.NormalizeCodexToolArgumentsForClient(ctx, helps.EnsureResponsesUsageDetails(payload), true)
 				if !send(cliproxyexecutor.StreamChunk{Payload: downstreamPayload, Incomplete: eventType == "response.incomplete"}) {
 					terminateReason = "context_done"
 					terminateErr = ctx.Err()
@@ -914,6 +928,18 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 		originalPayloadSource = opts.OriginalRequest
 	}
 	originalPayload := originalPayloadSource
+	// Duplex follow-up frames bypass manager preparation. Repair both views
+	// before translation so replayed tool identities remain consistent.
+	if helps.IsResponsesFamilyFormat(from) {
+		originalPayload, err = helps.RepairResponsesToolItemIDs(e.cfg, originalPayloadSource)
+		if err != nil {
+			return nil, err
+		}
+		req.Payload, err = helps.RepairResponsesToolItemIDs(e.cfg, req.Payload)
+		if err != nil {
+			return nil, err
+		}
+	}
 	targetModel := resolveResponsesSignatureTargetModel(baseModel, req, opts)
 	originalTranslated, body, updatesChanged, err := translateCodexRequestPairWithUpdateIntentContext(ctx, from, to, targetModel, originalPayload, req.Payload, true, isCompat)
 	if err != nil {
@@ -980,6 +1006,11 @@ func (e *CodexWebsocketsExecutor) prepareCodexWebsocketStream(ctx context.Contex
 	}
 	helps.FinalizePayloadDoc(ctx, doc)
 	body = doc.Bytes()
+	// Payload rules can introduce a mismatch after the initial repair.
+	body, err = helps.RepairResponsesToolItemIDs(e.cfg, body)
+	if err != nil {
+		return nil, err
+	}
 	upstreamModel := strings.TrimSpace(doc.Get("model").String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg, preserveNativeOutput, opts.Headers)
 	applyCodexRoutingHint(ctx, wsHeaders, auth, upstreamModel, body, opts.Headers)

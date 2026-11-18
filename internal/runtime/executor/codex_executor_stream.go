@@ -128,6 +128,9 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	body = upstreamBody
+	if err = helps.ValidateOutboundToolContract(ctx, upstreamBody, helps.WireContractByteLimit(ctx)); err != nil {
+		return nil, err
+	}
 	upstreamModel := strings.TrimSpace(doc.Get("model").String())
 	if upstreamModel != "" && upstreamModel != baseModel {
 		reporter.SetUpstreamModel(upstreamModel)

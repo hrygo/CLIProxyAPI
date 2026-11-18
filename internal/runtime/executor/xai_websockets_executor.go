@@ -548,6 +548,10 @@ func (e *XAIWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *cliprox
 	transcriptInput := xaiJSONRawMessages(doc.Get("input"))
 	helps.FinalizePayloadDoc(helps.WithPayloadFinalizer(ctx, prepared.finalizePayload), doc)
 	wsReqBody := buildXAIWebsocketRequestBodyDoc(doc)
+	if errGuard := helps.ValidateOutboundToolContract(ctx, wsReqBody, helps.WireContractByteLimit(ctx)); errGuard != nil {
+		unlockStreamSession()
+		return nil, errGuard
+	}
 	reporter.SetTranslatedReasoningEffort(wsReqBody, e.Identifier())
 	requestType := strings.TrimSpace(ojson.GetBytesNoCopy(req.Payload, "type").String())
 	transcriptReset := strings.TrimSpace(ojson.GetBytesNoCopy(wsReqBody, "previous_response_id").String()) == "" &&

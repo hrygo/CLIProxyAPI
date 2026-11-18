@@ -34,12 +34,14 @@ type Registry struct {
 
 	mu                     sync.Mutex
 	next                   uint64
+	nextDrainHold          uint64
 	snapshotRevision       int64
 	observedBarrier        int64
 	pendingBarrierSequence uint64
 	publishedBarrier       int64
 	pending                map[uint64]*PendingDispatch
 	scopes                 map[uint64]*Scope
+	drainHolds             map[uint64]*drainHold
 	releaseSequences       map[ReleaseGroup]int64
 	releaseSink            ReleaseSink
 	changed                chan struct{}
@@ -124,16 +126,60 @@ type Scope struct {
 	ended         sync.Once
 }
 
+type drainHold struct {
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (h *drainHold) cancelOnce() {
+	h.once.Do(h.cancel)
+}
+
 // New creates an accepting registry.
 func New() *Registry {
 	registry := &Registry{
 		pending:          make(map[uint64]*PendingDispatch),
 		scopes:           make(map[uint64]*Scope),
+		drainHolds:       make(map[uint64]*drainHold),
 		releaseSequences: make(map[ReleaseGroup]int64),
 		changed:          make(chan struct{}),
 	}
 	registry.state.Store(uint32(StateAccepting))
 	return registry
+}
+
+// TrackDrain keeps a terminal delivery cancelable after its accounting scope ends.
+// The returned release function must be called when delivery has actually finished.
+// Holds do not contribute to in-flight snapshots or Home concurrency accounting.
+func (s *Scope) TrackDrain(cancel context.CancelFunc) (func(), error) {
+	if cancel == nil {
+		return nil, ErrInvalidExecutionResource
+	}
+	if s == nil || s.registry == nil {
+		cancel()
+		return nil, ErrRegistryNotAccepting
+	}
+	r := s.registry
+	r.mu.Lock()
+	if State(r.state.Load()) != StateAccepting || !s.active || r.scopes[s.id] != s {
+		r.mu.Unlock()
+		cancel()
+		return nil, ErrRegistryNotAccepting
+	}
+	r.nextDrainHold++
+	id := r.nextDrainHold
+	r.drainHolds[id] = &drainHold{cancel: cancel}
+	r.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			r.mu.Lock()
+			delete(r.drainHolds, id)
+			r.signalLocked()
+			r.mu.Unlock()
+		})
+	}, nil
 }
 
 // BeginDispatch reserves a dispatch token while the registry accepts traffic.
@@ -393,14 +439,21 @@ func (r *Registry) Drain(ctx context.Context) error {
 	for _, scope := range r.scopes {
 		scopes = append(scopes, scope)
 	}
+	holds := make([]*drainHold, 0, len(r.drainHolds))
+	for _, hold := range r.drainHolds {
+		holds = append(holds, hold)
+	}
 	r.mu.Unlock()
 
+	for _, hold := range holds {
+		go hold.cancelOnce()
+	}
 	for _, scope := range scopes {
 		scope.startBoundResourceClose()
 	}
 
 	r.mu.Lock()
-	for len(r.pending) != 0 || len(r.scopes) != 0 {
+	for len(r.pending) != 0 || len(r.scopes) != 0 || len(r.drainHolds) != 0 {
 		changed := r.changed
 		r.mu.Unlock()
 		select {
@@ -452,7 +505,14 @@ func (r *Registry) Close() error {
 	for _, scope := range r.scopes {
 		scopes = append(scopes, scope)
 	}
+	holds := make([]*drainHold, 0, len(r.drainHolds))
+	for _, hold := range r.drainHolds {
+		holds = append(holds, hold)
+	}
 	r.mu.Unlock()
+	for _, hold := range holds {
+		hold.cancelOnce()
+	}
 	for _, scope := range scopes {
 		scope.waitForBoundResourceClose()
 	}

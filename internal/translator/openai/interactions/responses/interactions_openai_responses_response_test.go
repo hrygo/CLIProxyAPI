@@ -66,6 +66,30 @@ func TestInteractionsResponsesGeneratedItemIDsDoNotCollideAcrossResponses(t *tes
 	}
 }
 
+func TestInteractionsResponsesPreservesSuppliedIDsAndCustomIdentity(t *testing.T) {
+	for _, tc := range []struct{ name, request, step, wantID, wantType string }{
+		{"explicit item", "", `{"type":"function_call","name":"echo","id":"item_explicit","call_id":"call_explicit"}`, "item_explicit", "function_call"},
+		{"explicit call fallback", "", `{"type":"function_call","name":"echo","call_id":"call_explicit"}`, "call_explicit", "function_call"},
+		{"custom", `{"tools":[{"type":"namespace","name":"functions","tools":[{"type":"custom","name":"exec"}]}]}`, `{"type":"function_call","name":"functions__exec"}`, "", "custom_tool_call"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var param any
+			raw := []byte(fmt.Sprintf(`{"event_type":"step.start","index":0,"step":%s}`, tc.step))
+			events := ConvertInteractionsResponseToOpenAIResponses(context.Background(), "test-model", []byte(tc.request), nil, raw, &param)
+			item := ojson.GetBytes(findResponsesEventPayload(events, "response.output_item.added"), "item")
+			if tc.wantID != "" && item.Get("id").String() != tc.wantID {
+				t.Fatalf("item = %s, want id %q", item.Raw, tc.wantID)
+			}
+			if item.Get("type").String() != tc.wantType {
+				t.Fatalf("item = %s, want type %q", item.Raw, tc.wantType)
+			}
+			if tc.name == "custom" && (item.Get("name").String() != "exec" || item.Get("namespace").String() != "functions") {
+				t.Fatalf("custom identity lost: %s", item.Raw)
+			}
+		})
+	}
+}
+
 func TestConvertInteractionsResponseToOpenAIResponsesStream(t *testing.T) {
 	var param any
 	var out [][]byte
