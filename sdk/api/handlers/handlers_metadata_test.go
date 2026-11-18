@@ -397,6 +397,35 @@ func TestGetContextWithCancelIsolatesUsagePublishFromReusedGinContext(t *testing
 	}
 }
 
+func TestGetContextWithCancelUsesOnlyRequestScopedDeferredCapture(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
+
+	t.Run("without logging middleware", func(t *testing.T) {
+		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ginCtx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		ctx, cancel := handler.GetContextWithCancel(nil, ginCtx, ginCtx.Request.Context())
+		defer cancel()
+
+		if !logging.DeferredAPIRequestCaptureDisabled(ctx) {
+			t.Fatal("deferred logging can fall back to the pooled Gin context")
+		}
+	})
+
+	t.Run("with request capture", func(t *testing.T) {
+		ginCtx, _ := gin.CreateTestContext(httptest.NewRecorder())
+		request := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+		capture := logging.NewDeferredAPICapture()
+		ginCtx.Request = request.WithContext(logging.WithDeferredAPICapture(request.Context(), capture))
+		ctx, cancel := handler.GetContextWithCancel(nil, ginCtx, context.Background())
+		defer cancel()
+
+		if logging.DeferredAPIRequestCaptureDisabled(ctx) || logging.DeferredAPICaptureFromContext(ctx) != capture {
+			t.Fatal("request-scoped deferred logging capture was not inherited")
+		}
+	})
+}
+
 func TestGetContextWithCancelNilGinContextDoesNotPanic(t *testing.T) {
 	handler := &BaseAPIHandler{Cfg: &config.SDKConfig{}}
 	cliCtx, cliCancel := handler.GetContextWithCancel(nil, nil, context.Background())

@@ -712,10 +712,12 @@ func (h *BaseAPIHandler) GetContextWithCancel(handler interfaces.APIHandler, c *
 		parentCtx = logging.InheritDeferredCapture(parentCtx, requestCtx)
 	}
 	if c != nil && logging.DeferredAPICaptureFromContext(parentCtx) == nil && !logging.DeferredAPIRequestCaptureDisabled(parentCtx) {
-		if value, exists := c.Get(logging.DeferredAPIResponseContextKey); exists {
-			if capture, ok := value.(*logging.DeferredAPICapture); ok && capture != nil {
-				parentCtx = logging.WithDeferredAPICapture(parentCtx, capture)
-			}
+		value, _ := c.Get(logging.DeferredAPIResponseContextKey)
+		if capture, ok := value.(*logging.DeferredAPICapture); ok && capture != nil {
+			parentCtx = logging.WithDeferredAPICapture(parentCtx, capture)
+		} else {
+			// Without a request-owned sink, stream workers must not access Gin after the handler returns.
+			parentCtx = logging.WithDeferredAPIRequestCaptureDisabled(parentCtx)
 		}
 	}
 	if requestCtx != nil && logging.GetRequestID(parentCtx) == "" {
